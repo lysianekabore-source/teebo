@@ -1,7 +1,7 @@
 import express from 'express';
 import { q, tx } from '../db.js';
 import { authenticate, requireFreshPassword, requireRole } from '../auth.js';
-import { getBranding, TEEBO_SUPPLIER } from '../documents.js';
+import { getBranding, TEEBO_SUPPLIER, renderInvoice, setDocumentCsp } from '../documents.js';
 
 const router = express.Router();
 router.use(authenticate, requireFreshPassword);
@@ -135,6 +135,43 @@ router.delete('/org-settings/logo', requireRole('admin_imf', 'direction'), async
                     logo_updated_at=now(), logo_updated_by=$2, updated_at=now()
               WHERE imf_id=$1`, [req.user.imf_id, req.user.id]);
     res.json({ ok: true, message: 'Logo retiré.' });
+  } catch (e) { next(e); }
+});
+
+/**
+ * POST /api/v1/org-settings/preview — PRÉVISUALISATION DYNAMIQUE de facture.
+ * -------------------------------------------------------------------------
+ * Renvoie le fragment HTML d'une facture proforma rendue avec les paramètres
+ * RÉELS de l'IMF (logo + mentions légales enregistrés, TVA configurée). Cette
+ * route sert à la vignette d'aperçu de l'onglet « Paramètres IMF » : l'admin
+ * voit immédiatement à quoi ressembleront ses factures après enregistrement.
+ * Aucune donnée n'est modifiée.
+ */
+router.get('/org-settings/preview', async (req, res, next) => {
+  try {
+    const header = await getBranding(req.user.imf_id);
+    const vatBp = (await currentVatBp(req.user.imf_id)) || 0;
+    const subtotal = 12000000;                                   // plan Business : 120 000 FCFA
+    const vatCents = vatBp ? Math.round(subtotal * vatBp / 10000) : 0;
+    const total = subtotal + vatCents;
+    const html = renderInvoice({
+      header,
+      kind: 'proforma',
+      invoiceNo: 'PRO-' + new Date().getFullYear() + '-000001',
+      issuedAt: new Date(),
+      plan: 'Abonnement teebo — Business',
+      subtotalCents: subtotal,
+      vatRateBp: vatBp,
+      vatCents,
+      totalCents: total,
+      currency: 'XOF',
+      clientName: header.legal_name || header.imf.name || '',
+      clientCode: header.imf.email || '',
+      notes: 'Aperçu généré automatiquement à partir de vos paramètres actuels.',
+      embed: true
+    });
+    setDocumentCsp(res, { allowFrame: true });
+    res.type('html').send(html);
   } catch (e) { next(e); }
 });
 

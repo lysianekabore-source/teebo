@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { q, tx } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
 import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL } from '../notify.js';
-import { getBranding, renderInvoice } from '../documents.js';
+import { getBranding, renderInvoice, setDocumentCsp } from '../documents.js';
 
 const router = express.Router();
 
@@ -132,6 +132,7 @@ router.get('/invoices/:id.pdf', async (req, res, next) => {
       clientCode: imf.email || '',
       notes: inv.notes
     });
+    setDocumentCsp(res);
     res.type('html').send(html);
   } catch (e) { next(e); }
 });

@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { q, tx } from '../db.js';
 import { requireRole } from '../auth.js';
-import { getBranding, renderStatement } from '../documents.js';
+import { getBranding, renderStatement, setDocumentCsp } from '../documents.js';
 import { findClientDuplicate, logDuplicate, normalizeClientFields, clientHasActiveAccount } from '../collecte_extra.js';
 
 const r = Router();
@@ -130,6 +130,7 @@ r.get('/clients/:id/statement', requireRole('admin_imf','direction','department'
       header, client: cl, account: acc || null, operations: ops,
       generatedAt: new Date(), generatedBy: req.user.full_name
     });
+    setDocumentCsp(res);
     res.type('html').send(html);
   } catch (e) { next(e); }
 });

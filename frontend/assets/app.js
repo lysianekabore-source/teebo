@@ -327,6 +327,8 @@
       // Aperçu d'un document (relevé client) si un client existe — lien facultatif.
       var link = $('link-statement-demo');
       if (link) link.hidden = true;
+      // Prévisualisation dynamique de la facture (rendu réel côté serveur).
+      loadInvoicePreview();
       return d;
     }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
   }
@@ -409,6 +411,27 @@
     $('btn-logo-remove').addEventListener('click', removeLogo);
     $('btn-settings-save').addEventListener('click', saveSettings);
     var ln = $('s-legal_name'); if (ln) ln.addEventListener('input', function () { if (!logoDraft) renderLogo(null); });
+    // Prévisualisation : boutons pilotés par addEventListener (aucun on* inline).
+    var ref = $('btn-preview-refresh'); if (ref) ref.addEventListener('click', function () { loadInvoicePreview(true); });
+    var pr = $('btn-preview-print'); if (pr) pr.addEventListener('click', openInvoicePreview);
+  }
+
+  /* --- Prévisualisation dynamique de la facture (iframe de même origine) ---
+     L'aperçu est un document HTML rendu par le serveur, intégré dans un cadre
+     isolé (sandbox). La politique de sécurité de cette réponse autorise son
+     style propre et le cadrage de même origine, mais jamais de script. */
+  function loadInvoicePreview(userTriggered) {
+    var f = $('invoice-preview');
+    if (!f) return;
+
+    // jeton propre pour forcer le rechargement (évite le cache du navigateur)
+    f.src = '/api/v1/org-settings/preview?_=' + Date.now();
+    if (userTriggered) notify('Aperçu actualisé.', 'ok');
+  }
+
+  function openInvoicePreview() {
+    var w = window.open('/api/v1/org-settings/preview', '_blank', 'noopener');
+    if (!w) notify('Autorisez les fenêtres surgissantes pour ouvrir la facture.', 'err');
   }
 
   // ----- Démarrage -----

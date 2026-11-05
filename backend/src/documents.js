@@ -25,6 +25,29 @@ export const TEEBO_SUPPLIER = {
 
 export const CURRENCY_LABEL = { XOF: 'FCFA', XAF: 'FCFA' };
 
+/**
+ * CSP dédiée aux DOCUMENTS imprimables (relevé, factures, aperçu).
+ * ---------------------------------------------------------------------------
+ * Ces pages sont des documents HTML autonomes : leurs styles sont en ligne
+ * (<style> dans le <head>) pour rester imprimables sans dépendance externe.
+ * La CSP globale de l'application interdit le style en ligne ; on la relâche
+ * donc UNIQUEMENT pour ces réponses (style-src 'unsafe-inline'), sans jamais
+ * autoriser de script en ligne (script-src reste 'self'). `allowFrame` permet
+ * à l'espace IMF d'intégrer l'aperçu dans une iframe de même origine.
+ */
+export function setDocumentCsp(res, { allowFrame = false } = {}) {
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "img-src 'self' data:",
+    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    'frame-ancestors ' + (allowFrame ? "'self'" : "'none'")
+  ].join('; '));
+  res.setHeader('X-Frame-Options', allowFrame ? 'SAMEORIGIN' : 'DENY');
+}
+
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -78,13 +101,13 @@ export async function getBranding(imfId) {
 }
 
 /** Feuille de style commune aux documents imprimables (imprimable A4). */
-function docStyles() {
+function docStyles(embed = false) {
   return `
   :root{--navy:#0b0c26;--neon:#d8f500;--muted:#61647c;--line:#e3e5ee;--soft:#f6f7fb}
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;color:#0b0c26;background:#eef0f6;padding:24px;-webkit-font-smoothing:antialiased}
-  .sheet{max-width:820px;margin:0 auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 12px 40px rgba(11,12,38,.12)}
-  .doc{padding:38px 42px 30px}
+  body{font-family:'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;color:#0b0c26;background:${embed ? 'transparent' : '#eef0f6'};padding:${embed ? '0' : '24px'};-webkit-font-smoothing:antialiased}
+  .sheet{max-width:820px;margin:0 auto;background:#fff;${embed ? '' : 'border-radius:10px;overflow:hidden;box-shadow:0 12px 40px rgba(11,12,38,.12);'}}
+  .doc{padding:${embed ? '30px 34px 24px' : '38px 42px 30px'}}
   .head{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding-bottom:20px;border-bottom:3px solid var(--navy)}
   .org{display:flex;gap:14px;align-items:center}
   .logo{width:66px;height:66px;object-fit:contain;border-radius:10px}
@@ -195,6 +218,17 @@ function wrap(title, inner, autoPrint = false) {
   </body></html>`;
 }
 
+/* Variante destinée à la PRÉVISUALISATION INTÉGRÉE (iframe de l'espace IMF) :
+   - aucun bouton : l'aperçu est piloté par la page hôte ;
+   - styles adaptés pour s'intégrer sans ombre ni marge externe. */
+function wrapEmbed(title, inner) {
+  return `<!doctype html><html lang="fr"><head><meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${esc(title)}</title><style>${docStyles(true)}</style></head><body>
+  <div class="sheet"><div class="doc">${inner}</div></div>
+  </body></html>`;
+}
+
 /* ============================ RELEVÉ DE COMPTE =========================== */
 export function renderStatement({ header, client, account, operations, generatedAt, generatedBy }) {
   const cur = (account && account.currency) || 'XOF';
@@ -241,7 +275,7 @@ export function renderStatement({ header, client, account, operations, generated
 /* ============================== FACTURES ================================= */
 export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, dueAt, periodLabel,
   plan, subtotalCents, discountCents = 0, vatRateBp = 0, vatCents = 0, totalCents,
-  currency = 'XOF', status, amountPaidCents, clientName, clientCode, notes }) {
+  currency = 'XOF', status, amountPaidCents, clientName, clientCode, notes, embed = false }) {
   const cur = currency || 'XOF';
   const isFinal = kind === 'definitive';
   const title = isFinal ? 'Facture' : 'Facture proforma';
@@ -291,7 +325,7 @@ export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, 
   </div>
   ${docFoot(header, (isFinal ? 'Facture définitive' : 'Facture proforma') + ' — teebo')}`;
 
-  return wrap(title + ' n° ' + (invoiceNo || ''), body);
+  return embed ? wrapEmbed(title + ' n° ' + (invoiceNo || ''), body) : wrap(title + ' n° ' + (invoiceNo || ''), body);
 }
 
 function statusLabel(s) {

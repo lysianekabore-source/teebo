@@ -184,6 +184,23 @@
           <a class="btn btn--ghost btn--sm" id="link-statement-demo" href="#" hidden>Aperçu d’un document</a>
         </div>
       </div>
+
+      <!-- Prévisualisation dynamique du PDF de facture -->
+      <div class="card" style="margin-top:16px">
+        <div class="prev-head">
+          <div>
+            <h2 style="font-size:16px;margin-bottom:4px">Prévisualisation de la facture</h2>
+            <p class="hint">Rendu réel de vos factures proforma avec le logo et les mentions légales <b>enregistrés</b>. Après « Enregistrer les paramètres », l’aperçu se met à jour automatiquement.</p>
+          </div>
+          <div class="prev-actions">
+            <button class="btn btn--ghost btn--sm" id="btn-preview-refresh" type="button">Actualiser l’aperçu</button>
+            <button class="btn btn--dark btn--sm" id="btn-preview-print" type="button">Ouvrir / Imprimer en PDF</button>
+          </div>
+        </div>
+        <div class="prev-frame">
+          <iframe id="invoice-preview" title="Prévisualisation de la facture" loading="lazy" sandbox="allow-same-origin"></iframe>
+        </div>
+      </div>
     </section>
   </main>
 </div>

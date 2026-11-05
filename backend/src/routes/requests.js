@@ -1,7 +1,7 @@
 import express from 'express';
 import { q, tx } from '../db.js';
 import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL } from '../notify.js';
-import { getBranding, renderInvoice, moneyFcfa } from '../documents.js';
+import { getBranding, renderInvoice, moneyFcfa, setDocumentCsp } from '../documents.js';
 
 const router = express.Router();
 
@@ -130,6 +130,7 @@ router.get('/:id/proforma.pdf', async (req, res, next) => {
       clientName: imf ? imf.name : (header.legal_name || 'IMF'),
       clientCode: header.imf.email || ''
     });
+    setDocumentCsp(res);
     res.type('html').send(html);
   } catch (e) { next(e); }
 });

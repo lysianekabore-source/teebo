@@ -64,6 +64,34 @@ Dans le terminal, placez-vous dans `backend` puis lancez, l'un après l'autre :
 
 ---
 
+## ÉTAPE 4 bis — Valider les migrations sur votre vraie base (recommandé)
+
+Cette étape vérifie, **sur votre serveur PostgreSQL réel**, que tous les objets
+de facturation (tables, déclencheurs d'audit, numérotation des factures,
+TVA configurable par IMF) sont bien en place et se comportent correctement.
+
+1. Placez-vous dans le dossier `backend`.
+2. Assurez-vous que `DATABASE_URL` est renseigné (voir ÉTAPE 3).
+3. Lancez : `npm run test:migrations`
+4. Le test affiche une liste de contrôles `✓` puis
+   `RÉSULTAT : N réussis / 0 échec(s)`.
+
+> **Aucun risque pour vos données.** Toutes les écritures du test se font dans
+> une transaction annulée automatiquement (`ROLLBACK`) : la base, y compris le
+> compteur de factures, reste **strictement inchangée**. Le test peut être
+> rejoué autant de fois que nécessaire, même sur une base déjà en production.
+
+Messages possibles :
+
+| Message | Signification | Action |
+|---|---|---|
+| `DATABASE_URL non défini` | adresse de la base absente | renseignez `DATABASE_URL` (ÉTAPE 3) |
+| `Le paquet « pg » n'est pas installé` | dépendances non installées | relancez `npm install` (ÉTAPE 4) |
+| `0 échec(s)` | tout est conforme | vous pouvez déployer |
+| au moins un `✗` | un objet manque | rejouez l'ÉTAPE 2 (schémas) puis relancez |
+
+---
+
 ## ÉTAPE 5 — Démarrer la plateforme
 
 1. Dans `backend`, lancez : `node src/server.js`
@@ -82,6 +110,17 @@ Dans le terminal, placez-vous dans `backend` puis lancez, l'un après l'autre :
    (`direction@imf-obj.bf`) → l'espace IMF s'ouvre.
 3. Ouvrez le module **Objectifs** : la liste des cibles s'affiche.
 4. Test express : créez une cible, puis vérifiez le tableau de bord.
+
+### Vérifier la prévisualisation de facture (module Paramètres IMF)
+
+1. Connecté en **administrateur IMF**, ouvrez le module **Paramètres**.
+2. Renseignez les mentions légales et, si applicable, le taux de **TVA**
+   (laissé vide = TVA non applicable ; aucun taux n'est imposé par défaut).
+3. Cliquez sur **Aperçu de la facture** : le PDF de facture s'affiche
+   dynamiquement dans la page, avec le logo, les mentions légales et le calcul
+   HT + TVA à jour selon vos paramètres.
+4. Modifiez un paramètre (ex. le taux de TVA) puis relancez l'aperçu :
+   le document se régénère immédiatement avec les nouvelles valeurs.
 
 Si une page reste blanche : videz le cache du navigateur (Ctrl+Shift+R).
 
@@ -107,6 +146,8 @@ Si une page reste blanche : videz le cache du navigateur (Ctrl+Shift+R).
 | « password authentication failed » | Mauvais `DATABASE_URL` | Corrigez le mot de passe dans `.env` |
 | Page blanche dans le navigateur | Cache navigateur | Ctrl+Shift+R (rechargement forcé) |
 | « relation … does not exist » | Schémas non appliqués | Rejouez l'ÉTAPE 2 |
+| `npm run test:migrations` échoue sur un objet | Schémas incomplets | Rejouez l'ÉTAPE 2 puis relancez l'ÉTAPE 4 bis |
+| L'aperçu de facture reste vide | Paramètres IMF incomplets | Renseignez les mentions légales (module Paramètres) |
 | Accès refusé (403) sur une action | Profil non autorisé | Vérifiez `MATRICE_HABILITATIONS.md` |
 
 ---
