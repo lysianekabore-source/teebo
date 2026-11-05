@@ -69,15 +69,20 @@ router.post('/login', async (req, res, next) => {
         expires_in: ch.expires_in,
         message: 'Saisissez le code à 6 chiffres de votre application d’authentification.' });
     }
-    // Si la 2FA est obligatoire pour ce rôle mais pas encore activée : on laisse
-    // se connecter, mais on signale qu'un enrôlement est requis.
-    const enrollRequired = is2faRequired(u.role) && !st.enabled;
+    // Si la 2FA est obligatoire mais pas encore activée : on impose l'enrôlement
+    // immédiatement. On n'ouvre PAS de session applicative tant qu'un premier
+    // code n'a pas été confirmé (le client doit terminer l'enrôlement).
+    if (is2faRequired(u.role) && !st.enabled) {
+      return res.json({ ok: false, twofa_enrollment_required: true,
+        enrollment_token: hashToken('enroll:' + u.id + ':' + Date.now() + ':' + Math.random()),
+        user_id: u.id,
+        message: 'La double authentification est obligatoire. Installez une application d’authentification puis enrôlez ce compte.' });
+    }
 
     const { token } = await createSession(u);
     res.cookie('teebo_session', token, COOKIE);
     const expired = isPasswordExpired(u.password_set_at) || u.must_change_password;
-    res.json({ ok: true, password_change_required: expired, max_days: MDP_MAX_DAYS,
-      twofa_enrollment_required: enrollRequired });
+    res.json({ ok: true, password_change_required: expired, max_days: MDP_MAX_DAYS });
   } catch (e) { next(e); }
 });
 

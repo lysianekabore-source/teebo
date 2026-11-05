@@ -6,9 +6,10 @@ import { hashToken } from './auth.js';
 /**
  * Double authentification (2FA / « authenticator ») — TOTP RFC 6238.
  *
- * Politique : les comptes à privilèges (admin IMF, direction, département,
- * service, agence) sont encouragés/contraints à activer la 2FA. Une fois
- * activée, la connexion exige le mot de passe PUIS un code à 6 chiffres.
+ * Politique : la double authentification (TOTP) est OBLIGATOIRE pour TOUS les
+ * comptes, quel que soit le rôle (direction, cadres, caissiers, agents de
+ * terrain, administrateur éditeur). Une fois activée, la connexion exige le
+ * mot de passe PUIS un code à 6 chiffres.
  */
 
 const ISSUER = process.env.TEEBO_2FA_ISSUER || 'teebo';
@@ -17,13 +18,18 @@ const LOCK_MINUTES = 15;
 const CHALLENGE_TTL_MINUTES = 5;
 
 /** Rôles qui doivent activer la 2FA (obligatoire). */
-export const PRIVILEGED_ROLES = ['admin_imf', 'direction', 'department', 'service', 'agency', 'teebo_admin'];
+export const PRIVILEGED_ROLES = ['admin_imf', 'direction', 'department', 'service', 'agency', 'cashier', 'teller', 'staff', 'field_agent', 'teebo_admin'];
 
 export function isPrivileged(role) { return PRIVILEGED_ROLES.includes(role); }
 
+/**
+ * La 2FA est requise pour TOUS les comptes, tous rôles confondus.
+ * (TEEBO_2FA_OPTIONAL permet uniquement de désactiver l'exigence en
+ * environnement de test ; en production elle reste obligatoire.)
+ */
 export function is2faRequired(role) {
-  // Obligatoire pour les comptes à privilèges, sauf désactivation explicite.
-  return process.env.TEEBO_2FA_OPTIONAL === 'true' ? false : isPrivileged(role);
+  if (process.env.TEEBO_2FA_OPTIONAL === 'true') return false;
+  return true;
 }
 
 /** État 2FA d'un utilisateur (jamais le secret en clair hors enrôlement). */

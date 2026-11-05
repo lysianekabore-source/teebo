@@ -17,7 +17,19 @@ router.get('/me', async (req, res) => {
 router.get('/requests', async (_req, res, next) => {
   try {
     const { rows } = await q(
-      `SELECT r.*, i.name AS imf_name, i.code_imf, i.country_code, i.type
+      `SELECT r.*, i.name AS imf_name, i.code_imf, i.country_code, i.type,
+              (SELECT au.code_user FROM app_user au
+                 WHERE au.imf_id = r.imf_id AND au.role = 'admin_imf'
+                 ORDER BY au.created_at ASC LIMIT 1) AS admin_code,
+              (SELECT au.email FROM app_user au
+                 WHERE au.imf_id = r.imf_id AND au.role = 'admin_imf'
+                 ORDER BY au.created_at ASC LIMIT 1) AS admin_email,
+              (SELECT au.id FROM app_user au
+                 WHERE au.imf_id = r.imf_id AND au.role = 'admin_imf'
+                 ORDER BY au.created_at ASC LIMIT 1) AS admin_user_id,
+              (SELECT au.must_change_password FROM app_user au
+                 WHERE au.imf_id = r.imf_id AND au.role = 'admin_imf'
+                 ORDER BY au.created_at ASC LIMIT 1) AS admin_must_change
          FROM access_request r JOIN imf i ON i.id = r.imf_id
         ORDER BY r.created_at DESC`
     );
@@ -77,11 +89,178 @@ router.post('/requests/:id/reject', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// --- Liste des IMF ----------------------------------------------------------
+// --- Liste des IMF (avec code d'accès administrateur visible) --------------
 router.get('/imfs', async (_req, res, next) => {
   try {
-    const { rows } = await q('SELECT * FROM imf ORDER BY created_at DESC');
+    const { rows } = await q(
+      `SELECT i.*,
+              (SELECT au.code_user FROM app_user au
+                 WHERE au.imf_id = i.id AND au.role = 'admin_imf'
+                 ORDER BY au.created_at ASC LIMIT 1) AS admin_code,
+              (SELECT au.email FROM app_user au
+                 WHERE au.imf_id = i.id AND au.role = 'admin_imf'
+                 ORDER BY au.created_at ASC LIMIT 1) AS admin_email,
+              (SELECT au.full_name FROM app_user au
+                 WHERE au.imf_id = i.id AND au.role = 'admin_imf'
+                 ORDER BY au.created_at ASC LIMIT 1) AS admin_name,
+              (SELECT au.must_change_password FROM app_user au
+                 WHERE au.imf_id = i.id AND au.role = 'admin_imf'
+                 ORDER BY au.created_at ASC LIMIT 1) AS admin_must_change,
+              (SELECT count(*) FROM app_user au WHERE au.imf_id = i.id) AS users_count
+         FROM imf i ORDER BY i.created_at DESC`
+    );
     res.json({ imfs: rows });
+  } catch (e) { next(e); }
+});
+
+// --- Administrateurs IMF (tableau dédié) -----------------------------------
+router.get('/imf-admins', async (_req, res, next) => {
+  try {
+    const { rows } = await q(
+      `SELECT au.id, au.code_user, au.email, au.full_name, au.role,
+              au.must_change_password, au.created_at, au.is_active,
+              i.name AS imf_name, i.code_imf, i.status AS imf_status,
+              i.trial_ends_at
+         FROM app_user au JOIN imf i ON i.id = au.imf_id
+        WHERE au.role = 'admin_imf'
+        ORDER BY au.created_at DESC`
+    );
+    res.json({ admins: rows });
+  } catch (e) { next(e); }
+});
+
+// --- Détail d'une institution + ses utilisateurs ---------------------------
+router.get('/imfs/:id', async (req, res, next) => {
+  try {
+    const imf = (await q('SELECT * FROM imf WHERE id=$1', [req.params.id])).rows[0];
+    if (!imf) return res.status(404).json({ error: 'not_found' });
+    const users = (await q(
+      `SELECT au.id, au.code_user, au.email, au.full_name, au.role, au.is_active,
+              au.must_change_password, au.created_at,
+              COALESCE(t.enabled, false) AS twofa_enabled
+         FROM app_user au LEFT JOIN user_2fa t ON t.user_id = au.id
+        WHERE au.imf_id=$1 ORDER BY au.created_at ASC`, [imf.id]
+    )).rows;
+    res.json({ imf, users });
+  } catch (e) { next(e); }
+});
+
+// --- Régénérer le code d'accès d'une institution ---------------------------
+router.post('/imfs/:id/regenerate-code', async (req, res, next) => {
+  try {
+    const out = await tx(async (c) => {
+      const imf = (await c.query('SELECT * FROM imf WHERE id=$1 FOR UPDATE', [req.params.id])).rows[0];
+      if (!imf) { const e = new Error('not_found'); e.status = 404; throw e; }
+      const code = (await c.query('SELECT fn_gen_user_code($1) AS c', [imf.id])).rows[0].c;
+      const admins = (await c.query(
+        `SELECT id, email FROM app_user WHERE imf_id=$1 AND role='admin_imf' ORDER BY created_at ASC`, [imf.id]
+      )).rows;
+      if (!admins.length) { const e = new Error('no_admin'); e.status = 409; throw e; }
+      const admin = admins[0];
+      await c.query(
+        `UPDATE app_user SET code_user=$1, password_hash=NULL, must_change_password=true WHERE id=$2`,
+        [code, admin.id]);
+      return { code, email: admin.email, imfCode: imf.code_imf,
+        whatsapp: imf.whatsapp, phone: imf.phone_main };
+    });
+    const msg = `teebo: votre nouveau code d'accès administrateur (IMF ${out.imfCode}) : ${out.code}. ` +
+      `Connectez-vous et créez votre mot de passe via « Premier accès ».`;
+    await notifyWhatsApp(out.whatsapp || out.phone, msg);
+    await notifyEmail(out.email, 'Votre nouveau code d\'accès teebo', msg);
+    res.json({ ok: true, code_user: out.code, sent_to: out.email });
+  } catch (e) { next(e); }
+});
+
+// --- Renvoyer (sans régénérer) le code d'accès par WhatsApp / e-mail -------
+router.post('/imfs/:id/resend-code', async (req, res, next) => {
+  try {
+    const imf = (await q('SELECT * FROM imf WHERE id=$1', [req.params.id])).rows[0];
+    if (!imf) return res.status(404).json({ error: 'not_found' });
+    const admin = (await q(
+      `SELECT id, code_user, email FROM app_user WHERE imf_id=$1 AND role='admin_imf' ORDER BY created_at ASC LIMIT 1`,
+      [imf.id])).rows[0];
+    if (!admin || !admin.code_user) return res.status(409).json({ error: 'no_code' });
+    const msg = `teebo: rappel de votre code d'accès administrateur (IMF ${imf.code_imf}) : ${admin.code_user}. ` +
+      `Connectez-vous sur https://teebo-imf.netlify.app et créez votre mot de passe.`;
+    await notifyWhatsApp(imf.whatsapp || imf.phone_main, msg);
+    await notifyEmail(admin.email, 'Rappel : votre code d\'accès teebo', msg);
+    res.json({ ok: true, code_user: admin.code_user, sent_to: admin.email });
+  } catch (e) { next(e); }
+});
+
+// --- Changer le statut d'une institution (activer / suspendre / essai) -----
+router.post('/imfs/:id/status', async (req, res, next) => {
+  try {
+    const allowed = ['trial', 'active', 'suspended', 'approved', 'pending', 'rejected'];
+    const { status, extend_trial_days } = req.body || {};
+    if (!allowed.includes(status)) return res.status(422).json({ error: 'invalid_status' });
+    const imf = (await q('SELECT id, status FROM imf WHERE id=$1', [req.params.id])).rows[0];
+    if (!imf) return res.status(404).json({ error: 'not_found' });
+    await q('UPDATE imf SET status=$1 WHERE id=$2', [status, imf.id]);
+    let trialEnds = null;
+    if (status === 'trial' && extend_trial_days) {
+      const days = Math.max(1, Math.min(365, parseInt(extend_trial_days, 10) || 30));
+      trialEnds = (await q(
+        `UPDATE imf SET trial_ends_at = COALESCE(trial_ends_at, now()) + ($1 || ' days')::interval
+          WHERE id=$2 RETURNING trial_ends_at`, [days, imf.id])).rows[0].trial_ends_at;
+    }
+    res.json({ ok: true, status, trial_ends_at: trialEnds });
+  } catch (e) { next(e); }
+});
+
+// --- Prolonger l'essai gratuit (30 jours par défaut) -----------------------
+router.post('/imfs/:id/extend-trial', async (req, res, next) => {
+  try {
+    const days = Math.max(1, Math.min(365, parseInt((req.body || {}).days, 10) || 30));
+    const row = (await q(
+      `UPDATE imf SET status='trial',
+             trial_started_at = COALESCE(trial_started_at, now()),
+             trial_ends_at = GREATEST(COALESCE(trial_ends_at, now()), now()) + ($1 || ' days')::interval
+        WHERE id=$2 RETURNING id, trial_ends_at`, [days, req.params.id]
+    )).rows[0];
+    if (!row) return res.status(404).json({ error: 'not_found' });
+    res.json({ ok: true, trial_ends_at: row.trial_ends_at, days });
+  } catch (e) { next(e); }
+});
+
+// --- Activer / désactiver l'accès d'un utilisateur IMF ---------------------
+router.post('/users/:id/toggle', async (req, res, next) => {
+  try {
+    const u = (await q('SELECT id, is_active FROM app_user WHERE id=$1', [req.params.id])).rows[0];
+    if (!u) return res.status(404).json({ error: 'not_found' });
+    const next = !u.is_active;
+    await q('UPDATE app_user SET is_active=$1 WHERE id=$2', [next, u.id]);
+    if (!next) await q('UPDATE session SET revoked=true WHERE user_id=$1', [u.id]);
+    res.json({ ok: true, is_active: next });
+  } catch (e) { next(e); }
+});
+
+// --- Journal des actions éditeur (audit) -----------------------------------
+router.get('/audit', async (_req, res, next) => {
+  try {
+    const { rows } = await q(
+      `SELECT ar.id, ar.decision, ar.decided_at, i.name AS imf_name, i.code_imf
+         FROM access_request ar JOIN imf i ON i.id = ar.imf_id
+        WHERE ar.decision IS NOT NULL
+        ORDER BY ar.decided_at DESC LIMIT 100`
+    );
+    res.json({ audit: rows });
+  } catch (e) { next(e); }
+});
+
+// --- Statistiques de la plateforme -----------------------------------------
+router.get('/stats', async (_req, res, next) => {
+  try {
+    const c = (await q(
+      `SELECT
+        (SELECT count(*) FROM imf) AS imfs,
+        (SELECT count(*) FROM imf WHERE status='trial') AS trials,
+        (SELECT count(*) FROM imf WHERE status='active') AS actives,
+        (SELECT count(*) FROM imf WHERE status='suspended') AS suspended,
+        (SELECT count(*) FROM access_request WHERE decision IS NULL AND proforma_validated) AS pending,
+        (SELECT count(*) FROM app_user) AS users`
+    )).rows[0];
+    res.json({ stats: c });
   } catch (e) { next(e); }
 });
 
