@@ -1,0 +1,54 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: teebo
+      POSTGRES_PASSWORD: teebo_change_me
+      POSTGRES_DB: teebo
+      TZ: Africa/Ouagadougou
+    volumes:
+      - teebo_pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teebo -d teebo"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # En production souveraine UEMOA : volume chiffré + sauvegardes locales.
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      DATABASE_URL: postgres://teebo:teebo_change_me@db:5432/teebo
+      CORS_ORIGIN: "true"
+      TEEBO_ADMIN_EMAIL: hello@teebo.africa
+      TEEBO_ADMIN_PASSWORD: ${TEEBO_ADMIN_PASSWORD:-Teebo#Admin2026}
+      TEEBO_WHATSAPP: "+22650321432"
+      TEEBO_EMAIL: hello@teebo.africa
+      # Google (obligatoire en production)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      # WhatsApp Business API (optionnel : sinon mode dégradé log)
+      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
+      WHATSAPP_PHONE_ID: ${WHATSAPP_PHONE_ID:-}
+      # SMTP e-mail (optionnel)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-teebo <no-reply@teebo.africa>}
+    volumes:
+      - ./frontend:/app/../frontend:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    # En production : placez un reverse-proxy TLS (Caddy/Nginx) devant ce service.
+
+volumes:
+  teebo_pgdata:

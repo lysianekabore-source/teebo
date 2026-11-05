@@ -1,0 +1,68 @@
+# ===================================================================
+# teebo - Deploiement automatique sur Render (https://render.com)
+#
+# IMPORTANT : ce fichier NE contient AUCUNE ligne "branch".
+# Render utilise alors la branche choisie dans l'interface (main).
+# C'est ce qui corrige l'erreur :
+#   "services[0].branch  branch principal could not be found"
+#
+# Etapes :
+#   1. Ce fichier doit etre a la RACINE du depot GitHub.
+#   2. Sur Render : New + > Blueprint > choisissez le depot, branche "main".
+#   3. Render cree : la base PostgreSQL + le serveur API.
+#   4. Renseignez TEEBO_ADMIN_PASSWORD (variable marquee "sync: false").
+# ===================================================================
+
+databases:
+  - name: teebo-db
+    databaseName: teebo
+    user: teebo
+    plan: free             # base PostgreSQL geree (offre gratuite)
+    region: frankfurt
+
+services:
+  - type: web
+    name: teebo-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    plan: free
+    region: frankfurt
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+      - key: HOST
+        value: 0.0.0.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: teebo-db
+          property: connectionString
+      - key: CORS_ORIGIN
+        value: "true"
+      - key: TEEBO_ADMIN_EMAIL
+        value: hello@teebo.africa
+      - key: TEEBO_ADMIN_PASSWORD
+        sync: false        # a saisir dans Render (mot de passe fort)
+      - key: TEEBO_WHATSAPP
+        value: "+22650321432"
+      - key: TEEBO_EMAIL
+        value: hello@teebo.africa
+      - key: GOOGLE_CLIENT_ID
+        sync: false        # optionnel
+      - key: WHATSAPP_TOKEN
+        sync: false        # optionnel (sinon mode degrade)
+      - key: WHATSAPP_PHONE_ID
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        value: "teebo <no-reply@teebo.africa>"
