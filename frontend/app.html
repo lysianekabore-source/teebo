@@ -21,6 +21,7 @@
     <button class="nav-item active" data-view="dash"><span class="ic">▤</span> Tableau de bord</button>
     <button class="nav-item" data-view="org"><span class="ic">⛬</span> Organisation</button>
     <button class="nav-item" data-view="users"><span class="ic">☺</span> Personnel</button>
+    <button class="nav-item" data-view="settings" id="nav-settings" hidden><span class="ic">⚙</span> Paramètres IMF</button>
     <div class="side__label">Sécurité &amp; accès</div>
     <button class="nav-item" data-view="security"><span class="ic">⛨</span> Mon accès</button>
     <a class="nav-item" href="/securite"><span class="ic">📱</span> Terminaux</a>
@@ -117,6 +118,71 @@
         </div>
         <p class="hint" style="margin-bottom:14px">Obligatoire pour tous les comptes teebo. À chaque connexion, un <b>code à 6 chiffres</b> généré par votre application d'authentification (Google Authenticator, Authy, FreeOTP…) sera demandé en plus du mot de passe.</p>
         <div id="twofa-body"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- PARAMÈTRES IMF -->
+    <section class="view" id="view-settings" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Paramètres IMF</h1>
+          <p>Identité visuelle et mentions légales reprises automatiquement sur les relevés et factures.</p>
+        </div>
+        <span id="settings-badge" class="tag tag--muted">…</span>
+      </div>
+
+      <div id="settings-readonly" class="alert alert--info" hidden>Ces paramètres sont consultables mais seuls l’administrateur IMF et la direction peuvent les modifier.</div>
+
+      <div class="grid grid--2">
+        <!-- Logo -->
+        <div class="card">
+          <h2 style="font-size:16px;margin-bottom:6px">Logo de l’IMF</h2>
+          <p class="hint" style="margin-bottom:14px">PNG, JPEG, WEBP ou SVG — 400 Ko maximum. Affiché sur l’en-tête des documents.</p>
+          <div class="logo-box">
+            <div class="logo-prev" id="logo-prev"><span class="logo-prev__ph" id="logo-ph">—</span></div>
+            <div class="logo-ctl">
+              <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden>
+              <button class="btn btn--dark btn--sm" id="btn-logo-pick" type="button">Choisir un fichier</button>
+              <button class="btn btn--ghost btn--sm" id="btn-logo-remove" type="button" hidden>Retirer le logo</button>
+              <p class="hint" id="logo-info"></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Prestataire + TVA -->
+        <div class="card">
+          <h2 style="font-size:16px;margin-bottom:6px">Facturation</h2>
+          <p class="hint" style="margin-bottom:14px">Prestataire de la solution et taux de TVA appliqué à vos factures.</p>
+          <dl id="supplier-info" style="display:grid;gap:8px;font-size:13px;margin-bottom:16px"></dl>
+          <div class="fld">
+            <label for="s-vat">Taux de TVA appliqué (%)</label>
+            <input id="s-vat" type="text" inputmode="decimal" placeholder="Laisser vide = TVA non applicable">
+            <p class="hint">Aucun taux par défaut : tant que ce champ est vide, les factures portent la mention « TVA non applicable ».</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mentions légales -->
+      <div class="card" style="margin-top:16px">
+        <h2 style="font-size:16px;margin-bottom:6px">Mentions légales obligatoires</h2>
+        <p class="hint" style="margin-bottom:16px">Reprises telles quelles sur le relevé de compte et les factures (proforma et définitive).</p>
+        <div class="grid grid--2">
+          <div class="fld"><label for="s-legal_name">Raison sociale</label><input id="s-legal_name" type="text" placeholder="Ex : Crédit Solidarité SA"></div>
+          <div class="fld"><label for="s-legal_form">Forme juridique</label>
+            <select id="s-legal_form"><option value="">Non précisée</option><option value="SA">SA — Société anonyme</option><option value="SCOOP">SCOOP — Coopérative</option></select></div>
+          <div class="fld"><label for="s-trade_register_no">RCCM</label><input id="s-trade_register_no" type="text" placeholder="Ex : BF-OUA-2024-B-1234"></div>
+          <div class="fld"><label for="s-tax_id">IFU / NIF</label><input id="s-tax_id" type="text" placeholder="Identifiant fiscal"></div>
+          <div class="fld"><label for="s-vat_number">N° contribuable / TVA</label><input id="s-vat_number" type="text" placeholder="Optionnel"></div>
+          <div class="fld"><label for="s-bceao_agreement_no">N° d’agrément BCEAO</label><input id="s-bceao_agreement_no" type="text" placeholder="Ex : 2024-XXX-IM-001"></div>
+          <div class="fld"><label for="s-share_capital">Capital social (FCFA)</label><input id="s-share_capital" type="text" inputmode="numeric" placeholder="Ex : 25 000 000"></div>
+          <div class="fld"><label for="s-legal_address">Siège social</label><input id="s-legal_address" type="text" placeholder="Adresse complète du siège"></div>
+        </div>
+        <div class="fld"><label for="s-bank_details">Coordonnées bancaires de règlement</label><textarea id="s-bank_details" rows="2" placeholder="Banque, IBAN / RIB, Mobile Money…"></textarea></div>
+        <div class="fld"><label for="s-footer_note">Note de pied de document</label><input id="s-footer_note" type="text" placeholder="Ex : Merci de votre confiance"></div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
+          <button class="btn btn--primary" id="btn-settings-save" type="button">Enregistrer les paramètres</button>
+          <a class="btn btn--ghost btn--sm" id="link-statement-demo" href="#" hidden>Aperçu d’un document</a>
+        </div>
       </div>
     </section>
   </main>

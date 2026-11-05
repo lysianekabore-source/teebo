@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { q, tx } from './db.js';
-import { generateSecret, verifyTotp, otpauthUri, generateRecoveryCodes, hashRecoveryCode } from './totp.js';
+import { generateSecret, verifyTotp, otpauthUri, generateRecoveryCodes, hashRecoveryCode, qrDataUrl } from './totp.js';
 import { hashToken } from './auth.js';
 
 /**
@@ -54,7 +54,9 @@ export async function startEnrollment(user) {
         SET secret_base32=EXCLUDED.secret_base32, enabled=false,
             confirmed_at=NULL, recovery_codes='{}', updated_at=now()`,
     [user.id, user.imf_id, secret]);
-  return { secret, otpauth_uri: uri, issuer: ISSUER };
+  // QR code généré LOCALEMENT (aucun appel réseau externe : conforme à la CSP
+  // stricte img-src 'self' data:). L'image est renvoyée au front en data URL.
+  return { secret, otpauth_uri: uri, qr_data_url: qrDataUrl(uri), issuer: ISSUER };
 }
 
 /**

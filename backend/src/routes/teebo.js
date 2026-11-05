@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { q, tx } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
 import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL } from '../notify.js';
+import { getBranding, renderInvoice } from '../documents.js';
 
 const router = express.Router();
 
@@ -53,6 +54,29 @@ router.post('/requests/:id/approve', async (req, res, next) => {
         `UPDATE access_request SET decision='approved', decided_by=$1, decided_at=now() WHERE id=$2`,
         [req.user.id, r.id]);
 
+      // FACTURE DÉFINITIVE : génération du numéro séquentiel (fn_gen_invoice_no)
+      // et enregistrement de la facture émise au nom de l'IMF. Le taux de TVA
+      // provient du paramétrage du tenant (imf_document_settings.vat_rate_bp) :
+      // s'il est NULL, la facture porte la mention « TVA non applicable ».
+      const amountCents = r.proforma_amount_cents || 0;
+      const setRow = (await c.query(
+        'SELECT vat_rate_bp FROM imf_document_settings WHERE imf_id=$1', [r.imf_id])).rows[0];
+      const vatBp = (setRow && setRow.vat_rate_bp != null) ? setRow.vat_rate_bp : 0;
+      const vatCents = vatBp ? Math.round(amountCents * vatBp / 10000) : 0;
+      const totalCents = amountCents + vatCents;
+      const invoiceNo = (await c.query('SELECT fn_gen_invoice_no() AS n')).rows[0].n;
+      const planRow = (await c.query('SELECT label FROM plan WHERE code=$1', [r.plan_code])).rows[0];
+      const inv = (await c.query(
+        `INSERT INTO invoice(imf_id, invoice_no, kind, request_id, plan_code, plan_label,
+             subtotal_cents, vat_rate_bp, vat_cents, total_cents, currency,
+             status, issued_at, proforma_no, created_by)
+         VALUES ($1,$2,'definitive',$3,$4,$5,$6,$7,$8,$9,'XOF','emise',now(),$10,$11)
+         RETURNING id, invoice_no`,
+        [r.imf_id, invoiceNo, r.id, r.plan_code,
+         'Abonnement teebo — ' + (planRow ? planRow.label : (r.plan_code || '')),
+         amountCents, vatBp, vatCents, totalCents, r.proforma_no, req.user.id]
+      )).rows[0];
+
       // Création de l'accès admin IMF avec un code d'accès (mot de passe à créer)
       const imf = (await c.query('SELECT code_imf, email, whatsapp, phone_main FROM imf WHERE id=$1', [r.imf_id])).rows[0];
       const code = (await c.query('SELECT fn_gen_user_code($1) AS c', [r.imf_id])).rows[0].c;
@@ -63,18 +87,52 @@ router.post('/requests/:id/approve', async (req, res, next) => {
          ON CONFLICT (imf_id,email) DO UPDATE SET code_user=EXCLUDED.code_user
          RETURNING id, code_user`, [r.imf_id, code, r.admin_name, r.requester_position, imf.email]
       )).rows[0];
-      return { code: user.code_user, imfCode: imf.code_imf, whatsapp: imf.whatsapp, email: imf.email };
+      return { code: user.code_user, imfCode: imf.code_imf, whatsapp: imf.whatsapp, email: imf.email,
+               invoiceId: inv.id, invoiceNo: inv.invoice_no, totalCents };
     });
 
     // Notification WhatsApp + e-mail à l'IMF (code d'accès + essai 30 jours)
     const msg = `teebo: votre accès à l'essai gratuit de 30 jours est approuvé. ` +
       `Code d'accès admin (IMF ${out.imfCode}) : ${out.code}. ` +
+      `Facture définitive ${out.invoiceNo} disponible dans votre espace. ` +
       `Connectez-vous et créez immédiatement votre mot de passe.`;
     await notifyWhatsApp(out.whatsapp, msg);
     await notifyEmail(out.email, 'Votre accès teebo est approuvé (essai 30 jours)', msg);
     await notifyWhatsApp(TEEBO_WHATSAPP, `Demande ${req.params.id} approuvée. Code admin: ${out.code}`);
 
-    res.json({ ok: true, code_user: out.code, imf_code: out.imfCode });
+    res.json({ ok: true, code_user: out.code, imf_code: out.imfCode,
+      invoice_no: out.invoiceNo, invoice_url: `/api/v1/teebo/invoices/${out.invoiceId}.pdf` });
+  } catch (e) { next(e); }
+});
+
+// --- Facture DÉFINITIVE imprimable (PDF via HTML) --------------------------
+router.get('/invoices/:id.pdf', async (req, res, next) => {
+  try {
+    const inv = (await q('SELECT * FROM invoice WHERE id=$1', [req.params.id])).rows[0];
+    if (!inv) return res.status(404).json({ error: 'invoice_not_found' });
+    const header = await getBranding(inv.imf_id);
+    const imf = (await q('SELECT name, email FROM imf WHERE id=$1', [inv.imf_id])).rows[0] || {};
+    const html = renderInvoice({
+      header,
+      kind: 'definitive',
+      invoiceNo: inv.invoice_no,
+      issuedAt: inv.issued_at,
+      dueAt: inv.due_at,
+      periodLabel: inv.period_label,
+      plan: inv.plan_label || inv.plan_code,
+      subtotalCents: inv.subtotal_cents,
+      discountCents: inv.discount_cents,
+      vatRateBp: inv.vat_rate_bp,
+      vatCents: inv.vat_cents,
+      totalCents: inv.total_cents,
+      currency: inv.currency,
+      status: inv.status,
+      amountPaidCents: inv.amount_paid_cents,
+      clientName: imf.name || header.legal_name,
+      clientCode: imf.email || '',
+      notes: inv.notes
+    });
+    res.type('html').send(html);
   } catch (e) { next(e); }
 });
 

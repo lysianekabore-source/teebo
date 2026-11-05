@@ -7,6 +7,54 @@
 
   var API = ''; // même origine en production
   var root = document.getElementById('wizard');
+
+  // --- Grille tarifaire (accueil) ---------------------------------------
+  // Les montants proviennent du paramétrage des formules (pas de valeur figée) ;
+  // un repli statique n'est utilisé que si l'API est injoignable au chargement.
+  var FALLBACK_TIERS = [
+    { code:'starter', label:'Starter', desc:'Pour les IMF qui démarrent leur digitalisation.',
+      price_cents:4500000, billing_cycle:'mensuel', max_agencies:3, max_users:15,
+      features:['3 agences','15 utilisateurs','Collecte mobile','Support e-mail'] },
+    { code:'business', label:'Business', desc:'Pour les IMF multi-agences en croissance.',
+      price_cents:12000000, billing_cycle:'mensuel', max_agencies:10, max_users:60,
+      features:['10 agences','60 utilisateurs','Collecte mobile','Reporting BCEAO','Support prioritaire'] },
+    { code:'enterprise', label:'Enterprise', desc:'Pour les réseaux et institutions matures.',
+      price_cents:35000000, billing_cycle:'mensuel', max_agencies:null, max_users:null,
+      features:['Agences illimitées','Utilisateurs illimités','Collecte mobile','Reporting BCEAO','Sécurité renforcée','Support dédié'] }
+  ];
+
+  function renderPricing(plans) {
+    var host = document.getElementById('pricing');
+    if (!host) return;
+    host.innerHTML = '';
+    if (!plans || !plans.length) {
+      host.appendChild(el('p', 'pricing__loading', 'Tarifs momentanément indisponibles. Contactez-nous : hello@teebo.africa'));
+      return;
+    }
+    plans.forEach(function (p, i) {
+      var feats = p.features;
+      if (typeof feats === 'string') { try { feats = JSON.parse(feats); } catch (_) { feats = []; } }
+      var best = i === 1;
+      var t = el('article', 'tier' + (best ? ' tier--best' : ''));
+      var caps = [];
+      if (p.max_agencies) caps.push(p.max_agencies + ' agences');
+      if (p.max_users) caps.push(p.max_users + ' utilisateurs');
+      t.innerHTML =
+        (best ? '<span class="tier__ribbon">Le plus choisi</span>' : '') +
+        '<div class="tier__name">' + esc(p.label || p.name) + '</div>' +
+        '<div class="tier__desc">' + esc(p.desc || p.description || '') + '</div>' +
+        '<div class="tier__price">' + money(p.price_cents) + '</div>' +
+        '<div class="tier__cycle">/ ' + esc(p.billing_cycle || 'mensuel') + '</div>' +
+        (caps.length ? '<div class="tier__cap">' + esc(caps.join(' · ')) + '</div>' : '') +
+        '<ul>' + (feats || []).map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul>' +
+        '<a class="btn ' + (best ? '' : 'btn--primary') + '" href="#inscription">Demander un accès</a>';
+      host.appendChild(t);
+    });
+  }
+
+  // Rendu immédiat de la grille tarifaire (repli), puis affinage via l'API.
+  renderPricing(FALLBACK_TIERS);
+
   if (!root) return;
 
   var state = {
@@ -302,6 +350,18 @@
       '</table>';
     panel.appendChild(box);
 
+    // Lien vers la facture proforma imprimable (PDF via HTML) — ouverte dans
+    // un nouvel onglet, avec logo + mentions légales de l'IMF.
+    if (p.url) {
+      var dl = el('p', 'panel__hint');
+      dl.style.marginTop = '14px';
+      var a = el('a'); a.href = p.url; a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = 'Télécharger / imprimer la facture proforma (PDF)';
+      a.style.cssText = 'color:var(--navy);font-weight:700;text-decoration:underline';
+      dl.appendChild(a);
+      panel.appendChild(dl);
+    }
+
     var nav = el('div', 'wiz__nav');
     var back = el('button', 'btn btn--ghost', 'Retour'); back.type = 'button';
     back.style.color = 'var(--ink)'; back.style.borderColor = 'var(--line)';
@@ -325,7 +385,30 @@
     panel.appendChild(el('h3', null, 'Demande transmise à teebo'));
     panel.appendChild(el('p', null, 'Votre facture proforma a bien été validée. L’équipe teebo va approuver votre demande d’accès.'));
     panel.appendChild(el('p', null, 'Une fois approuvée, vous recevrez votre <b>code d’accès administrateur</b> par WhatsApp ou e-mail, avec un <b>essai gratuit de 30 jours calendaires</b>. À la première connexion, vous créerez votre propre mot de passe.'));
+
+    // Prochaines étapes claires (optimisation du parcours après le clic).
+    var steps = el('ol', 'done__next');
+    steps.innerHTML =
+      '<li><b>1.</b> teebo examine et approuve votre demande.</li>' +
+      '<li><b>2.</b> Vous recevez votre code d’accès (WhatsApp / e-mail).</li>' +
+      '<li><b>3.</b> Vous vous connectez et créez votre mot de passe.</li>' +
+      '<li><b>4.</b> Votre facture définitive est émise dans votre espace.</li>';
+    panel.appendChild(steps);
+
+    var ref = state.proforma && state.proforma.no;
+    if (ref) panel.appendChild(el('div', 'ref', 'Facture proforma : ' + esc(ref)));
     panel.appendChild(el('div', 'ref', 'Référence IMF : ' + esc((state.imf && state.imf.imf_code) || '')));
+
+    var actions = el('div', 'done__actions');
+    if (state.proforma && state.proforma.url) {
+      var a = el('a', 'btn btn--ghost'); a.href = state.proforma.url; a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = 'Télécharger ma facture proforma';
+      a.style.color = 'var(--ink)'; a.style.borderColor = 'var(--line)';
+      actions.appendChild(a);
+    }
+    var home = el('a', 'btn btn--primary'); home.href = '/login'; home.textContent = 'Accéder à la connexion';
+    actions.appendChild(home);
+    panel.appendChild(actions);
     return panel;
   }
 
@@ -355,6 +438,7 @@
     state.countries = (res[0] && res[0].countries) || [];
     state.plans = (res[1] && res[1].plans) || [];
     if (!state.countries.length) state.countries = FALLBACK_COUNTRIES;
+    if (state.plans.length) renderPricing(state.plans);
     render();
   }).catch(function () {
     state.countries = FALLBACK_COUNTRIES;

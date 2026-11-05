@@ -1,6 +1,7 @@
 import express from 'express';
 import { q, tx } from '../db.js';
 import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL } from '../notify.js';
+import { getBranding, renderInvoice, moneyFcfa } from '../documents.js';
 
 const router = express.Router();
 
@@ -55,6 +56,23 @@ router.post('/', async (req, res, next) => {
          VALUES ($1,$2,$3,$4,$5) RETURNING id`,
         [imf.id, b.lastname, b.firstname, b.position, b.admin_name]
       )).rows[0];
+      // Répercussion automatique des informations saisies sur les PARAMÈTRES de
+      // l'IMF (identité visuelle + mentions légales obligatoires) : elles seront
+      // reprises telles quelles sur les factures et le relevé de compte, et
+      // resteront modifiables par l'admin de l'IMF une fois son accès ouvert.
+      await c.query(
+        `INSERT INTO imf_branding(imf_id, legal_name, legal_form, bceao_agreement_no,
+             share_capital_cents, legal_address)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (imf_id) DO UPDATE SET
+             legal_name         = COALESCE(imf_branding.legal_name, EXCLUDED.legal_name),
+             legal_form         = COALESCE(imf_branding.legal_form, EXCLUDED.legal_form),
+             bceao_agreement_no = COALESCE(imf_branding.bceao_agreement_no, EXCLUDED.bceao_agreement_no),
+             share_capital_cents= COALESCE(imf_branding.share_capital_cents, EXCLUDED.share_capital_cents),
+             legal_address      = COALESCE(imf_branding.legal_address, EXCLUDED.legal_address),
+             updated_at         = now()`,
+        [imf.id, b.imf_name, b.imf_type, b.bceao_agreement_no, Number(b.capital_cents) || 0,
+         [b.city, b.country_code].filter(Boolean).join(', ')]);
       return { imf, requestId: reqRow.id };
     });
     res.json({ ok: true, imf_code: out.imf.code_imf, imf_id: out.imf.id, request_id: out.requestId });
@@ -75,10 +93,44 @@ router.post('/:id/select-plan', async (req, res, next) => {
       [plan.code, proformaNo, plan.price_cents, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'request_not_found' });
+    const r = rows[0];
+    const imf = (await q('SELECT * FROM imf WHERE id=$1', [r.imf_id])).rows[0];
     res.json({ ok: true, proforma: {
-      no: proformaNo, plan: plan.label, amount_cents: plan.price_cents,
-      billing_cycle: plan.billing_cycle, trial_days: 30
+      no: proformaNo, plan: plan.label, plan_code: plan.code,
+      amount_cents: plan.price_cents,
+      billing_cycle: plan.billing_cycle, trial_days: 30,
+      imf_name: imf ? imf.name : null,
+      date: new Date().toISOString(),
+      url: `/api/v1/requests/${r.id}/proforma.pdf`
     }});
+  } catch (e) { next(e); }
+});
+
+// --- Facture PROFORMA imprimable (PDF via HTML) ----------------------------
+// Numéro de proforma : PRO-AAAA-XXXXXX. Visible par le prospect au moment du
+// choix de la formule, puis validée pour transmission à teebo.
+router.get('/:id/proforma.pdf', async (req, res, next) => {
+  try {
+    const r = (await q('SELECT * FROM access_request WHERE id=$1', [req.params.id])).rows[0];
+    if (!r || !r.proforma_no) return res.status(404).json({ error: 'proforma_not_found' });
+    const imf = (await q('SELECT * FROM imf WHERE id=$1', [r.imf_id])).rows[0];
+    const header = await getBranding(r.imf_id);
+    const plan = (await q('SELECT * FROM plan WHERE code=$1', [r.plan_code])).rows[0];
+    const amount = r.proforma_amount_cents || (plan ? plan.price_cents : 0);
+    const html = renderInvoice({
+      header,
+      kind: 'proforma',
+      invoiceNo: r.proforma_no,
+      issuedAt: r.created_at || new Date(),
+      plan: 'Abonnement teeBo — ' + (plan ? plan.label : (r.plan_code || '')),
+      subtotalCents: amount,
+      totalCents: amount,
+      currency: 'XOF',
+      status: r.proforma_validated ? 'emise' : null,
+      clientName: imf ? imf.name : (header.legal_name || 'IMF'),
+      clientCode: header.imf.email || ''
+    });
+    res.type('html').send(html);
   } catch (e) { next(e); }
 });
 

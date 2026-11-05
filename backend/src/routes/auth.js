@@ -124,7 +124,8 @@ router.post('/2fa/enroll/start', authenticate, async (req, res, next) => {
   try {
     const out = await startEnrollment({ id: req.user.id, imf_id: req.user.imf_id,
       email: req.user.email, code_user: req.user.code_user, full_name: req.user.full_name });
-    res.json({ ok: true, secret: out.secret, otpauth_uri: out.otpauth_uri, issuer: out.issuer,
+    res.json({ ok: true, secret: out.secret, otpauth_uri: out.otpauth_uri,
+      qr_data_url: out.qr_data_url, issuer: out.issuer,
       message: 'Scannez le QR ou saisissez la clé dans votre application, puis confirmez avec un code.' });
   } catch (e) { next(e); }
 });

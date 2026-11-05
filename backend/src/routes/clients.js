@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { q, tx } from '../db.js';
 import { requireRole } from '../auth.js';
+import { getBranding, renderStatement } from '../documents.js';
 import { findClientDuplicate, logDuplicate, normalizeClientFields, clientHasActiveAccount } from '../collecte_extra.js';
 
 const r = Router();
@@ -97,36 +98,40 @@ r.post('/clients', requireRole('admin_imf','direction','department','service','a
 });
 
 /** Relevé de compte du client (format PDF renvoyé en HTML imprimable, ou CSV). */
-r.get('/clients/:id/statement', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res) => {
-  const fmt = (req.query.format || 'pdf').toLowerCase();
-  const cl = (await q('SELECT * FROM client WHERE id=$1 AND imf_id=$2',
-    [req.params.id, req.user.imf_id])).rows[0];
-  if (!cl) return res.status(404).json({ error: 'Client introuvable' });
-  const acc = (await q('SELECT * FROM account WHERE client_id=$1', [cl.id])).rows[0];
-  const ops = (await q(
-    `SELECT created_at, kind, amount_cents, status, direction, impacts_agent_cash
-       FROM operation WHERE account_id=$1 ORDER BY created_at DESC LIMIT 100`,
-    [acc ? acc.id : null])).rows;
+r.get('/clients/:id/statement', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
+  try {
+    const fmt = (req.query.format || 'pdf').toLowerCase();
+    const cl = (await q('SELECT * FROM client WHERE id=$1 AND imf_id=$2',
+      [req.params.id, req.user.imf_id])).rows[0];
+    if (!cl) return res.status(404).json({ error: 'Client introuvable' });
+    const acc = (await q('SELECT * FROM account WHERE client_id=$1', [cl.id])).rows[0];
+    const ops = (await q(
+      `SELECT o.created_at, o.kind, o.amount_cents, o.status, o.direction,
+              o.reference, o.receipt_id, r.code_receipt
+         FROM operation o LEFT JOIN receipt r ON r.id = o.receipt_id
+        WHERE o.account_id=$1 ORDER BY o.created_at DESC LIMIT 200`,
+      [acc ? acc.id : null])).rows
+      .map((o) => ({ ...o,
+        label: o.kind === 'depot' ? 'Dépôt' : (o.kind === 'retrait_regul' ? 'Retrait (régularisation)' : o.kind),
+        reference: o.reference || o.code_receipt || null }));
 
-  if (fmt === 'csv') {
-    const lines = ['date;type;montant_xof;statut'];
-    for (const o of ops) lines.push(`${o.created_at.toISOString()};${o.kind};${(o.amount_cents / 100).toFixed(2)};${o.status}`);
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="releve_${cl.code_client}.csv"`);
-    return res.send(lines.join('\n'));
-  }
-  // PDF : renvoyé en HTML prêt à imprimer (le client imprime en PDF).
-  const rowsHtml = ops.map(o => `<tr><td>${o.created_at.toISOString().slice(0, 10)}</td><td>${o.kind}</td>
-    <td style="text-align:right">${(o.amount_cents / 100).toLocaleString('fr-FR')} ${acc.currency}</td><td>${o.status}</td></tr>`).join('');
-  res.type('html').send(`<!doctype html><html lang="fr"><head><meta charset="utf-8">
-    <title>Relevé ${cl.code_client}</title><style>body{font-family:system-ui,Arial;color:#0b0c26;padding:32px}
-    table{width:100%;border-collapse:collapse;margin-top:16px}th,td{border-bottom:1px solid #e6e6ef;padding:8px;font-size:14px}
-    h1{font-size:20px}.m{color:#6b7280}</style></head><body>
-    <h1>Relevé de compte — ${cl.full_name}</h1>
-    <div class="m">Client ${cl.code_client} · Compte ${acc ? acc.code_account : 'n/a'}</div>
-    <div class="m">Solde : <strong>${acc ? (acc.balance_cents / 100).toLocaleString('fr-FR') : 0} ${acc ? acc.currency : 'XOF'}</strong></div>
-    <table><thead><tr><th>Date</th><th>Type</th><th>Montant</th><th>Statut</th></tr></thead><tbody>${rowsHtml || '<tr><td colspan=4>Aucune opération</td></tr>'}</tbody></table>
-    <p class="m">Édité par teebo le ${new Date().toLocaleDateString('fr-FR')}</p></body></html>`);
+    if (fmt === 'csv') {
+      const lines = ['date;operation;reference;montant_xof;statut'];
+      for (const o of ops) lines.push([o.created_at.toISOString(), o.label, o.reference || '',
+        (o.amount_cents / 100).toFixed(2), o.status].join(';'));
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="releve_${cl.code_client}.csv"`);
+      return res.send('\ufeff' + lines.join('\n'));
+    }
+
+    // PDF : HTML imprimable avec l'identité visuelle de l'IMF (logo + mentions légales).
+    const header = await getBranding(req.user.imf_id);
+    const html = renderStatement({
+      header, client: cl, account: acc || null, operations: ops,
+      generatedAt: new Date(), generatedBy: req.user.full_name
+    });
+    res.type('html').send(html);
+  } catch (e) { next(e); }
 });
 
 /**

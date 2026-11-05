@@ -40,15 +40,16 @@
   }
 
   // ----- Navigation -----
-  var VIEWS = ['dash', 'org', 'users', 'security'];
+  var VIEWS = ['dash', 'org', 'users', 'settings', 'security'];
   document.querySelectorAll('.nav-item').forEach(function (b) {
     b.addEventListener('click', function () { switchView(b.dataset.view); });
   });
   function switchView(v) {
-    VIEWS.forEach(function (x) { $('view-' + x).hidden = x !== v; });
+    VIEWS.forEach(function (x) { var n = $('view-' + x); if (n) n.hidden = x !== v; });
     document.querySelectorAll('.nav-item').forEach(function (b) { b.classList.toggle('active', b.dataset.view === v); });
     if (v === 'org') loadUnits();
     if (v === 'users') loadUsers();
+    if (v === 'settings') loadSettings();
     if (v === 'security') renderSession();
   }
 
@@ -226,10 +227,12 @@
     var host = $('twofa-body');
     host.innerHTML = '<div class="empty">Préparation…</div>';
     api('/api/v1/auth/2fa/enroll/start', 'POST', {}).then(function (d) {
-      var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=190x190&data=' + encodeURIComponent(d.otpauth_uri);
+      // QR code généré par le SERVEUR (data URL, 100 % local) : aucune requête
+      // vers un service externe, compatible avec la politique de sécurité CSP.
+      var qr = d.qr_data_url || '';
       host.innerHTML =
         '<div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start">' +
-        '<div style="text-align:center"><img src="' + qr + '" width="190" height="190" alt="QR d\'enrôlement" style="border:1px solid var(--line);border-radius:12px;background:#fff"></div>' +
+        '<div style="text-align:center"><img src="' + esc(qr) + '" width="190" height="190" alt="QR d\'enrôlement" style="border:1px solid var(--line);border-radius:12px;background:#fff"></div>' +
         '<div style="flex:1;min-width:240px">' +
         '<p style="font-size:13.5px;margin-bottom:8px">1. Installez <b>Google Authenticator</b>, <b>Authy</b> ou <b>FreeOTP</b> sur votre téléphone.</p>' +
         '<p style="font-size:13.5px;margin-bottom:8px">2. Scannez ce QR code (ou saisissez la clé ci-dessous).</p>' +
@@ -285,12 +288,139 @@
   });
   $('btn-new-user').addEventListener('click', function () { if (!units.length) { notify('Créez d’abord votre organisation.', 'err'); return; } userModal(); });
 
+  // ----- Paramètres IMF (identité visuelle + mentions légales + TVA) -----
+  var settingsCanEdit = false;
+  var logoDraft = null;   // data URL en attente d'enregistrement
+
+  function loadSettings() {
+    return api('/api/v1/org-settings').then(function (d) {
+      var s = d.settings || {};
+      settingsCanEdit = !!d.can_edit;
+      // Champs texte
+      set('s-legal_name', s.legal_name); set('s-legal_form', s.legal_form);
+      set('s-trade_register_no', s.trade_register_no); set('s-tax_id', s.tax_id);
+      set('s-vat_number', s.vat_number); set('s-bceao_agreement_no', s.bceao_agreement_no);
+      set('s-legal_address', s.legal_address); set('s-bank_details', s.bank_details);
+      set('s-footer_note', s.footer_note);
+      $('s-share_capital').value = s.share_capital_cents != null ? fmtAmount(s.share_capital_cents / 100) : '';
+      // TVA : points de base -> pourcentage lisible (vide = non applicable)
+      $('s-vat').value = d.vat_rate_bp != null ? String(d.vat_rate_bp / 100).replace('.', ',') : '';
+      // Prestataire
+      var sup = d.supplier || {};
+      $('supplier-info').innerHTML =
+        row('Prestataire', sup.name) + row('Adresse', [sup.address, sup.address2].filter(Boolean).join(' — ')) +
+        row('Téléphone', sup.tel) + row('E-mail', sup.email);
+      // Logo actuel
+      logoDraft = null;
+      renderLogo(s.logo_data_url);
+      $('btn-logo-remove').hidden = !s.logo_data_url || !settingsCanEdit;
+      $('logo-info').textContent = '';
+      // Droits d'édition
+      $('settings-badge').className = 'tag ' + (settingsCanEdit ? 'tag--ok' : 'tag--muted');
+      $('settings-badge').textContent = settingsCanEdit ? 'Modifiable' : 'Lecture seule';
+      $('settings-readonly').hidden = settingsCanEdit;
+      ['s-legal_name','s-legal_form','s-trade_register_no','s-tax_id','s-vat_number','s-bceao_agreement_no',
+       's-share_capital','s-legal_address','s-bank_details','s-footer_note','s-vat',
+       'btn-logo-pick','btn-settings-save'].forEach(function (id) {
+        var e = $(id); if (e) e.disabled = !settingsCanEdit;
+      });
+      // Aperçu d'un document (relevé client) si un client existe — lien facultatif.
+      var link = $('link-statement-demo');
+      if (link) link.hidden = true;
+      return d;
+    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+
+  function row(k, v) { return '<div><span>' + esc(k) + '</span><b>' + esc(v || '—') + '</b></div>'; }
+  function set(id, v) { var e = $(id); if (e) e.value = v == null ? '' : v; }
+  function fmtAmount(v) { return Number(v || 0).toLocaleString('fr-FR'); }
+
+  function renderLogo(dataUrl) {
+    var prev = $('logo-prev');
+    if (dataUrl) {
+      prev.innerHTML = '';
+      var img = document.createElement('img'); img.alt = 'Logo de l’IMF'; img.src = dataUrl;
+      prev.appendChild(img);
+    } else {
+      var ini = ($('s-legal_name').value || (me && me.imf_name) || 'IMF').trim().slice(0, 2).toUpperCase();
+      prev.innerHTML = '<span class="logo-prev__ph">' + esc(ini || '—') + '</span>';
+    }
+  }
+
+  function readLogoFile(file) {
+    if (!file) return;
+    var ok = ['image/png','image/jpeg','image/jpg','image/webp','image/svg+xml'];
+    if (ok.indexOf(file.type) < 0) { notify('Format d’image non autorisé (PNG, JPEG, WEBP ou SVG).', 'err'); return; }
+    if (file.size > 400 * 1024) { notify('Le logo dépasse 400 Ko. Réduisez-le puis réessayez.', 'err'); return; }
+    var r = new FileReader();
+    r.onload = function () {
+      logoDraft = String(r.result);
+      renderLogo(logoDraft);
+      $('logo-info').textContent = file.name + ' — ' + Math.round(file.size / 1024) + ' Ko (à enregistrer)';
+      $('btn-logo-remove').hidden = false;
+    };
+    r.readAsDataURL(file);
+  }
+
+  function saveSettings() {
+    if (!settingsCanEdit) return;
+    var vat = $('s-vat').value.trim();
+    var vatBp = null;
+    if (vat !== '') {
+      var n = Number(vat.replace(',', '.'));
+      if (isNaN(n) || n < 0 || n > 100) { notify('Taux de TVA invalide (0 à 100).', 'err'); return; }
+      vatBp = Math.round(n * 100);
+    }
+    var capRaw = $('s-share_capital').value.replace(/[^0-9]/g, '');
+    var body = {
+      legal_name: $('s-legal_name').value.trim(), legal_form: $('s-legal_form').value,
+      trade_register_no: $('s-trade_register_no').value.trim(), tax_id: $('s-tax_id').value.trim(),
+      vat_number: $('s-vat_number').value.trim(), bceao_agreement_no: $('s-bceao_agreement_no').value.trim(),
+      legal_address: $('s-legal_address').value.trim(), bank_details: $('s-bank_details').value.trim(),
+      footer_note: $('s-footer_note').value.trim(),
+      share_capital_cents: capRaw ? Number(capRaw) * 100 : null,
+      vat_rate_bp: vatBp
+    };
+    if (logoDraft) body.logo_data_url = logoDraft;
+    var btn = $('btn-settings-save'); btn.disabled = true; var old = btn.textContent; btn.textContent = 'Enregistrement…';
+    api('/api/v1/org-settings', 'POST', body).then(function () {
+      btn.disabled = false; btn.textContent = old;
+      notify('Paramètres enregistrés. L’identité apparaîtra sur les relevés et factures.', 'ok');
+      loadSettings();
+    }).catch(function (e) {
+      btn.disabled = false; btn.textContent = old;
+      notify(e.message === 'logo_too_large' ? 'Le logo dépasse 400 Ko.' : fr(e), 'err');
+    });
+  }
+
+  function removeLogo() {
+    if (!settingsCanEdit) return;
+    api('/api/v1/org-settings/logo', 'DELETE').then(function () {
+      logoDraft = null; renderLogo(null); $('logo-info').textContent = '';
+      $('btn-logo-remove').hidden = true; notify('Logo retiré.', 'ok');
+    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+
+  function initSettingsHandlers() {
+    var pick = $('btn-logo-pick'), file = $('logo-file');
+    if (!pick || !file) return;
+    pick.addEventListener('click', function () { file.click(); });
+    file.addEventListener('change', function () { readLogoFile(file.files && file.files[0]); file.value = ''; });
+    $('btn-logo-remove').addEventListener('click', removeLogo);
+    $('btn-settings-save').addEventListener('click', saveSettings);
+    var ln = $('s-legal_name'); if (ln) ln.addEventListener('input', function () { if (!logoDraft) renderLogo(null); });
+  }
+
   // ----- Démarrage -----
   api('/api/v1/auth/me').then(function (d) {
     me = d;
     if (d.password_change_required) { window.location.assign('/login.html'); return; }
     $('u-name').textContent = d.user.full_name;
     $('u-code').textContent = d.user.code_user + ' · ' + (d.imf_code || '');
+    // Paramètres IMF : accessible à l'admin et à la direction.
+    var canSee = ['admin_imf', 'direction'].indexOf(d.user.role) >= 0;
+    var navS = $('nav-settings'); if (navS) navS.hidden = !canSee;
+    initSettingsHandlers();
     return Promise.all([loadUnits(), loadUsers(), loadTrial()]);
   }).then(function () {
     renderDash(); renderSession();

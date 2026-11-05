@@ -12,6 +12,7 @@ import { authenticate, requireFreshPassword, requireRole, createSession } from '
 import authRoutes from './routes/auth.js';
 import requestRoutes from './routes/requests.js';
 import orgRoutes from './routes/org.js';
+import settingsRoutes from './routes/settings.js';
 import teeboRoutes from './routes/teebo.js';
 import deviceRoutes from './routes/devices.js';
 import operationRoutes from './routes/operations.js';
@@ -45,7 +46,7 @@ app.use(helmet({
   crossOriginOpenerPolicy: { policy: 'same-origin' }
 }));
 app.use(cors({ origin: process.env.CORS_ORIGIN || true, credentials: true }));
-app.use(express.json({ limit: '256kb' }));
+app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
 // Limitation des tentatives (anti brute-force)
@@ -57,6 +58,7 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/requests', requestRoutes);       // parcours prospect (public)
 app.use('/api/v1/teebo', teeboRoutes);             // tableau de bord teebo (admin)
 app.use('/api/v1', orgRoutes);                     // hiérarchie (authentifié)
+app.use('/api/v1', settingsRoutes);                // paramètres IMF (branding + mentions légales)
 app.use('/api/v1', deviceRoutes);                  // terminaux + alertes sécurité
 app.use('/api/v1', operationRoutes);               // opérations terrain + crédit
 // Enrôlement clients / ouverture de compte / chaîne de collecte : monté AVANT
