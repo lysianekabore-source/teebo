@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0b0c26">
+<meta name="robots" content="noindex,nofollow">
+<title>teebo terrain — collectrice</title>
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="stylesheet" href="assets/terrain.css">
+</head>
+<body>
+
+<!-- ÉCRAN DE CONNEXION (identifiant + PIN numérique, appareil couplé) -->
+<div class="auth-wrap" id="scr-login">
+  <div class="auth-card">
+    <div class="logo">B</div>
+    <h1>teebo terrain</h1>
+    <p class="sub">Application de collecte de proximité</p>
+    <p class="slogan">La finance à visage humain</p>
+    <div id="login-alert" class="alert alert--err" hidden></div>
+    <form id="form-login" novalidate>
+      <div class="fld">
+        <label for="identifier">Identifiant collectrice</label>
+        <input id="identifier" inputmode="text" autocapitalize="none" autocomplete="username" required placeholder="Nom d'utilisateur">
+      </div>
+      <div class="fld">
+        <label for="pin">Code PIN (numérique)</label>
+        <input id="pin" class="pin" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" required placeholder="••••">
+      </div>
+      <button class="btn btn--primary" type="submit" id="btn-login">Se connecter</button>
+    </form>
+    <p class="hint" style="text-align:center;color:#61647c;font-size:12px;margin-top:16px">
+      Ce terminal doit être pré-enrôlé par votre institution (nom, date de naissance, IMEI, MAC).
+      Un appareil inconnu est immédiatement bloqué.</p>
+    <p class="hint" style="text-align:center;color:#9aa0b4;font-size:11.5px;margin-top:12px">
+      teeBo — La finance à visage humain</p>
+    <div class="alert alert--info" style="margin-top:14px;font-size:12px">
+      Terminal : <b id="self-imei">détection…</b><br>MAC : <b id="self-mac">détection…</b>
+    </div>
+  </div>
+</div>
+
+<!-- ÉCRAN BLOQUÉ (appareil non reconnu / révoqué) -->
+<div class="phone" id="scr-blocked" hidden>
+  <div class="appbar"><div class="mark">B</div><div><b>teebo terrain</b><small>Accès bloqué</small></div></div>
+  <div class="pad">
+    <div class="blocked">
+      <div class="lock">⛔</div>
+      <h2 id="blocked-title">Terminal non reconnu</h2>
+      <p id="blocked-msg">Cet appareil n'est pas enrôlé pour votre institution. L'accès a été bloqué et une alerte prioritaire a été transmise à votre superviseur.</p>
+      <p style="font-size:12px;color:#9aa0b4">IMEI : <span id="blocked-imei">—</span><br>MAC : <span id="blocked-mac">—</span></p>
+      <a class="btn btn--dark" href="#" id="btn-retry" style="margin-top:14px">Réessayer</a>
+    </div>
+  </div>
+</div>
+
+<!-- APPLICATION TERRAIN (5 actions) -->
+<div class="phone" id="scr-app" hidden>
+  <header class="appbar">
+    <div class="mark">B</div>
+    <div><b id="who-name">Collectrice</b><small id="who-device">Terminal couplé</small></div>
+    <div class="spacer"></div>
+    <button class="logout" id="btn-logout">Quitter</button>
+  </header>
+  <div class="pad">
+    <div id="app-alert" class="alert" hidden></div>
+
+    <div class="alert alert--err" id="cash-banner" hidden></div>
+
+    <div class="hero-card">
+      <small>Ma caisse aujourd'hui</small>
+      <b id="cash-total">0 XOF</b>
+      <small id="cash-sub">Dépôts encaissés · régularisations guichet exclues</small>
+    </div>
+
+    <div class="kpi-row">
+      <div class="kpi"><b id="kpi-depots">0</b><span>Dépôts du jour</span></div>
+      <div class="kpi"><b id="kpi-attente">0</b><span>En attente validation</span></div>
+    </div>
+
+    <!-- TOURNÉE DU JOUR : vue par défaut à la connexion de la collectrice -->
+    <section id="round-widget">
+      <h3 style="font-size:15px;margin:22px 0 10px">🗺️ Ma tournée du jour
+        <span id="round-count" style="font-weight:400;color:#61647c;font-size:12.5px"></span></h3>
+      <p id="round-pos" style="font-size:12px;color:#61647c;margin:0 0 10px">Position actuelle : <b id="round-pos-txt">localisation en cours…</b></p>
+
+      <div class="round-kpis" id="round-kpis">
+        <div class="kpi"><b id="kpi-visits">0</b><span>Visités aujourd'hui</span></div>
+        <div class="kpi"><b id="kpi-frozen">0</b><span>Clients gelés</span></div>
+        <div class="kpi"><b id="kpi-overdue">0</b><span>En retard (&gt;15 j)</span></div>
+        <div class="kpi"><b id="kpi-expl">0</b><span>Explications demandées</span></div>
+      </div>
+      <p class="round-note">Un client déjà visité aujourd'hui est retiré de la liste. Les clients non visités remontent en première position. Un client sans visite pendant 1 mois est gelé automatiquement.</p>
+
+      <div class="round-search">
+        <input id="round-q" type="search" placeholder="Rechercher un client (nom, code, téléphone)…" autocomplete="off" enterkeyhint="search">
+        <button id="round-q-go" class="btn btn--primary" type="button">Rechercher</button>
+      </div>
+      <p id="round-search-hint" style="font-size:11.5px;color:#9aa0b4;margin:6px 0 0" hidden></p>
+
+      <div class="list" id="round-list"><div class="empty">Chargement de votre tournée…</div></div>
+      <div class="list" id="round-search-list"></div>
+
+      <details class="frozen-box" id="frozen-box">
+        <summary>❄️ Clients gelés <span id="frozen-count" class="badge-count" hidden>0</span></summary>
+        <div class="list" id="frozen-list"><div class="empty">Aucun client gelé.</div></div>
+      </details>
+    </section>
+
+    <div class="actions" id="actions">
+      <button class="action" data-act="deposit"><div class="ic">💵</div><div><b>Enregistrer un dépôt</b><small>Encaissement au nom du client</small></div><span class="chev">›</span></button>
+      <button class="action" data-act="cancel"><div class="ic">↩️</div><div><b>Demander une annulation</b><small>Validée par le superviseur</small><span class="badge-count" id="badge-cancel" hidden>0</span></div><span class="chev">›</span></button>
+      <button class="action" data-act="guichet"><div class="ic">🏦</div><div><b>Régularisation guichet</b><small>Impacte le client, pas ma caisse</small></div><span class="chev">›</span></button>
+      <button class="action" data-act="credit"><div class="ic">📄</div><div><b>Demande de crédit</b><small>Formulaire complet pour le client</small></div><span class="chev">›</span></button>
+      <button class="action" data-act="request"><div class="ic">📝</div><div><b>Nouvelle demande</b><small>Relevé, attestation, chéquier…</small></div><span class="chev">›</span></button>
+      <button class="action" data-act="clientspace"><div class="ic">👤</div><div><b>Créer un espace client</b><small>Accès en ligne au relevé</small></div><span class="chev">›</span></button>
+      <button class="action" data-act="remit"><div class="ic">💸</div><div><b>Faire un versement</b><small>Sans attendre le plafond</small></div><span class="chev">›</span></button>
+      <button class="action" data-act="settings"><div class="ic">⚙️</div><div><b>Paramètres de collecte</b><small>Plafonds &amp; SMS client (admin IMF)</small></div><span class="chev">›</span></button>
+    </div>
+
+    <h3 style="font-size:15px;margin:22px 0 10px">Mes dernières opérations</h3>
+    <div class="list" id="ops-list"><div class="empty">Chargement…</div></div>
+  </div>
+</div>
+
+<div id="sheet-root"></div>
+<div id="receipt-root"></div>
+<script src="assets/terrain.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0b0c26">
+<meta name="robots" content="noindex,nofollow">
+<title>Documentation — teebo</title>
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="side__brand"><img src="assets/teebo-icon.png" width="34" height="34" alt=""><span>tee<b>B</b>o</span></div>
+    <div class="side__label">Pilotage</div>
+    <a class="nav-item" href="/app"><span class="ic">▤</span> Tableau de bord</a>
+    <a class="nav-item" href="/app#org"><span class="ic">⛬</span> Organisation</a>
+    <a class="nav-item" href="/securite"><span class="ic">⛨</span> Terminaux &amp; sécurité</a>
+    <a class="nav-item" href="/autorisations"><span class="ic">⇄</span> Autorisations</a>
+    <div class="side__label">Compte</div>
+    <a class="nav-item" href="/essai"><span class="ic">⏳</span> Essai &amp; échéances</a>
+    <a class="nav-item active" href="/documentation"><span class="ic">📘</span> Documentation</a>
+    <div class="side__spacer"></div>
+    <div class="side__user"><b id="u-name">…</b><small id="u-code">…</small>
+      <a class="btn btn--ghost btn--sm" href="/login" style="margin-top:10px;width:100%">Déconnexion</a></div>
+  </aside>
+  <main class="main">
+    <div class="topbar"><div><h1>Documentation</h1><p>Références pour paramétrer l'espace client et instruire les demandes de crédit.</p></div></div>
+
+    <div class="card">
+      <h2 style="font-size:16px;margin-bottom:12px">Modes de connexion du client</h2>
+      <div id="modes"><div class="empty">Chargement…</div></div>
+    </div>
+
+    <div class="card">
+      <h2 style="font-size:16px;margin-bottom:12px">Format de relevé de compte</h2>
+      <p style="font-size:14px;color:var(--muted);margin-bottom:12px">Le client télécharge son relevé depuis son espace. Deux formats sont disponibles, cumulables.</p>
+      <ul class="checks" style="list-style:none;display:grid;gap:10px;font-size:13.5px">
+        <li><b>PDF</b> — relevé imprimable, idéal pour présentation à un tiers.</li>
+        <li><b>CSV</b> — données structurées, pour tableur ou intégration.</li>
+        <li><b>Les deux</b> — propose les deux formats au client.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2 style="font-size:16px;margin-bottom:12px">Informations obligatoires à collecter pour une demande de crédit</h2>
+      <table class="tbl"><thead><tr><th>Information</th><th>Pourquoi</th></tr></thead><tbody>
+        <tr><td><b>Identité du client</b> (code compte)</td><td>Rattacher la demande au bon dossier client.</td></tr>
+        <tr><td><b>Montant demandé</b></td><td>Dimensionner l'instruction et la capacité de remboursement.</td></tr>
+        <tr><td><b>Objet du crédit</b></td><td>Apprécier la finalité et l'éligibilité (commerce, agriculture…).</td></tr>
+        <tr><td><b>Durée souhaitée</b> (mois)</td><td>Calculer l'échéancier et le coût du crédit.</td></tr>
+        <tr><td><b>Activité / revenus</b></td><td>Évaluer la capacité de remboursement.</td></tr>
+        <tr><td><b>Pièce d'identité vérifiée</b></td><td>Conformité KYC et exigences prudentielles BCEAO.</td></tr>
+        <tr><td><b>Garantie</b> (optionnelle)</td><td>Renforcer la décision selon la politique de l'IMF.</td></tr>
+      </tbody></table>
+      <p class="hint" style="margin-top:12px">Ces informations sont saisies par la collectrice depuis l'application terrain, puis validées par le superviseur.</p>
+    </div>
+  </main>
+</div>
+<script src="assets/documentation.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0b0c26">
+<meta name="robots" content="noindex,nofollow">
+<title>Autorisations fines — teebo</title>
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="side__brand"><img src="assets/teebo-icon.png" width="34" height="34" alt=""><span>tee<b>B</b>o</span></div>
+    <div class="side__label">Pilotage</div>
+    <a class="nav-item" href="/app"><span class="ic">▤</span> Tableau de bord</a>
+    <a class="nav-item" href="/app#org"><span class="ic">⛬</span> Organisation</a>
+    <a class="nav-item" href="/securite"><span class="ic">⛨</span> Terminaux &amp; sécurité</a>
+    <a class="nav-item active" href="/autorisations"><span class="ic">⇄</span> Autorisations</a>
+    <div class="side__label">Compte</div>
+    <a class="nav-item" href="/essai"><span class="ic">⏳</span> Essai &amp; échéances</a>
+    <a class="nav-item" href="/documentation"><span class="ic">📘</span> Documentation</a>
+    <div class="side__spacer"></div>
+    <div class="side__user"><b id="u-name">…</b><small id="u-code">…</small>
+      <a class="btn btn--ghost btn--sm" href="/login" style="margin-top:10px;width:100%">Déconnexion</a></div>
+  </aside>
+  <main class="main">
+    <div class="topbar"><div><h1>Autorisations fines inter-entités</h1><p>Par défaut, aucune unité ne voit les données d'une autre. L'admin accorde chaque droit explicitement.</p></div>
+      <button class="btn btn--dark" id="btn-new">+ Accorder une visibilité</button></div>
+    <div class="alert alert--info" id="policy"></div>
+    <div class="card"><div class="toolbar"><h2>Autorisations accordées</h2><span class="chip" id="count">—</span></div>
+      <div id="grants"><div class="empty">Chargement…</div></div></div>
+  </main>
+</div>
+<div id="modal-root"></div>
+<script src="assets/autorisations.js" defer></script>
+</body>
+</html>

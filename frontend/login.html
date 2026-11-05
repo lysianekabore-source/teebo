@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0b0c26">
+<meta name="robots" content="noindex,nofollow">
+<title>Connexion — teebo</title>
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="stylesheet" href="assets/auth.css">
+</head>
+<body>
+<main class="card">
+  <div class="card__head">
+    <img class="brandmark" src="assets/teebo-icon.png" width="66" height="66" alt="teebo">
+    <h1 class="welcome">Bienvenue dans teebo</h1>
+    <p class="slogan">La finance à visage humain</p>
+    <p class="subtitle">Connectez-vous à votre espace</p>
+  </div>
+  <div class="card__body">
+    <div class="tabs">
+      <button type="button" class="tab active" data-tab="login">Connexion</button>
+      <button type="button" class="tab" data-tab="activate">Premier accès</button>
+    </div>
+    <div id="alert" class="alert" role="alert" aria-live="assertive" hidden></div>
+
+    <!-- Connexion -->
+    <form id="form-login" class="pane" novalidate>
+      <div class="field">
+        <label for="identifier">Identifiant ou e-mail</label>
+        <input id="identifier" name="identifier" type="text" autocomplete="username" autocapitalize="none" required>
+      </div>
+      <div class="field">
+        <label for="password">Mot de passe</label>
+        <div class="pwd"><input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button type="button" class="toggle" data-toggle="password" aria-label="Afficher">Afficher</button></div>
+      </div>
+      <button type="submit" class="btn btn--primary btn--block">Se connecter</button>
+    </form>
+
+    <!-- Premier accès / activation -->
+    <form id="form-activate" class="pane" hidden novalidate>
+      <p class="hint">Saisissez le code d’accès reçu par WhatsApp ou e-mail, puis créez votre mot de passe.</p>
+      <div class="field">
+        <label for="code">Code d’accès</label>
+        <input id="code" name="code" type="text" autocapitalize="characters" required placeholder="TBO-XX-000000-U00001">
+      </div>
+      <div class="field">
+        <label for="new_password">Créer un mot de passe</label>
+        <div class="pwd"><input id="new_password" name="new_password" type="password" autocomplete="new-password" required>
+          <button type="button" class="toggle" data-toggle="new_password" aria-label="Afficher">Afficher</button></div>
+        <p class="req">Au moins 10 caractères, avec majuscule, minuscule et chiffre.</p>
+      </div>
+      <div class="field">
+        <label for="confirm">Confirmer le mot de passe</label>
+        <input id="confirm" name="confirm" type="password" autocomplete="new-password" required>
+      </div>
+      <button type="submit" class="btn btn--primary btn--block">Activer mon accès</button>
+    </form>
+
+    <!-- Changement de mot de passe (expiration 60j) -->
+    <form id="form-change" class="pane" hidden novalidate>
+      <p class="hint">Votre mot de passe doit être renouvelé (expiration après 60 jours).</p>
+      <div class="field"><label for="cur">Mot de passe actuel</label><input id="cur" type="password" required></div>
+      <div class="field"><label for="np">Nouveau mot de passe</label><input id="np" type="password" required></div>
+      <button type="submit" class="btn btn--primary btn--block">Mettre à jour</button>
+    </form>
+
+    <!-- Double authentification (2FA) : code à 6 chiffres de l'application -->
+    <form id="form-2fa" class="pane" hidden novalidate>
+      <p class="hint">Saisissez le <b>code à 6 chiffres</b> affiché dans votre application d'authentification (Google Authenticator, Authy, FreeOTP…).</p>
+      <div class="field">
+        <label for="otp">Code d'authentification</label>
+        <input id="otp" name="otp" class="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" required placeholder="••••••">
+      </div>
+      <button type="submit" class="btn btn--primary btn--block" id="btn-2fa">Valider le code</button>
+      <button type="button" class="btn btn--ghost btn--block" id="btn-recovery" style="margin-top:8px">Utiliser un code de secours</button>
+      <div class="field" id="recovery-wrap" hidden style="margin-top:12px">
+        <label for="recovery">Code de secours</label>
+        <input id="recovery" name="recovery" autocapitalize="characters" placeholder="XXXX-XXXX">
+        <button type="button" class="btn btn--dark btn--block" id="btn-recovery-go" style="margin-top:8px">Valider le code de secours</button>
+      </div>
+    </form>
+
+    <p class="foot"><span class="brand">teeBo</span> — La finance à visage humain<br>Copyright © <span class="brand">teebo</span> 2026</p>
+  </div>
+</main>
+<script src="assets/auth.js" defer></script>
+</body>
+</html>

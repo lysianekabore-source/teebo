@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0b0c26">
+<meta name="robots" content="noindex,nofollow">
+<title>teeBo — Démonstration navigable</title>
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<style>
+:root{--navy:#0b0c26;--navy2:#13152f;--navy3:#1c1f42;--neon:#d8f500;--neon-d:#bcd600;--ink:#0b0c26;--muted:#61647c;--line:#e7e8ef;--bg:#f5f6f9;--card:#fff;--danger:#c0392b;--danger-bg:#fdecea;--ok:#1f7a4d;--ok-bg:#e8f6ef;--warn:#8a6d00;--warn-bg:#fff7d6}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:#e9ebf1;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:none;border-radius:11px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer;transition:.15s;font-family:inherit}
+.btn--primary{background:var(--neon);color:var(--navy)}.btn--primary:hover{background:var(--neon-d)}
+.btn--ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}.btn--ghost:hover{background:#f4f5f9}
+.btn--dark{background:var(--navy);color:#fff}.btn--dark:hover{background:var(--navy2)}
+.btn--sm{padding:8px 12px;font-size:12.5px}.btn--block{width:100%}
+/* ---- Chrome de démo ---- */
+.demo-top{position:sticky;top:0;z-index:60;background:var(--navy);color:#fff;padding:10px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.demo-top .brand{font-weight:800;font-size:16px;letter-spacing:-.4px}.demo-top .brand b{color:var(--neon)}
+.demo-top .tag{font-size:11px;background:var(--neon);color:var(--navy);border-radius:999px;padding:3px 10px;font-weight:800;letter-spacing:.3px}
+.demo-top .spacer{flex:1}
+.role-switch{display:flex;gap:6px;background:rgba(255,255,255,.08);padding:4px;border-radius:11px;flex-wrap:wrap}
+.role-switch button{border:none;background:transparent;color:#c9cbe0;font-family:inherit;font-size:12.5px;font-weight:700;padding:7px 12px;border-radius:8px;cursor:pointer}
+.role-switch button.on{background:var(--neon);color:var(--navy)}
+.demo-note{background:#fff7d6;color:var(--warn);border-bottom:1px solid #f0e2a0;padding:8px 20px;font-size:12.5px;text-align:center}
+/* ---- Cadres ---- */
+.stage{padding:24px;display:flex;justify-content:center}
+.frame{width:100%;max-width:1180px;background:var(--bg);border-radius:18px;box-shadow:0 22px 60px rgba(11,12,38,.13);overflow:hidden;min-height:640px}
+.frame.phone-frame{max-width:440px;border-radius:26px}
+.view{display:none}.view.on{display:block}
+/* ---- Shell admin ---- */
+.shell{display:grid;grid-template-columns:252px 1fr;min-height:640px}
+.side{background:var(--navy);color:#c9cbe0;padding:18px 14px;display:flex;flex-direction:column;gap:5px}
+.side__brand{display:flex;align-items:center;gap:10px;padding:4px 8px 16px}
+.side__brand .lg{width:34px;height:34px;border-radius:9px;background:#000;color:var(--neon);display:flex;align-items:center;justify-content:center;font-weight:800}
+.side__brand span{color:#fff;font-weight:800;font-size:17px}.side__brand b{color:var(--neon)}
+.side__label{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:#6f7292;padding:13px 10px 5px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;font-size:13.5px;font-weight:600;cursor:pointer;border:none;background:transparent;color:#c9cbe0;text-align:left;width:100%;font-family:inherit}
+.nav-item:hover{background:rgba(255,255,255,.07);color:#fff}
+.nav-item.active{background:var(--neon);color:var(--navy)}
+.nav-item .ic{width:18px;text-align:center}
+.main{padding:22px 26px 50px;max-height:900px;overflow:auto}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:20px}
+.topbar h1{font-size:22px;letter-spacing:-.5px}.topbar p{color:var(--muted);font-size:13px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{background:#fff;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;color:var(--muted)}
+.chip--neon{background:#fbfde9;border-color:var(--neon)}.chip--warn{background:var(--warn-bg);border-color:#f0e2a0;color:var(--warn)}.chip--ok{background:var(--ok-bg);border-color:#bfe6d3;color:var(--ok)}
+.grid{display:grid;gap:16px}.grid--stats{grid-template-columns:repeat(4,1fr)}.grid--2{grid-template-columns:1fr 1fr}
+@media(max-width:900px){.grid--stats{grid-template-columns:repeat(2,1fr)}.grid--2{grid-template-columns:1fr}.shell{grid-template-columns:1fr}}
+.card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px}
+.stat{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}
+.stat b{font-size:24px;letter-spacing:-.6px;display:block}.stat small{color:var(--muted);font-size:12px}
+.stat .lab{font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);font-weight:700}
+.hero-card{background:var(--navy);color:#fff;border-radius:18px;padding:20px;margin-bottom:16px}
+.hero-card small{color:#9fa2c0;font-size:11.5px;text-transform:uppercase;letter-spacing:.5px}
+.hero-card b{display:block;font-size:24px;color:var(--neon);letter-spacing:-.6px;margin-top:4px}
+/* ---- Tableaux BCEAO ---- */
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th,.tbl td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:left}
+.tbl th{background:#f4f5f9;font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted)}
+.tbl td.r,.tbl th.r{text-align:right}.tbl tr.tot td{font-weight:800;background:#fafbff}
+.tag{display:inline-block;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:700}
+.tag--ok{background:var(--ok-bg);color:var(--ok)}.tag--warn{background:var(--warn-bg);color:var(--warn)}.tag--muted{background:#eef0f6;color:var(--muted)}.tag--err{background:var(--danger-bg);color:var(--danger)}
+.item{background:#fff;border:1px solid var(--line);border-radius:13px;padding:13px;margin-bottom:10px;display:flex;align-items:center;gap:12px}
+.item__head{flex:1}.item__head b{font-size:13.5px}.item__head small{display:block;color:var(--muted);font-size:12px}
+.amt{font-weight:800}.actions{display:grid;gap:11px}
+.action{display:flex;align-items:center;gap:13px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:15px;cursor:pointer;text-align:left;width:100%;font-family:inherit}
+.action:hover{transform:translateY(-2px);box-shadow:0 12px 30px rgba(11,12,38,.08);border-color:var(--navy)}
+.action .ic{width:42px;height:42px;border-radius:12px;background:#f1f3f8;display:flex;align-items:center;justify-content:center;font-size:20px;flex:0 0 auto}
+.action b{font-size:14px;display:block}.action small{color:var(--muted);font-size:12.5px}.action .chev{margin-left:auto;color:var(--muted);font-size:18px}
+.alert{border-radius:11px;padding:12px 14px;font-size:13px;margin-bottom:14px}
+.alert--err{background:var(--danger-bg);color:var(--danger);border:1px solid #f5c6c0}
+.alert--ok{background:var(--ok-bg);color:var(--ok);border:1px solid #bfe6d3}
+.alert--info{background:#eef4ff;color:#20406f;border:1px solid #cddffb}
+.alert--warn{background:var(--warn-bg);color:var(--warn);border:1px solid #f0e2a0}
+.fld{display:grid;gap:6px;margin-bottom:13px}.fld label{font-size:12px;font-weight:600;color:var(--muted)}
+.fld input,.fld select,.fld textarea{width:100%;border:1px solid var(--line);border-radius:11px;padding:12px 13px;font-size:14px;background:#fbfbfd;font-family:inherit;color:var(--ink)}
+.fld input:focus,.fld select:focus,.fld textarea:focus{outline:none;border-color:var(--navy);background:#fff;box-shadow:0 0 0 3px rgba(216,245,0,.28)}
+.fld .hint{font-size:11.5px;color:var(--muted)}
+.lbl-step{display:flex;align-items:center;gap:8px;font-weight:800;font-size:14px;margin:18px 0 10px}
+.lbl-step .n{width:24px;height:24px;border-radius:50%;background:var(--navy);color:var(--neon);display:flex;align-items:center;justify-content:center;font-size:12px}
+.lbl-step.done .n{background:var(--ok);color:#fff}
+.stepline{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap}
+.stepline .s{flex:1;min-width:120px;border:1px solid var(--line);border-radius:11px;padding:10px 12px;font-size:12px;background:#fff}
+.stepline .s.done{border-color:#bfe6d3;background:var(--ok-bg)}.stepline .s.cur{border-color:var(--neon);background:#fbfde9}
+.stepline .s b{display:block;font-size:12.5px;color:var(--ink)}
+/* ---- Téléphone terrain ---- */
+.phone{max-width:440px;margin:0 auto;background:var(--bg);min-height:640px;display:flex;flex-direction:column}
+.appbar{background:var(--navy);color:#fff;padding:14px 16px;display:flex;align-items:center;gap:12px}
+.appbar .mark{width:34px;height:34px;border-radius:9px;background:#000;color:var(--neon);display:flex;align-items:center;justify-content:center;font-weight:800}
+.appbar b{font-size:15px}.appbar small{display:block;color:#9fa2c0;font-size:11.5px}.appbar .spacer{flex:1}
+.appbar .logout{background:transparent;border:1px solid rgba(255,255,255,.25);color:#fff;border-radius:9px;padding:7px 11px;font-size:12px;cursor:pointer;font-family:inherit}
+.pad{padding:16px 15px 40px;flex:1}
+.auth-wrap{padding:26px 16px;background:linear-gradient(165deg,var(--navy),var(--navy2));min-height:640px;display:flex;align-items:center;justify-content:center}
+.auth-card{width:100%;max-width:380px;background:#fff;border-radius:20px;padding:26px 22px;box-shadow:0 30px 70px rgba(0,0,0,.35)}
+.auth-card .logo{width:54px;height:54px;border-radius:14px;background:#000;color:var(--neon);display:flex;align-items:center;justify-content:center;font-size:25px;font-weight:800;margin:0 auto 12px}
+.auth-card h1{font-size:19px;text-align:center}.auth-card .sub{text-align:center;color:var(--muted);font-size:12.5px;margin:6px 0 6px}
+.auth-card .slogan{text-align:center;font-size:12px;font-weight:700;font-style:italic;opacity:.85;margin-bottom:16px}
+.pin{letter-spacing:10px;text-align:center;font-size:21px;font-weight:800}
+.receipt-modal{background:rgba(11,12,38,.6);border-radius:16px;padding:20px}
+.receipt-card{background:#fff;border-radius:16px;padding:20px;text-align:center;border:2px dashed var(--navy)}
+.receipt-logo{width:44px;height:44px;border-radius:12px;background:#000;color:var(--neon);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:20px;margin:0 auto 10px}
+.receipt-title{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.receipt-code{font-size:26px;font-weight:800;letter-spacing:2px;color:var(--navy);margin:6px 0 12px}
+.receipt-rows{display:grid;gap:6px;font-size:13.5px;text-align:left;max-width:280px;margin:0 auto}
+.receipt-rows div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:5px}
+.receipt-hint{font-size:12px;color:var(--muted);margin:12px 0}
+.receipt-bar{height:5px;background:#eef0f6;border-radius:999px;overflow:hidden}.receipt-bar > div{height:100%;background:var(--neon)}
+.badge-count{background:var(--neon);color:var(--navy);font-size:11px;font-weight:800;border-radius:999px;padding:2px 8px;margin-left:6px}
+.wizard{background:#fff;border:1px solid var(--line);border-radius:15px;padding:18px}
+.hint-bar{font-size:12px;color:var(--muted)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px}.kv b{color:var(--muted);font-weight:600}
+.modal-wrap{background:rgba(11,12,38,.55);border-radius:16px;padding:22px;display:flex;align-items:center;justify-content:center;min-height:420px}
+.modal{background:#fff;border-radius:16px;padding:22px;max-width:420px;width:100%}
+.checkrow{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--line);border-radius:11px;margin-bottom:8px;background:#fff}
+.checkrow input{width:18px;height:18px}
+.step-nav{display:flex;gap:8px;justify-content:space-between;margin-top:18px}
+.step-nav .btn{width:auto}
+.dupe{background:var(--danger-bg);border:1px solid #f5c6c0;border-radius:12px;padding:12px;font-size:13px;color:var(--danger);margin-bottom:12px}
+.dupe b{display:block}
+</style>
+</head>
+<body>
+
+<div class="demo-top">
+  <span class="brand">tee<b>B</b>o</span>
+  <span class="tag">DÉMONSTRATION NAVIGABLE</span>
+  <span class="spacer"></span>
+  <div class="role-switch" id="roles">
+    <button data-role="admin" class="on">🏢 Admin IMF</button>
+    <button data-role="cashier">🏦 Caissière</button>
+    <button data-role="field">🚶 Collectrice (terrain)</button>
+  </div>
+</div>
+<div class="demo-note">Cliquez dans l'application pour naviguer réellement entre les écrans. Aucune donnée réelle — démonstration visuelle.</div>
+
+<!-- ================= ADMIN IMF ================= -->
+<div class="stage">
+  <div class="frame">
+    <div class="view on" data-view-group="admin">
+      <div class="shell">
+        <aside class="side">
+          <div class="side__brand"><div class="lg">B</div><span>tee<b>B</b>o</span></div>
+          <div class="side__label">Pilotage</div>
+          <button class="nav-item" data-dv="dash"><span class="ic">▤</span> Tableau de bord</button>
+          <button class="nav-item" data-dv="journey"><span class="ic">🧭</span> Parcours client</button>
+          <button class="nav-item" data-dv="clients"><span class="ic">👥</span> Clients &amp; comptes</button>
+          <button class="nav-item" data-dv="assign"><span class="ic">🔀</span> Affectations</button>
+          <button class="nav-item" data-dv="statement"><span class="ic">📄</span> Relevé BCEAO</button>
+          <div class="side__label">Caisse &amp; collecte</div>
+          <button class="nav-item" data-dv="remit"><span class="ic">💸</span> Versements</button>
+          <button class="nav-item" data-dv="export"><span class="ic">📊</span> Export Excel</button>
+          <div class="side__label">Sécurité</div>
+          <button class="nav-item" data-dv="twofa"><span class="ic">🔐</span> Mon accès (2FA)</button>
+          <div style="flex:1"></div>
+          <div style="padding:12px;background:rgba(255,255,255,.05);border-radius:12px;font-size:12.5px">
+            <b style="color:#fff;display:block">Aïcha Ouédraogo</b><small style="color:#8c8fb0">Direction · direction@imf-test.bf</small>
+          </div>
+        </aside>
+        <main class="main" id="admin-main"></main>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= CAISSIÈRE ================= -->
+<div class="stage" id="stage-cashier" style="display:none">
+  <div class="frame">
+    <div class="view on" data-view-group="cashier">
+      <div class="shell">
+        <aside class="side">
+          <div class="side__brand"><div class="lg">B</div><span>tee<b>B</b>o</span></div>
+          <div class="side__label">Caisse — Madame Kaboré</div>
+          <button class="nav-item" data-cv="pending"><span class="ic">📥</span> Versements à recevoir</button>
+          <button class="nav-item" data-cv="history"><span class="ic">🗂️</span> Mes approbations</button>
+          <div style="flex:1"></div>
+          <div style="padding:12px;background:rgba(255,255,255,.05);border-radius:12px;font-size:12.5px">
+            <b style="color:#fff;display:block">Madame Kaboré</b><small style="color:#8c8fb0">Caissière · caisse@imf-test.bf</small>
+          </div>
+        </aside>
+        <main class="main" id="cashier-main"></main>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= TERRAIN ================= -->
+<div class="stage" id="stage-field" style="display:none">
+  <div class="frame phone-frame">
+    <div class="phone">
+      <header class="appbar">
+        <div class="mark">B</div>
+        <div><b>Fatou Sawadogo</b><small>Collectrice · terminal couplé</small></div>
+        <div class="spacer"></div>
+        <button class="logout" data-fv="login">Quitter</button>
+      </header>
+      <div class="pad" id="field-main"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ==================== DONNÉES DE DÉMONSTRATION ==================== */
+const XOF = n => Number(n).toLocaleString('fr-FR') + ' XOF';
+const data = {
+  cash: 42500, cashCap: 250000,
+  remitRequired: false,
+  clients: [
+    { nom: 'Awa Traoré', code: 'CLI-BF-000241', tel: '+226 70 11 12 22', solde: 185000, etape: 'premier_depot', compte: 'CPT-BF-000241' },
+    { nom: 'Moussa Ouédraogo', code: 'CLI-BF-000242', tel: '+226 76 55 44 33', solde: 0, etape: 'compte_ouvert', compte: 'CPT-BF-000242' },
+    { nom: 'Salimata Kaboré', code: 'CLI-BF-000243', tel: '+226 65 22 33 44', solde: 96000, etape: 'premier_depot', compte: 'CPT-BF-000243' },
+    { nom: 'Ibrahim Sawadogo', code: 'CLI-BF-000244', tel: '+226 78 90 12 34', solde: 0, etape: 'profil_cree', compte: null }
+  ],
+  collectrices: [
+    { nom: 'Fatou Sawadogo', code: 'UTI-BF-000031', clients: 42 },
+    { nom: 'Rasmata Nikiema', code: 'UTI-BF-000032', clients: 37 }
+  ],
+  movements: [
+    { date: '2026-10-28', libelle: 'Versement espèces', ref: 'RC-241028-0007', debit: '', credit: '5 000' },
+    { date: '2026-10-30', libelle: 'Versement espèces', ref: 'RC-241030-0011', debit: '', credit: '5 000' },
+    { date: '2026-11-01', libelle: 'Retrait guichet', ref: 'OP-241101-0003', debit: '2 000', credit: '' },
+    { date: '2026-11-04', libelle: 'Versement espèces', ref: 'RC-241104-0019', debit: '', credit: '5 000' }
+  ],
+  deposits: [
+    { id: 'd1', date: '05/11/2026 08:12', col: 'Fatou Sawadogo', montant: 145000, canal: 'Caisse (espèces)', ref: '—', statut: 'declare' },
+    { id: 'd2', date: '05/11/2026 07:40', col: 'Rasmata Nikiema', montant: 98000, canal: 'Mobile Money', ref: 'MM-884210', statut: 'declare' },
+    { id: 'd3', date: '04/11/2026 17:55', col: 'Fatou Sawadogo', montant: 210000, canal: 'Caisse (espèces)', ref: '—', statut: 'valide' }
+  ]
+};
+
+/* ==================== RENDU : ADMIN ==================== */
+const adminMain = document.getElementById('admin-main');
+const views = {
+  dash: () => `
+    <div class="topbar"><div><h1>Tableau de bord</h1><p>Vue d'ensemble de votre institution — IMF Test Burkina.</p></div>
+      <div class="chips"><span class="chip chip--neon">Essai · 22 j restants</span><span class="chip">Agrément BF-2024-001</span></div></div>
+    <div class="grid grid--stats">
+      <div class="stat"><span class="lab">Clients actifs</span><b>1 268</b><small>+34 cette semaine</small></div>
+      <div class="stat"><span class="lab">Comptes ouverts</span><b>1 244</b><small>24 en attente de dépôt</small></div>
+      <div class="stat"><span class="lab">Encaissé aujourd'hui</span><b style="color:var(--ok)">4 512 000</b><small>FCFA · 318 dépôts</small></div>
+      <div class="stat"><span class="lab">Doublons bloqués</span><b style="color:var(--danger)">7</b><small>ce mois-ci</small></div>
+    </div>
+    <div class="grid grid--2" style="margin-top:16px">
+      <div class="card"><h2 style="font-size:15px;margin-bottom:12px">Parcours imposé — avancement</h2>
+        <div class="stepline"><div class="s done"><b>1. Profil client</b>1 268 créés</div><div class="s done"><b>2. Compte bancaire</b>1 244 ouverts</div><div class="s cur"><b>3. Premier dépôt</b>1 220 enregistrés</div></div>
+        <p class="hint-bar">Aucun dépôt n'est possible sans compte ouvert : la collectrice est bloquée si l'étape 2 est manquante.</p></div>
+      <div class="card"><h2 style="font-size:15px;margin-bottom:12px">Contrôles actifs</h2>
+        <ul style="list-style:none;display:grid;gap:9px;font-size:13px">
+          <li>✅ Détection de doublons clients (nom + téléphone, n° de pièce)</li>
+          <li>✅ Un seul compte actif par client</li>
+          <li>✅ Parcours obligatoire : profil → compte → premier dépôt</li>
+          <li>✅ Relevé de compte conforme BCEAO</li>
+          <li>✅ Double authentification (2FA) pour les profils sensibles</li>
+        </ul></div>
+    </div>`,
+
+  journey: () => `
+    <div class="topbar"><div><h1>Parcours client</h1><p>Ordre obligatoire : 1. profil → 2. compte bancaire → 3. premier dépôt réel.</p></div></div>
+    <div class="wizard">
+      <div class="stepline">
+        <div class="s done"><b>1. Profil client</b>Renseigné &amp; validé</div>
+        <div class="s done"><b>2. Compte bancaire</b>CPT-BF-000241 ouvert</div>
+        <div class="s done"><b>3. Premier dépôt</b>5 000 FCFA le 28/10/2026</div>
+      </div>
+      <div class="alert alert--ok">✅ Parcours complet pour <b>Awa Traoré</b> — le client peut déposer librement.</div>
+      <div class="lbl-step done"><span class="n">✓</span> Étape 1 — Création du profil client</div>
+      <div class="kv"><b>Nom complet</b><span>Awa Traoré</span><b>Téléphone</b><span>+226 70 11 12 22</span>
+        <b>Pièce d'identité</b><span>BF11223344</span><b>Code client</b><span>CLI-BF-000241</span></div>
+      <div class="lbl-step done"><span class="n">✓</span> Étape 2 — Ouverture du compte bancaire</div>
+      <div class="kv"><b>Compte</b><span>CPT-BF-000241 (XOF)</span><b>Statut</b><span><span class="tag tag--ok">actif</span></span><b>Ouvert le</b><span>28/10/2026</span></div>
+      <div class="lbl-step done"><span class="n">✓</span> Étape 3 — Enregistrement du premier dépôt réel</div>
+      <div class="kv"><b>Montant</b><span>5 000 FCFA</span><b>Reçu</b><span>RC-241028-0007</span><b>Canal</b><span>Caisse collectrice</span></div>
+      <div class="step-nav"><button class="btn btn--ghost">Voir le reçu</button><button class="btn btn--primary" data-dv="statement">Éditer le relevé BCEAO</button></div>
+    </div>`,
+
+  clients: () => `
+    <div class="topbar"><div><h1>Clients &amp; comptes</h1><p>Contrôle anti-doublons strict à la création.</p></div>
+      <button class="btn btn--dark" id="btnNewClient">+ Nouveau client</button></div>
+    <div class="card">
+      <table class="tbl"><thead><tr><th>Client</th><th>Code</th><th>Téléphone</th><th>Compte</th><th class="r">Solde</th><th>Parcours</th></tr></thead><tbody>
+      ${data.clients.map(c => `<tr>
+        <td><b>${c.nom}</b></td><td>${c.code}</td><td>${c.tel}</td>
+        <td>${c.compte || '<span class="tag tag--warn">à ouvrir</span>'}</td>
+        <td class="r">${c.solde ? XOF(c.solde) : '—'}</td>
+        <td>${c.etape === 'premier_depot' ? '<span class="tag tag--ok">dépôt fait</span>' : (c.etape === 'compte_ouvert' ? '<span class="tag tag--warn">attente 1er dépôt</span>' : '<span class="tag tag--muted">profil seul</span>')}</td>
+      </tr>`).join('')}
+      </tbody></table>
+    </div>`,
+
+  assign: () => `
+    <div class="topbar"><div><h1>Affectations superviseur → collectrice</h1><p>Affectez tous les clients ou une sélection, avec le motif et la durée.</p></div></div>
+    <div class="grid grid--2">
+      <div class="card">
+        <h2 style="font-size:15px;margin-bottom:12px">Nouvelle affectation</h2>
+        <div class="fld"><label>Collectrice</label><select><option>Fatou Sawadogo (UTI-BF-000031 · 42 clients)</option><option>Rasmata Nikiema (UTI-BF-000032 · 37 clients)</option></select></div>
+        <div class="fld"><label>Périmètre</label><select id="scopeSel"><option value="tous">Tous les clients</option><option value="selection">Clients sélectionnés</option></select></div>
+        <div class="fld"><label>Motif de l'affectation</label><select id="reasonSel">
+          <option value="demission">Démission de la collectrice</option>
+          <option value="conge">Congé de la collectrice</option>
+          <option value="absence">Absence de la collectrice</option>
+          <option value="deces">Décès de la collectrice</option></select></div>
+        <div class="fld" id="daysFld"><label>Nombre de jours d'affectation <span style="color:var(--danger)">*</span></label><input type="number" value="15" min="1"><p class="hint">Requis pour démission, congé et absence. Non demandé en cas de décès.</p></div>
+        <div class="fld"><label>À partir du</label><input type="date" value="2026-11-05"></div>
+        <div class="fld"><label>Note (optionnel)</label><input placeholder="Ex. remplacement pendant le congé"></div>
+        <button class="btn btn--primary btn--block">Enregistrer l'affectation</button>
+      </div>
+      <div class="card">
+        <h2 style="font-size:15px;margin-bottom:12px">Affectations actives</h2>
+        <div class="item"><div class="item__head"><b>Fatou Sawadogo</b><small>Tous les clients · Congé · 15 jours</small></div><span class="tag tag--warn">jusqu'au 20/11</span></div>
+        <div class="item"><div class="item__head"><b>Rasmata Nikiema</b><small>Sélection · 12 clients · Absence · 7 jours</small></div><span class="tag tag--warn">jusqu'au 12/11</span></div>
+        <div class="item"><div class="item__head"><b>Fatou Sawadogo</b><small>Sélection · 3 clients · Décès</small></div><span class="tag tag--muted">définitive</span></div>
+        <div class="alert alert--info" style="margin-top:12px">Les motifs <b>démission</b>, <b>congé</b> et <b>absence</b> exigent un nombre de jours. Le motif <b>décès</b> est sans durée.</div>
+      </div>
+    </div>`,
+
+  statement: () => `
+    <div class="topbar"><div><h1>Relevé de compte — standard BCEAO</h1><p>Structure imposée : en-tête institution, identification du compte, solde d'ouverture, mouvements débit/crédit, totaux, solde de clôture.</p></div>
+      <div class="chips"><button class="btn btn--ghost btn--sm">Imprimer / PDF</button><button class="btn btn--dark btn--sm">Exporter Excel</button></div></div>
+    <div class="card" id="bceao">
+      <div style="display:flex;justify-content:space-between;border-bottom:2px solid var(--navy);padding-bottom:10px;margin-bottom:14px">
+        <div><b style="font-size:16px">IMF Test Burkina</b><div class="hint-bar">Code IMF : TBO-BF-000006 · Agrément BCEAO : BF-2024-001</div><div class="hint-bar">Ouagadougou · BF</div></div>
+        <div style="text-align:right"><b style="font-size:16px">RELEVÉ DE COMPTE</b><div class="hint-bar">Du 01/10/2026 au 05/11/2026</div><div class="hint-bar">Édité le 05/11/2026</div></div>
+      </div>
+      <div class="kv" style="margin-bottom:14px"><b>Titulaire</b><span>Awa Traoré (CLI-BF-000241)</span><b>Compte</b><span>CPT-BF-000241 · XOF</span><b>Statut</b><span><span class="tag tag--ok">actif</span></span></div>
+      <table class="tbl"><thead><tr><th>Date</th><th>Libellé</th><th>Référence</th><th class="r">Débit</th><th class="r">Crédit</th></tr></thead><tbody>
+        <tr class="tot"><td colspan="3">SOLDE D'OUVERTURE</td><td class="r"></td><td class="r">172 000</td></tr>
+        ${data.movements.map(m => `<tr><td>${m.date}</td><td>${m.libelle}</td><td>${m.ref}</td><td class="r">${m.debit}</td><td class="r">${m.credit}</td></tr>`).join('')}
+        <tr class="tot"><td colspan="3">TOTAUX</td><td class="r">2 000</td><td class="r">15 000</td></tr>
+        <tr class="tot"><td colspan="3">SOLDE DE CLÔTURE</td><td class="r"></td><td class="r">185 000</td></tr>
+      </tbody></table>
+      <p class="hint-bar" style="margin-top:12px">Relevé établi conformément aux standards BCEAO. Ce relevé ne vaut pas quittance sans le cachet et la signature de l'institution.</p>
+    </div>`,
+
+  remit: () => `
+    <div class="topbar"><div><h1>Versements de caisse</h1><p>Reversements des collectrices vers la caisse de la caissière ou par Mobile Money.</p></div></div>
+    <div class="card">
+      <table class="tbl"><thead><tr><th>Date</th><th>Collectrice</th><th>Canal</th><th>Référence</th><th class="r">Montant</th><th>Statut</th></tr></thead><tbody>
+        ${data.deposits.map(d => `<tr><td>${d.date}</td><td>${d.col}</td><td>${d.canal}</td><td>${d.ref}</td><td class="r"><b>${XOF(d.montant)}</b></td>
+          <td>${d.statut === 'valide' ? '<span class="tag tag--ok">approuvé</span>' : '<span class="tag tag--warn">en attente caissière</span>'}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+    <div class="alert alert--info" style="margin-top:14px">Seule la <b>caissière</b> peut approuver un versement : elle réceptionne les espèces, accepte le reversement et clôture ainsi le solde de caisse de la collectrice.</div>`,
+
+  export: () => `
+    <div class="topbar"><div><h1>Export Excel des dépôts</h1><p>Pour importer les dépôts reçus par la collectrice dans le logiciel de l'IMF (lorsque l'app et le SIG ne sont pas interconnectés).</p></div></div>
+    <div class="card">
+      <div class="grid grid--2">
+        <div class="fld"><label>Collectrice</label><select><option>Toutes</option><option>Fatou Sawadogo</option><option>Rasmata Nikiema</option></select></div>
+        <div class="fld"><label>Période</label><select><option>Novembre 2026</option><option>Octobre 2026</option></select></div>
+      </div>
+      <div class="fld"><label>Statut</label><select><option>Uniquement les versements approuvés</option><option>Tous les versements</option></select></div>
+      <button class="btn btn--primary">📊 Télécharger le fichier Excel</button>
+      <p class="hint-bar" style="margin-top:10px">Colonnes : Date · Collectrice · Code collectrice · Client · Code client · Compte · Montant FCFA · Canal · Référence transfert · Reçu · Statut · Approuvé le.</p>
+    </div>
+    <div class="card" style="margin-top:16px"><h2 style="font-size:15px;margin-bottom:10px">Aperçu du fichier</h2>
+      <table class="tbl"><thead><tr><th>Date</th><th>Collectrice</th><th>Client</th><th>Compte</th><th class="r">Montant</th><th>Reçu</th><th>Statut</th></tr></thead><tbody>
+        <tr><td>05/11/2026</td><td>Fatou Sawadogo</td><td>Awa Traoré</td><td>CPT-BF-000241</td><td class="r">5 000</td><td>RC-241105-0021</td><td><span class="tag tag--ok">approuvé</span></td></tr>
+        <tr><td>04/11/2026</td><td>Rasmata Nikiema</td><td>Salimata Kaboré</td><td>CPT-BF-000243</td><td class="r">3 000</td><td>RC-241104-0015</td><td><span class="tag tag--ok">approuvé</span></td></tr>
+      </tbody></table></div>`,
+
+  twofa: () => `
+    <div class="topbar"><div><h1>Mon accès — double authentification (2FA)</h1><p>Obligatoire pour les profils sensibles (admin IMF, direction, encadrement).</p></div>
+      <span class="chip chip--ok">2FA activée</span></div>
+    <div class="grid grid--2">
+      <div class="card"><h2 style="font-size:15px;margin-bottom:12px">Application d'authentification</h2>
+        <p class="hint-bar" style="margin-bottom:12px">Scannez le QR code avec Google Authenticator, Authy ou FreeOTP, puis saisissez le code à 6 chiffres.</p>
+        <div style="width:150px;height:150px;background:#fff;border:1px solid var(--line);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted);text-align:center;padding:10px">QR code<br>otpauth://…</div>
+        <div class="fld" style="margin-top:14px"><label>Code à 6 chiffres</label><input class="pin" placeholder="000000" maxlength="6"></div>
+        <button class="btn btn--primary btn--block">Vérifier et activer</button></div>
+      <div class="card"><h2 style="font-size:15px;margin-bottom:12px">Codes de secours</h2>
+        <p class="hint-bar" style="margin-bottom:12px">À conserver hors ligne. Chaque code n'est utilisable qu'une seule fois.</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-family:monospace;font-size:13.5px">
+          ${['4F2K-9A7L','8Q1P-3M5R','T6DZ-1X2C','7N8B-5V4K','2R9W-6H1S','5J3Y-0U8E'].map(c=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;text-align:center">${c}</div>`).join('')}
+        </div>
+        <div class="alert alert--warn" style="margin-top:12px">Sauvegardez ces codes : sans eux, l'accès est impossible en cas de perte du téléphone.</div></div>
+    </div>`
+};
+
+function renderAdmin(v) {
+  adminMain.innerHTML = (views[v] || views.dash)();
+  document.querySelectorAll('[data-dv]').forEach(b => b.classList.toggle('active', b.dataset.dv === v));
+  if (v === 'clients' && document.getElementById('btnNewClient')) document.getElementById('btnNewClient').onclick = () => { renderAdmin('clients'); openDupModal(); };
+  if (v === 'assign') wireAssign();
+  document.querySelectorAll('#admin-main [data-dv]').forEach(b => b.onclick = () => renderAdmin(b.dataset.dv));
+}
+function wireAssign(){
+  const rs=document.getElementById('reasonSel'), df=document.getElementById('daysFld');
+  if(!rs) return;
+  const upd=()=>{ df.style.display = (rs.value==='deces')?'none':'grid'; };
+  rs.addEventListener('change',upd); upd();
+}
+function openDupModal(){
+  const wrap=document.createElement('div');
+  wrap.className='modal-wrap'; wrap.style.position='fixed'; wrap.style.inset='0'; wrap.style.zIndex='80';
+  wrap.innerHTML=`<div class="modal"><h2 style="font-size:16px;margin-bottom:12px">Contrôle anti-doublons</h2>
+    <div class="fld"><label>Nom complet</label><input value="Awa Traore"></div>
+    <div class="fld"><label>Téléphone</label><input value="+226 70 11 12 22"></div>
+    <button class="btn btn--dark btn--block" id="dupc">Vérifier les doublons</button>
+    <div id="dupbox" style="margin-top:12px"></div>
+    <div class="step-nav"><button class="btn btn--ghost" id="dupclose">Fermer</button></div></div>`;
+  document.body.appendChild(wrap);
+  wrap.querySelector('#dupclose').onclick=()=>wrap.remove();
+  wrap.querySelector('#dupc').onclick=()=>{ wrap.querySelector('#dupbox').innerHTML=
+    `<div class="dupe"><b>⚠️ Création bloquée — doublon détecté</b>
+     Un client identique existe déjà : <b>Awa Traoré · CLI-BF-000241</b> (même nom + téléphone).
+     Modification impossible sans confirmation explicite de l'administrateur.</div>`; };
+}
+
+/* ==================== RENDU : CAISSIÈRE ==================== */
+const cashierMain = document.getElementById('cashier-main');
+function renderCashier(v){
+  cashierMain.innerHTML = (views.remit ? '' : '') + (v==='history' ? `
+    <div class="topbar"><div><h1>Mes approbations</h1><p>Versements acceptés et soldes de caisse clôturés.</p></div></div>
+    <div class="card"><table class="tbl"><thead><tr><th>Date</th><th>Collectrice</th><th class="r">Montant</th><th>Statut</th></tr></thead><tbody>
+      <tr><td>04/11/2026</td><td>Fatou Sawadogo</td><td class="r">210 000</td><td><span class="tag tag--ok">approuvé</span></td></tr>
+      <tr><td>03/11/2026</td><td>Rasmata Nikiema</td><td class="r">175 000</td><td><span class="tag tag--ok">approuvé</span></td></tr>
+    </tbody></table></div>` : `
+    <div class="topbar"><div><h1>Versements à recevoir</h1><p>Approuvez le reversement pour clôturer le solde de caisse de la collectrice.</p></div>
+      <span class="chip chip--warn">2 en attente</span></div>
+    <div class="card">
+      ${data.deposits.filter(d=>d.statut==='declare').map(d=>`
+        <div class="item">
+          <div class="item__head"><b>${d.col}</b><small>${d.date} · ${d.canal}${d.ref!=='—'?' · Réf. '+d.ref:''}</small></div>
+          <div class="amt">${XOF(d.montant)}</div>
+          <button class="btn btn--primary btn--sm" onclick="approveRemit('${d.id}')">Recevoir &amp; approuver</button>
+        </div>`).join('')}
+    </div>
+    <div class="alert alert--info" style="margin-top:14px">En approuvant, la caissière confirme avoir reçu les espèces (ou vérifié le transfert Mobile Money). Le solde de caisse de la collectrice est clôturé pour ce versement.</div>`);
+  document.querySelectorAll('[data-cv]').forEach(b=>b.classList.toggle('active', b.dataset.cv===v));
+}
+function approveRemit(id){
+  const d=data.deposits.find(x=>x.id===id); if(d) d.statut='valide';
+  renderCashier('pending');
+}
+document.querySelectorAll('[data-cv]').forEach(b=>b.onclick=()=>renderCashier(b.dataset.cv));
+
+/* ==================== RENDU : TERRAIN ==================== */
+const fieldMain = document.getElementById('field-main');
+const fviews = {
+  login: () => `
+    <div class="auth-wrap">
+      <div class="auth-card">
+        <div class="logo">B</div>
+        <h1>teebo terrain</h1>
+        <p class="sub">Application de collecte de proximité</p>
+        <p class="slogan">La finance à visage humain</p>
+        <div class="fld"><label>Identifiant collectrice</label><input value="fatou.sawadogo"></div>
+        <div class="fld"><label>Code PIN</label><input class="pin" value="1234" maxlength="8"></div>
+        <button class="btn btn--primary btn--block" data-fv="home">Se connecter</button>
+      </div>
+    </div>`,
+  home: () => `
+    <div class="hero-card"><small>Ma caisse aujourd'hui</small><b>${XOF(data.cash)}</b><small>Plafond : ${XOF(data.cashCap)} · reste ${XOF(data.cashCap-data.cash)}</small></div>
+    <div class="grid grid--2" style="margin-bottom:14px">
+      <div class="stat"><b>6</b><small>Dépôts du jour</small></div>
+      <div class="stat"><b>2</b><small>Versements en attente</small></div>
+    </div>
+    <div class="actions">
+      <button class="action" data-fv="deposit"><div class="ic">💵</div><div><b>Enregistrer un dépôt</b><small>Encaissement au nom du client</small></div><span class="chev">›</span></button>
+      <button class="action" data-fv="remit"><div class="ic">💸</div><div><b>Faire un versement</b><small>À la caissière ou par Mobile Money</small></div><span class="chev">›</span></button>
+      <button class="action" data-fv="history"><div class="ic">🧾</div><div><b>Mes derniers reçus</b><small>Retrouver un numéro de reçu</small></div><span class="chev">›</span></button>
+      <button class="action" data-fv="clients"><div class="ic">👥</div><div><b>Clients &amp; solde</b><small>Voir la fiche et l'historique</small></div><span class="chev">›</span></button>
+    </div>`, 
+  deposit: () => `
+    <div class="wizard">
+      <h3 style="font-size:16px;margin-bottom:4px">Enregistrer un dépôt</h3>
+      <p class="hint-bar" style="margin-bottom:12px">Parcours : le client doit avoir un compte ouvert avant tout dépôt.</p>
+      <div class="fld"><label>Client</label><select><option>Awa Traoré · CPT-BF-000241 (solde 185 000)</option><option>Moussa Ouédraogo · CPT-BF-000242 (compte ouvert)</option><option>Ibrahim Sawadogo · ⚠️ compte non ouvert</option></select></div>
+      <div class="alert alert--warn">⛔ Sélectionner <b>Ibrahim Sawadogo</b> (profil seul) afficherait : « Ouvrez d'abord le compte bancaire du client avant tout dépôt ».</div>
+      <div class="fld"><label>Montant (FCFA)</label><input value="5000" inputmode="numeric"><p class="hint">Reste à collecter sur ce client aujourd'hui : 45 000 FCFA</p></div>
+      <div class="fld"><label>Référence (optionnel)</label><input placeholder="—"></div>
+      <div class="step-nav"><button class="btn btn--ghost" data-fv="home">Annuler</button><button class="btn btn--primary" data-fv="receipt">Valider le dépôt</button></div>
+    </div>`,
+  receipt: () => `
+    <div class="receipt-modal">
+      <div class="receipt-card">
+        <div class="receipt-logo">B</div>
+        <div class="receipt-title">Reçu de dépôt</div>
+        <div class="receipt-code">RC-241105-0021</div>
+        <div class="receipt-rows">
+          <div><span>Client</span><b>Awa Traoré</b></div>
+          <div><span>Compte</span><b>CPT-BF-000241</b></div>
+          <div><span>Montant</span><b>5 000 FCFA</b></div>
+          <div><span>Nouveau solde</span><b>190 000 FCFA</b></div>
+        </div>
+        <p class="receipt-hint">Recopiez ce numéro de reçu dans le carnet du client.</p>
+        <div class="receipt-bar"><div style="width:100%"></div></div>
+        <p class="hint-bar" style="margin-top:6px">Fermeture automatique dans <b>57</b> s</p>
+        <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn--ghost btn--sm" data-fv="home">Fermer</button><button class="btn btn--primary btn--sm" data-fv="home">Valider et continuer</button></div>
+      </div>
+      <div class="alert alert--ok" style="margin-top:12px">✅ Dépôt validé. SMS envoyé au client : « Dépôt de 5 000 FCFA reçu. Nouveau solde : 190 000 FCFA. Reçu RC-241105-0021. »</div>
+    </div>`,
+  remit: () => `
+    <div class="wizard">
+      <h3 style="font-size:16px;margin-bottom:12px">Faire un versement</h3>
+      <div class="fld"><label>Canal</label><select><option>Caisse de la caissière (espèces)</option><option>Mobile Money — compte de l'IMF</option></select></div>
+      <div class="fld"><label>Montant à remettre (FCFA)</label><input value="42500"><p class="hint">Solde de caisse actuel : ${XOF(data.cash)}</p></div>
+      <div class="fld"><label>Note / preuve</label><input placeholder="Ex. remise en espèces au guichet"></div>
+      <div class="alert alert--info">La caissière devra <b>approuver</b> ce versement pour clôturer votre caisse.</div>
+      <div class="step-nav"><button class="btn btn--ghost" data-fv="home">Annuler</button><button class="btn btn--primary" data-fv="remitdone">Déclarer le versement</button></div>
+    </div>`,
+  remitdone: () => `
+    <div class="alert alert--ok">✅ Versement déclaré : 42 500 FCFA (caisse de la caissière). En attente de l'approbation par la caissière.</div>
+    <div class="item"><div class="item__head"><b>Versement 05/11/2026</b><small>VERS-241105-0004 · en attente</small></div><span class="tag tag--warn">à approuver</span></div>
+    <button class="btn btn--dark btn--block" style="margin-top:12px" data-fv="home">Retour à l'accueil</button>`,
+  history: () => `
+    <div class="wizard">
+      <h3 style="font-size:16px;margin-bottom:12px">Mes derniers reçus</h3>
+      ${[['RC-241105-0021','Awa Traoré','5 000'],['RC-241104-0019','Salimata Kaboré','3 000'],['RC-241104-0012','Awa Traoré','5 000'],['RC-241103-0008','Moussa Ouédraogo','2 500']].map(r=>`
+        <div class="item"><div class="item__head"><b>${r[0]}</b><small>${r[1]} · 05/11/2026</small></div><div class="amt">${r[2]} FCFA</div></div>`).join('')}
+      <button class="btn btn--ghost btn--block" style="margin-top:8px" data-fv="home">Retour</button>
+    </div>`,
+  clients: () => `
+    <div class="wizard">
+      <h3 style="font-size:16px;margin-bottom:12px">Clients &amp; solde</h3>
+      ${data.clients.map(c=>`
+        <div class="item"><div class="item__head"><b>${c.nom}</b><small>${c.code} · ${c.tel}</small></div>
+        <div class="amt">${c.solde?XOF(c.solde):'—'}</div>
+        <button class="btn btn--ghost btn--sm">Historique (5)</button></div>`).join('')}
+      <button class="btn btn--ghost btn--block" style="margin-top:8px" data-fv="home">Retour</button>
+    </div>`
+};
+function renderField(v){
+  fieldMain.innerHTML = (fviews[v] || fviews.home)();
+  document.querySelectorAll('#field-main [data-fv]').forEach(b=>b.onclick=()=>renderField(b.dataset.fv));
+  document.querySelectorAll('[data-fv="home"],[data-fv="login"]').forEach(b=>{});
+}
+
+/* ==================== SWITCH DE RÔLE ==================== */
+document.querySelectorAll('#roles button').forEach(btn=>{
+  btn.onclick=()=>{
+    document.querySelectorAll('#roles button').forEach(b=>b.classList.remove('on'));
+    btn.classList.add('on');
+    document.querySelector('.stage').style.display = btn.dataset.role==='admin'?'flex':'none';
+    document.getElementById('stage-cashier').style.display = btn.dataset.role==='cashier'?'flex':'none';
+    document.getElementById('stage-field').style.display = btn.dataset.role==='field'?'flex':'none';
+  };
+});
+
+/* ==================== INIT ==================== */
+document.querySelectorAll('[data-dv]').forEach(b=>b.onclick=()=>renderAdmin(b.dataset.dv));
+renderAdmin('dash');
+renderCashier('pending');
+renderField('login');
+</script>
+</body>
+</html>

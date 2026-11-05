@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0b0c26">
+<meta name="robots" content="noindex,nofollow">
+<title>Espace IMF — teebo</title>
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="side__brand">
+      <img src="assets/teebo-icon.png" width="34" height="34" alt="">
+      <span>tee<b>B</b>o</span>
+    </div>
+    <div class="side__label">Pilotage</div>
+    <button class="nav-item active" data-view="dash"><span class="ic">▤</span> Tableau de bord</button>
+    <button class="nav-item" data-view="org"><span class="ic">⛬</span> Organisation</button>
+    <button class="nav-item" data-view="users"><span class="ic">☺</span> Personnel</button>
+    <div class="side__label">Sécurité &amp; accès</div>
+    <button class="nav-item" data-view="security"><span class="ic">⛨</span> Mon accès</button>
+    <a class="nav-item" href="/securite"><span class="ic">📱</span> Terminaux</a>
+    <a class="nav-item" href="/autorisations"><span class="ic">⇄</span> Autorisations</a>
+    <div class="side__label">Compte</div>
+    <a class="nav-item" href="/essai"><span class="ic">⏳</span> Essai &amp; échéances</a>
+    <a class="nav-item" href="/documentation"><span class="ic">📘</span> Documentation</a>
+    <div class="side__spacer"></div>
+    <div class="side__user">
+      <b id="u-name">…</b>
+      <small id="u-code">…</small>
+      <button class="btn btn--ghost btn--sm" id="btn-logout">Déconnexion</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div id="trial-banner" class="alert alert--warn" hidden></div>
+    <div id="global-alert" class="alert" hidden></div>
+
+    <!-- TABLEAU DE BORD -->
+    <section class="view" id="view-dash">
+      <div class="topbar">
+        <div>
+          <h1>Tableau de bord</h1>
+          <p>Vue d’ensemble de votre institution.</p>
+        </div>
+        <div class="chips" id="dash-chips"></div>
+      </div>
+      <div class="grid grid--stats" id="dash-kpis"></div>
+      <div class="grid grid--2" style="margin-top:16px">
+        <div class="card">
+          <div class="toolbar"><h2>Unités organisationnelles</h2></div>
+          <div id="dash-units-mini"><div class="empty">Chargement…</div></div>
+        </div>
+        <div class="card">
+          <h2 style="font-size:16px;margin-bottom:14px">Règles de sécurité appliquées</h2>
+          <ul class="checks" style="list-style:none;display:grid;gap:10px;font-size:13.5px">
+            <li>Mot de passe expiré automatiquement après 60 jours</li>
+            <li>Déconnexion automatique après 30 minutes d’inactivité</li>
+            <li>Code d’identification généré automatiquement pour l’IMF et chaque agence</li>
+            <li>Cloisonnement strict : aucune donnée partagée entre utilisateurs</li>
+            <li>Aucune donnée partagée entre entités sans autorisation de l’admin</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ORGANISATION -->
+    <section class="view" id="view-org" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Organisation</h1>
+          <p>Direction → départements → services → agences. Les codes sont générés automatiquement.</p>
+        </div>
+        <button class="btn btn--dark" id="btn-new-unit">+ Nouvelle unité</button>
+      </div>
+      <div id="org-tree" class="tree"><div class="empty">Chargement…</div></div>
+    </section>
+
+    <!-- PERSONNEL -->
+    <section class="view" id="view-users" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Personnel</h1>
+          <p>Chaque utilisateur reçoit un code d’accès, envoyé par e-mail et WhatsApp.</p>
+        </div>
+        <button class="btn btn--dark" id="btn-new-user">+ Nouvel utilisateur</button>
+      </div>
+      <div id="users-table"><div class="empty">Chargement…</div></div>
+    </section>
+
+    <!-- SÉCURITÉ -->
+    <section class="view" id="view-security" hidden>
+      <div class="topbar"><div><h1>Mon accès</h1><p>Identifiant, session et mot de passe.</p></div></div>
+      <div class="grid grid--2">
+        <div class="card">
+          <h2 style="font-size:16px;margin-bottom:14px">Changer mon mot de passe</h2>
+          <form id="form-pwd" novalidate>
+            <div class="fld"><label for="pwd-cur">Mot de passe actuel</label><input id="pwd-cur" type="password" required></div>
+            <div class="fld"><label for="pwd-new">Nouveau mot de passe</label><input id="pwd-new" type="password" required>
+              <p class="hint">Au moins 10 caractères, avec majuscule, minuscule et chiffre. Expiration : 60 jours.</p></div>
+            <button class="btn btn--primary" type="submit">Mettre à jour</button>
+          </form>
+        </div>
+        <div class="card">
+          <h2 style="font-size:16px;margin-bottom:14px">Informations de session</h2>
+          <dl id="session-info" style="display:grid;gap:10px;font-size:13.5px"></dl>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<script src="assets/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0b0c26">
+<meta name="robots" content="noindex,nofollow">
+<title>Terminaux & sécurité — teebo</title>
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="side__brand"><img src="assets/teebo-icon.png" width="34" height="34" alt=""><span>tee<b>B</b>o</span></div>
+    <div class="side__label">Pilotage</div>
+    <a class="nav-item" href="/app"><span class="ic">▤</span> Tableau de bord</a>
+    <a class="nav-item" href="/app#org"><span class="ic">⛬</span> Organisation</a>
+    <a class="nav-item active" href="/securite"><span class="ic">⛨</span> Terminaux &amp; sécurité</a>
+    <a class="nav-item" href="/autorisations"><span class="ic">⇄</span> Autorisations</a>
+    <div class="side__label">Compte</div>
+    <a class="nav-item" href="/essai"><span class="ic">⏳</span> Essai &amp; échéances</a>
+    <a class="nav-item" href="/documentation"><span class="ic">📘</span> Documentation</a>
+    <div class="side__spacer"></div>
+    <div class="side__user"><b id="u-name">…</b><small id="u-code">…</small>
+      <a class="btn btn--ghost btn--sm" href="/login" style="margin-top:10px;width:100%">Déconnexion</a></div>
+  </aside>
+  <main class="main">
+    <div class="topbar"><div><h1>Terminaux &amp; sécurité</h1><p>Couplage strict téléphone ↔ collectrice, alertes temps réel et révocation à distance.</p></div>
+      <button class="btn btn--dark" id="btn-enroll">+ Enrôler un terminal</button></div>
+
+    <div id="alerts-card" class="card" style="border-color:#f0c44b">
+      <div class="toolbar"><h2>🔔 Alertes de sécurité</h2><span class="chip chip--warn" id="alert-count">0</span></div>
+      <div id="alerts"><div class="empty">Aucune alerte.</div></div>
+    </div>
+
+    <div class="card"><div class="toolbar"><h2>Terminaux enrôlés</h2><span class="chip" id="dev-count">—</span></div>
+      <div id="devices"><div class="empty">Chargement…</div></div></div>
+  </main>
+</div>
+<div id="modal-root"></div>
+<script src="assets/securite.js" defer></script>
+</body>
+</html>
