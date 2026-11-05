@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#0b0c26">
 <meta name="robots" content="noindex,nofollow">
 <title>Espace IMF — teebo</title>
+<link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="assets/favicon.ico" sizes="any">
 <link rel="stylesheet" href="assets/app.css">
 </head>
@@ -108,6 +109,14 @@
           <h2 style="font-size:16px;margin-bottom:14px">Informations de session</h2>
           <dl id="session-info" style="display:grid;gap:10px;font-size:13.5px"></dl>
         </div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <h2 style="font-size:16px">Double authentification (2FA)</h2>
+          <span id="twofa-badge" class="tag">…</span>
+        </div>
+        <p class="hint" style="margin-bottom:14px">Obligatoire pour tous les comptes teebo. À chaque connexion, un <b>code à 6 chiffres</b> généré par votre application d'authentification (Google Authenticator, Authy, FreeOTP…) sera demandé en plus du mot de passe.</p>
+        <div id="twofa-body"><div class="empty">Chargement…</div></div>
       </div>
     </section>
   </main>

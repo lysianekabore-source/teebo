@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#0b0c26">
 <meta name="robots" content="noindex,nofollow">
 <title>teebo terrain — collectrice</title>
+<link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="assets/favicon.ico" sizes="any">
 <link rel="stylesheet" href="assets/terrain.css">
 </head>
@@ -14,7 +15,7 @@
 <!-- ÉCRAN DE CONNEXION (identifiant + PIN numérique, appareil couplé) -->
 <div class="auth-wrap" id="scr-login">
   <div class="auth-card">
-    <div class="logo">B</div>
+    <img class="logo" src="assets/app-icon-192.png" alt="teebo" width="46" height="46" style="border-radius:12px">
     <h1>teebo terrain</h1>
     <p class="sub">Application de collecte de proximité</p>
     <p class="slogan">La finance à visage humain</p>
@@ -43,7 +44,7 @@
 
 <!-- ÉCRAN BLOQUÉ (appareil non reconnu / révoqué) -->
 <div class="phone" id="scr-blocked" hidden>
-  <div class="appbar"><div class="mark">B</div><div><b>teebo terrain</b><small>Accès bloqué</small></div></div>
+  <div class="appbar"><img class="mark" src="assets/app-icon-64.png" alt="teebo" width="34" height="34" style="border-radius:9px"><div><b>teebo terrain</b><small>Accès bloqué</small></div></div>
   <div class="pad">
     <div class="blocked">
       <div class="lock">⛔</div>
@@ -58,7 +59,7 @@
 <!-- APPLICATION TERRAIN (5 actions) -->
 <div class="phone" id="scr-app" hidden>
   <header class="appbar">
-    <div class="mark">B</div>
+    <img class="mark" src="assets/app-icon-64.png" alt="teebo" width="34" height="34" style="border-radius:9px">
     <div><b id="who-name">Collectrice</b><small id="who-device">Terminal couplé</small></div>
     <div class="spacer"></div>
     <button class="logout" id="btn-logout">Quitter</button>

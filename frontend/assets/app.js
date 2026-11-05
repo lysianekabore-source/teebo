@@ -199,6 +199,70 @@
       ['Expiration du mot de passe', me.password_expires_at ? new Date(me.password_expires_at).toLocaleString('fr-FR') : '—'],
       ['Déconnexion auto', 'après 30 minutes d’inactivité']];
     $('session-info').innerHTML = rows.map(function (r) { return '<div><dt style="font-size:12px;color:var(--muted)">' + r[0] + '</dt><dd style="font-weight:600">' + esc(r[1]) + '</dd></div>'; }).join('');
+    render2fa();
+  }
+
+  // ----- Double authentification (état + enrôlement + codes de secours) -----
+  function render2fa() {
+    var host = $('twofa-body'); if (!host) return;
+    api('/api/v1/auth/2fa/status').then(function (st) {
+      var b = $('twofa-badge');
+      if (st.enabled) { b.textContent = 'Activée'; b.style.background = '#e8f7c8'; b.style.color = '#3d5c00'; }
+      else { b.textContent = 'Non activée'; b.style.background = '#ffe6e6'; b.style.color = '#a00'; }
+      if (st.enabled) {
+        host.innerHTML = '<p style="font-size:13.5px;margin-bottom:10px">Votre compte est protégé. Codes de secours restants : <b>' + (st.recovery_count || 0) + '</b>.</p>' +
+          '<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn--dark" id="tfa-regen">Régénérer mes codes de secours</button>' +
+          '<button class="btn btn--ghost" id="tfa-restart">Ré-enrôler (nouveau téléphone)</button></div>';
+        $('tfa-restart').addEventListener('click', function () { startEnroll(); });
+        $('tfa-regen').addEventListener('click', function () { regenCodes(this); });
+      } else {
+        host.innerHTML = '<button class="btn btn--primary" id="tfa-start">Activer la double authentification</button>';
+        $('tfa-start').addEventListener('click', function () { startEnroll(); });
+      }
+    }).catch(function (e) { host.innerHTML = '<div class="empty">' + esc(fr(e)) + '</div>'; });
+  }
+
+  function startEnroll() {
+    var host = $('twofa-body');
+    host.innerHTML = '<div class="empty">Préparation…</div>';
+    api('/api/v1/auth/2fa/enroll/start', 'POST', {}).then(function (d) {
+      var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=190x190&data=' + encodeURIComponent(d.otpauth_uri);
+      host.innerHTML =
+        '<div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start">' +
+        '<div style="text-align:center"><img src="' + qr + '" width="190" height="190" alt="QR d\'enrôlement" style="border:1px solid var(--line);border-radius:12px;background:#fff"></div>' +
+        '<div style="flex:1;min-width:240px">' +
+        '<p style="font-size:13.5px;margin-bottom:8px">1. Installez <b>Google Authenticator</b>, <b>Authy</b> ou <b>FreeOTP</b> sur votre téléphone.</p>' +
+        '<p style="font-size:13.5px;margin-bottom:8px">2. Scannez ce QR code (ou saisissez la clé ci-dessous).</p>' +
+        '<p style="font-size:12.5px;color:var(--muted);margin-bottom:14px">Clé manuelle : <code style="background:#f2f2f7;padding:3px 7px;border-radius:6px;font-size:12.5px">' + esc(d.secret) + '</code></p>' +
+        '<div class="fld"><label for="tfa-code">3. Saisissez le code à 6 chiffres affiché</label><input id="tfa-code" class="pin" inputmode="numeric" maxlength="6" placeholder="••••••"></div>' +
+        '<button class="btn btn--primary" id="tfa-confirm">Confirmer et activer</button>' +
+        '</div></div>';
+      $('tfa-confirm').addEventListener('click', function () { confirmEnroll(this); });
+    }).catch(function (e) { host.innerHTML = '<div class="empty">' + esc(fr(e)) + '</div>'; });
+  }
+
+  function confirmEnroll(btn) {
+    var code = ($('tfa-code').value || '').replace(/\D/g, '');
+    if (code.length !== 6) { notify('Le code doit comporter 6 chiffres.', 'err'); return; }
+    btn.disabled = true; btn.textContent = 'Vérification…';
+    api('/api/v1/auth/2fa/enroll/confirm', 'POST', { code: code }).then(function (d) {
+      var codes = (d.recovery_codes || []).join('   ');
+      openModal(
+        '<h2>Double authentification activée</h2>' +
+        '<p class="sub">Conservez ces <b>codes de secours</b>. Chacun ne peut servir qu’une seule fois, en cas de perte de votre téléphone. Notez-les maintenant : ils ne seront plus affichés.</p>' +
+        '<div style="background:#f7f8fb;border:1px dashed var(--line);border-radius:12px;padding:14px;font-family:ui-monospace,Menlo,monospace;font-size:14px;letter-spacing:.5px;text-align:center;line-height:2">' + esc(codes) + '</div>' +
+        '<div class="modal__nav"><button class="btn btn--ghost" id="rc-copy">Copier</button><button class="btn btn--primary" id="rc-ok">J’ai noté</button></div>');
+      $('rc-copy').addEventListener('click', function () { try { navigator.clipboard.writeText((d.recovery_codes || []).join('\n')); this.textContent = 'Copié ✓'; } catch (e) {} });
+      $('rc-ok').addEventListener('click', function () { closeModal(); render2fa(); });
+    }).catch(function (e) { btn.disabled = false; btn.textContent = 'Confirmer et activer'; notify(fr(e), 'err'); });
+  }
+
+  function regenCodes(btn) {
+    btn.disabled = true; btn.textContent = 'Génération…';
+    api('/api/v1/auth/2fa/enroll/start', 'POST', {}).then(function () {
+      notify('Saisissez un code à 6 chiffres pour valider la régénération.', 'info');
+      startEnroll();
+    }).catch(function (e) { notify(fr(e), 'err'); });
   }
   $('form-pwd').addEventListener('submit', function (e) {
     e.preventDefault();
@@ -228,7 +292,19 @@
     $('u-name').textContent = d.user.full_name;
     $('u-code').textContent = d.user.code_user + ' · ' + (d.imf_code || '');
     return Promise.all([loadUnits(), loadUsers(), loadTrial()]);
-  }).then(function () { renderDash(); renderSession(); switchView('dash'); })
+  }).then(function () {
+    renderDash(); renderSession();
+    // 2FA obligatoire : si l'enrôlement est signalé comme requis, on ouvre
+    // directement « Mon accès » et on invite l'utilisateur à l'activer.
+    var pending = false;
+    try { pending = sessionStorage.getItem('teebo_2fa_enroll') === '1'; } catch (e) {}
+    if (pending) { try { sessionStorage.removeItem('teebo_2fa_enroll'); } catch (e) {}
+      switchView('security');
+      notify('Activation de la double authentification requise pour continuer.', 'info');
+      return;
+    }
+    switchView('dash');
+  })
     .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
 
   // ----- Essai & échéances : bandeau J25 + blocage J31 -----

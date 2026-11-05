@@ -26,6 +26,7 @@
       missing_fields: 'Veuillez remplir tous les champs.',
       invalid_current_password: 'Mot de passe actuel incorrect.',
       idle_timeout: 'Session expirée après 30 minutes d’inactivité. Reconnectez-vous.',
+      twofa_required: 'Double authentification obligatoire : activez-la dans votre espace. Contactez votre administrateur si besoin.',
       session_expired: 'Votre session a expiré. Reconnectez-vous.',
       password_change_required: 'Vous devez changer votre mot de passe.',
       invalid_code: 'Code invalide. Réessayez.',
@@ -40,14 +41,33 @@
     return m[code] || 'Une erreur est survenue. Réessayez.';
   }
 
+  // Onglet « Premier accès » : visible au 1er accès seulement.
+  // Dès la 2e connexion sur cet appareil, on ne garde que « Connexion ».
+  (function () {
+    var SEEN = 'teebo_seen';
+    var seen = false;
+    try { seen = !!localStorage.getItem(SEEN); } catch (e) {}
+    var activate = document.querySelector('.tab[data-tab="activate"]');
+    if (seen && activate) {
+      activate.parentNode.removeChild(activate);
+      var f = document.getElementById('form-activate');
+      if (f) f.parentNode.removeChild(f);
+      var l = document.querySelector('.tab[data-tab="login"]');
+      if (l) l.classList.add('active');
+    } else {
+      try { localStorage.setItem(SEEN, '1'); } catch (e) {}
+    }
+  })();
+
   // Onglets
   document.querySelectorAll('.tab').forEach(function (t) {
     t.addEventListener('click', function () {
       document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
       t.classList.add('active'); hide();
       ['form-login','form-activate','form-change','form-2fa'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
-      var map = { login: 'form-login', activate: 'form-activate', change: 'form-change' };
-      $(map[t.dataset.tab]).hidden = false;
+      var map = { login: 'form-login', activate: 'form-activate', 'change': 'form-change' };
+      var target = $(map[t.dataset.tab]);
+      if (target) target.hidden = false;
     });
   });
 
@@ -105,6 +125,13 @@
     post('/api/v1/auth/login', { identifier: $('identifier').value.trim(), password: $('password').value })
       .then(function (d) {
         if (d.twofa_required) { b.disabled = false; b.textContent = old; showTwofaPane(d.challenge); return; }
+        if (d.twofa_enrollment_required) {
+          b.disabled = false; b.textContent = old;
+          try { sessionStorage.setItem('teebo_2fa_enroll', '1'); } catch (e) {}
+          show('La double authentification est obligatoire. Vous allez activer votre compte.', false);
+          setTimeout(function () { window.location.assign('/login.html'); }, 400);
+          return;
+        }
         if (d.password_change_required) { b.disabled = false; b.textContent = old; showChangePane(); return; }
         return routeAfterLogin();
       })
@@ -112,7 +139,7 @@
   });
 
   // --- Activation (premier accès) ---
-  $('form-activate').addEventListener('submit', function (e) {
+  if ($('form-activate')) $('form-activate').addEventListener('submit', function (e) {
     e.preventDefault(); hide();
     if ($('new_password').value !== $('confirm').value) { show('Les mots de passe ne correspondent pas.', false); return; }
     var b = e.target.querySelector('button[type=submit]'); b.disabled = true; var old = b.textContent; b.textContent = 'Activation…';

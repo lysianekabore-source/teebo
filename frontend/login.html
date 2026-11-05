@@ -7,18 +7,17 @@
 <meta name="robots" content="noindex,nofollow">
 <title>Connexion — teebo</title>
 <link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="assets/app-icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
 <link rel="stylesheet" href="assets/auth.css">
 </head>
 <body>
 <main class="card">
   <div class="card__head">
-    <img class="brandmark" src="assets/teebo-icon.png" width="66" height="66" alt="teebo">
-    <h1 class="welcome">Bienvenue dans teebo</h1>
-    <p class="slogan">La finance à visage humain</p>
-    <p class="subtitle">Connectez-vous à votre espace</p>
+    <img class="brandmark" src="assets/app-icon-192.png" width="66" height="66" alt="teebo" style="border-radius:16px">
   </div>
   <div class="card__body">
-    <div class="tabs">
+    <div class="tabs" id="auth-tabs">
       <button type="button" class="tab active" data-tab="login">Connexion</button>
       <button type="button" class="tab" data-tab="activate">Premier accès</button>
     </div>
@@ -53,7 +52,7 @@
       </div>
       <div class="field">
         <label for="confirm">Confirmer le mot de passe</label>
-        <input id="confirm" name="confirm" type="password" autocomplete="new-password" required>
+        <input id="confirm" type="password" autocomplete="new-password" required>
       </div>
       <button type="submit" class="btn btn--primary btn--block">Activer mon accès</button>
     </form>
@@ -86,5 +85,30 @@
   </div>
 </main>
 <script src="assets/auth.js" defer></script>
+<script>
+  /* Installation de l'application (PWA) : propose « Installer » au premier clic */
+  (function () {
+    if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js').catch(function () {}); }
+    var deferred = null;
+    window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); deferred = e; showInstallBar(); });
+    window.addEventListener('appinstalled', function () { var b = document.getElementById('install-bar'); if (b) b.parentNode.removeChild(b); });
+    function showInstallBar() {
+      if (document.getElementById('install-bar')) return;
+      var bar = document.createElement('div');
+      bar.id = 'install-bar';
+      bar.setAttribute('style', 'position:fixed;left:0;right:0;bottom:0;background:#0b0c26;color:#fff;padding:14px 16px;display:flex;gap:12px;align-items:center;justify-content:space-between;z-index:9999;font-family:inherit');
+      bar.innerHTML = '<span style="font-size:13.5px">📲 Installez teebo sur votre téléphone ou ordinateur pour un accès plus rapide.</span>' +
+        '<span style="display:flex;gap:8px"><button id="install-go" style="background:#d8f500;color:#0b0c26;border:0;border-radius:10px;padding:9px 16px;font-weight:700;cursor:pointer">Installer</button>' +
+        '<button id="install-no" style="background:transparent;color:#b9bbd4;border:1px solid #3a3c56;border-radius:10px;padding:9px 14px;cursor:pointer">Plus tard</button></span>';
+      document.body.appendChild(bar);
+      document.getElementById('install-no').addEventListener('click', function () { bar.parentNode.removeChild(bar); });
+      document.getElementById('install-go').addEventListener('click', function () {
+        if (!deferred) { bar.parentNode.removeChild(bar); return; }
+        deferred.prompt();
+        deferred.userChoice.then(function () { deferred = null; bar.parentNode.removeChild(bar); });
+      });
+    }
+  })();
+</script>
 </body>
 </html>
