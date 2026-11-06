@@ -5,6 +5,20 @@
   var API = ''; // même origine
   var $ = function (id) { return document.getElementById(id); };
 
+  // PWA : lorsque l'application installée est ouverte depuis son icône
+  // (mode autonome), on révoque toute session résiduelle afin d'imposer
+  // une authentification à chaque lancement. L'écran de connexion reste
+  // ainsi systématiquement le point d'entrée.
+  (function forceReauthOnLaunch() {
+    var standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+      || window.navigator.standalone === true;
+    if (!standalone) return;
+    try {
+      fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, keepalive: true }).catch(function () {});
+    } catch (e) { /* silencieux */ }
+  })();
+
   function show(msg, ok) {
     var a = $('alert');
     a.textContent = msg;

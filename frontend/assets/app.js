@@ -162,13 +162,14 @@
     var box = $('users-table');
     if (!users.length) { box.innerHTML = '<div class="empty">Aucun utilisateur. Créez le premier accès.</div>'; return; }
     var canManage = ['admin_imf', 'direction'].indexOf(me.user.role) >= 0;
-    box.innerHTML = '<table class="tbl"><thead><tr><th>Nom</th><th>Code d’accès</th><th>Rôle</th><th>Unité</th><th>Contact</th><th>Mot de passe</th>' + (canManage ? '<th>Code d’accès</th>' : '') + '</tr></thead><tbody>' +
+    box.innerHTML = '<table class="tbl"><thead><tr><th>Nom</th><th>Code d’accès</th><th>Rôle</th><th>Unité</th><th>Contact</th><th>Mot de passe</th>' + (canManage ? '<th>Envoi du code</th>' : '') + '</tr></thead><tbody>' +
       users.map(function (u) {
         var acts = '';
         if (canManage && u.role !== 'admin_imf') {
-          acts = '<td style="white-space:nowrap">' +
-            '<button class="btn btn--ghost btn--sm" data-uresend="' + esc(u.id) + '">Renvoyer</button> ' +
-            '<button class="btn btn--ghost btn--sm" data-uregen="' + esc(u.id) + '">Régénérer</button></td>';
+          acts = '<td><div class="send-actions">' +
+            '<button class="btn btn--ghost btn--sm send-btn" data-uresend="' + esc(u.id) + '" title="Renvoyer le code par WhatsApp et e-mail"><span class="send-ic" aria-hidden="true">✉</span> Renvoyer</button>' +
+            '<button class="btn btn--ghost btn--sm send-btn" data-uregen="' + esc(u.id) + '" title="Générer un nouveau code et l\'envoyer"><span class="send-ic" aria-hidden="true">↻</span> Régénérer</button>' +
+            '</div></td>';
         } else if (canManage) { acts = '<td><small style="color:var(--muted)">—</small></td>'; }
         return '<tr><td><b>' + esc(u.full_name) + '</b>' + (u.position ? '<br><small style="color:var(--muted)">' + esc(u.position) + '</small>' : '') + '</td>' +
           '<td><code>' + esc(u.code_user) + '</code></td><td>' + esc(ROLE_LABEL[u.role] || u.role) + '</td>' +
