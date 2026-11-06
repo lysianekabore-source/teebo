@@ -161,13 +161,42 @@
   function renderUsers() {
     var box = $('users-table');
     if (!users.length) { box.innerHTML = '<div class="empty">Aucun utilisateur. Créez le premier accès.</div>'; return; }
-    box.innerHTML = '<table class="tbl"><thead><tr><th>Nom</th><th>Code d’accès</th><th>Rôle</th><th>Unité</th><th>Contact</th><th>Mot de passe</th></tr></thead><tbody>' +
+    var canManage = ['admin_imf', 'direction'].indexOf(me.user.role) >= 0;
+    box.innerHTML = '<table class="tbl"><thead><tr><th>Nom</th><th>Code d’accès</th><th>Rôle</th><th>Unité</th><th>Contact</th><th>Mot de passe</th>' + (canManage ? '<th>Code d’accès</th>' : '') + '</tr></thead><tbody>' +
       users.map(function (u) {
+        var acts = '';
+        if (canManage && u.role !== 'admin_imf') {
+          acts = '<td style="white-space:nowrap">' +
+            '<button class="btn btn--ghost btn--sm" data-uresend="' + esc(u.id) + '">Renvoyer</button> ' +
+            '<button class="btn btn--ghost btn--sm" data-uregen="' + esc(u.id) + '">Régénérer</button></td>';
+        } else if (canManage) { acts = '<td><small style="color:var(--muted)">—</small></td>'; }
         return '<tr><td><b>' + esc(u.full_name) + '</b>' + (u.position ? '<br><small style="color:var(--muted)">' + esc(u.position) + '</small>' : '') + '</td>' +
           '<td><code>' + esc(u.code_user) + '</code></td><td>' + esc(ROLE_LABEL[u.role] || u.role) + '</td>' +
           '<td>' + esc(u.unit_name || '—') + '</td><td>' + esc(u.email) + (u.phone ? '<br><small style="color:var(--muted)">' + esc(u.phone) + '</small>' : '') + '</td>' +
-          '<td>' + (u.must_change_password ? '<span class="tag tag--warn">À créer</span>' : '<span class="tag tag--ok">Actif</span>') + '</td></tr>';
+          '<td>' + (u.must_change_password ? '<span class="tag tag--warn">À créer</span>' : '<span class="tag tag--ok">Actif</span>') + '</td>' + acts + '</tr>';
       }).join('') + '</tbody></table>';
+    if (canManage) {
+      box.querySelectorAll('[data-uresend]').forEach(function (b) { b.addEventListener('click', function () { userResend(b.dataset.uresend); }); });
+      box.querySelectorAll('[data-uregen]').forEach(function (b) { b.addEventListener('click', function () { userRegen(b.dataset.uregen); }); });
+    }
+  }
+
+  // ----- Renvoi / régénération du code d'accès d'un utilisateur de l'IMF -----
+  function userResend(id) {
+    api('/api/v1/users/' + id + '/resend-code', 'POST')
+      .then(function (d) { notify('Code d’accès renvoyé : ' + d.code_user + ' → ' + d.sent_to, 'ok'); })
+      .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+  function userRegen(id) {
+    openModal('<h3>Régénérer le code d’accès</h3><p class="sub">Un NOUVEAU code sera généré et l’ancien mot de passe effacé : l’utilisateur devra créer son mot de passe après sa 1re connexion. Le code est envoyé par WhatsApp et e-mail.</p>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="ug-cancel">Annuler</button><button class="btn btn--primary" id="ug-ok">Régénérer et envoyer</button></div>');
+    $('ug-cancel').addEventListener('click', closeModal);
+    $('ug-ok').addEventListener('click', function () {
+      var self = this; self.disabled = true;
+      api('/api/v1/users/' + id + '/regenerate-code', 'POST').then(function (d) {
+        closeModal(); notify('Nouveau code généré : ' + d.code_user + ' → ' + d.sent_to, 'ok'); return loadUsers();
+      }).catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
   }
   function userModal() {
     var roleOpts = ['direction','department','service','agency','staff'];
@@ -302,6 +331,8 @@
       set('s-vat_number', s.vat_number); set('s-bceao_agreement_no', s.bceao_agreement_no);
       set('s-legal_address', s.legal_address); set('s-bank_details', s.bank_details);
       set('s-footer_note', s.footer_note);
+      // Coordonnées d'envoi des codes/notifications aux utilisateurs de l'IMF.
+      set('s-notif_whatsapp', d.notif_whatsapp); set('s-notif_email', d.notif_email);
       $('s-share_capital').value = s.share_capital_cents != null ? fmtAmount(s.share_capital_cents / 100) : '';
       // TVA : points de base -> pourcentage lisible (vide = non applicable)
       $('s-vat').value = d.vat_rate_bp != null ? String(d.vat_rate_bp / 100).replace('.', ',') : '';
@@ -321,6 +352,7 @@
       $('settings-readonly').hidden = settingsCanEdit;
       ['s-legal_name','s-legal_form','s-trade_register_no','s-tax_id','s-vat_number','s-bceao_agreement_no',
        's-share_capital','s-legal_address','s-bank_details','s-footer_note','s-vat',
+       's-notif_whatsapp','s-notif_email',
        'btn-logo-pick','btn-settings-save'].forEach(function (id) {
         var e = $(id); if (e) e.disabled = !settingsCanEdit;
       });
@@ -380,6 +412,8 @@
       vat_number: $('s-vat_number').value.trim(), bceao_agreement_no: $('s-bceao_agreement_no').value.trim(),
       legal_address: $('s-legal_address').value.trim(), bank_details: $('s-bank_details').value.trim(),
       footer_note: $('s-footer_note').value.trim(),
+      notif_whatsapp: $('s-notif_whatsapp') ? $('s-notif_whatsapp').value.trim() : undefined,
+      notif_email: $('s-notif_email') ? $('s-notif_email').value.trim() : undefined,
       share_capital_cents: capRaw ? Number(capRaw) * 100 : null,
       vat_rate_bp: vatBp
     };

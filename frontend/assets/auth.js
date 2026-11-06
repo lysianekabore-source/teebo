@@ -36,7 +36,10 @@
       locked: 'Trop de tentatives. Réessayez dans quelques minutes.',
       user_disabled: 'Ce compte est désactivé.',
       email_not_registered: 'Cet e-mail n’est pas enregistré. Contactez votre administrateur.',
-      forbidden: 'Accès non autorisé.'
+      forbidden: 'Accès non autorisé.',
+      missing_identifier: 'Veuillez saisir votre identifiant ou e-mail.',
+      invalid_reset: 'Code expiré ou introuvable. Recommencez la procédure.',
+      too_many_attempts: 'Trop de tentatives. Recommencez la procédure.'
     };
     return m[code] || 'Une erreur est survenue. Réessayez.';
   }
@@ -51,7 +54,7 @@
     t.addEventListener('click', function () {
       document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
       t.classList.add('active'); hide();
-      ['form-login','form-activate','form-change','form-2fa'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
+      ['form-login','form-activate','form-change','form-2fa','form-forgot','form-reset'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
       var map = { login: 'form-login', activate: 'form-activate', 'change': 'form-change' };
       var target = $(map[t.dataset.tab]);
       if (target) target.hidden = false;
@@ -238,5 +241,61 @@
   if ($('btn-enroll-done')) {
     $('btn-enroll-done').addEventListener('click', function () { routeAfterLogin(); });
   }
+
+  // --- Mot de passe oublié : demande du code puis réinitialisation --------
+  function showForgotPane() {
+    document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
+    ['form-login','form-activate','form-change','form-2fa','form-reset'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
+    if ($('form-forgot')) $('form-forgot').hidden = false;
+    hide();
+    try { $('fp-id').focus(); } catch (e) {}
+  }
+  function showResetPane() {
+    document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
+    ['form-login','form-activate','form-change','form-2fa','form-forgot'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
+    if ($('form-reset')) $('form-reset').hidden = false;
+    try { $('rp-code').focus(); } catch (e) {}
+  }
+  function backToLogin() {
+    document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
+    var lt = document.querySelector('.tab[data-tab=login]'); if (lt) lt.classList.add('active');
+    ['form-activate','form-change','form-2fa','form-forgot','form-reset'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
+    if ($('form-login')) $('form-login').hidden = false;
+    hide();
+  }
+
+  var RESET_ID = '';
+  if ($('link-forgot')) $('link-forgot').addEventListener('click', showForgotPane);
+  if ($('fp-back')) $('fp-back').addEventListener('click', backToLogin);
+  if ($('rp-back')) $('rp-back').addEventListener('click', backToLogin);
+
+  if ($('form-forgot')) $('form-forgot').addEventListener('submit', function (e) {
+    e.preventDefault(); hide();
+    var id = $('fp-id').value.trim();
+    if (!id) { show(msgFr('missing_identifier'), false); return; }
+    RESET_ID = id;
+    var b = e.target.querySelector('button[type=submit]'); b.disabled = true; var old = b.textContent; b.textContent = 'Envoi…';
+    post('/api/v1/auth/forgot-password', { identifier: id })
+      .then(function (d) {
+        b.disabled = false; b.textContent = old;
+        showResetPane();
+        show((d && d.message) || 'Si un compte correspond, un code vous a été envoyé par WhatsApp et e-mail.', true);
+      })
+      .catch(function (err) { b.disabled = false; b.textContent = old; show(msgFr(err.message), false); });
+  });
+
+  if ($('form-reset')) $('form-reset').addEventListener('submit', function (e) {
+    e.preventDefault(); hide();
+    var code = ($('rp-code').value || '').replace(/\D/g, '');
+    if (code.length !== 6) { show('Le code doit comporter 6 chiffres.', false); return; }
+    if ($('rp-new').value !== $('rp-confirm').value) { show('Les mots de passe ne correspondent pas.', false); return; }
+    var b = e.target.querySelector('button[type=submit]'); b.disabled = true; var old = b.textContent; b.textContent = 'Réinitialisation…';
+    post('/api/v1/auth/reset-password', { identifier: RESET_ID, code: code, new_password: $('rp-new').value })
+      .then(function () {
+        backToLogin();
+        show('Mot de passe réinitialisé. Connectez-vous avec votre nouveau mot de passe.', true);
+      })
+      .catch(function (err) { b.disabled = false; b.textContent = old; show(msgFr(err.message), false); });
+  });
 
 })();
