@@ -72,14 +72,15 @@ export function totpNow(secretBase32, atMs = Date.now()) {
 }
 
 /**
- * Vérifie un code saisi par l'utilisateur, avec une tolérance de ±1 période
- * (dérive d'horloge). Renvoie { ok, offset, counter }.
+ * Vérifie un code saisi par l'utilisateur, avec une tolérance de ±2 périodes
+ * (±60 s) pour absorber la dérive d'horloge courante entre le téléphone de
+ * l'utilisateur et le serveur. Renvoie { ok, offset, counter }.
  */
 export function verifyTotp(secretBase32, code, atMs = Date.now()) {
   const c = String(code || '').replace(/\D/g, '');
   if (c.length !== 6) return { ok: false, offset: null, counter: null };
   const counter = Math.floor(atMs / 1000 / 30);
-  for (const off of [0, -1, 1]) {
+  for (const off of [0, -1, 1, -2, 2]) {
     if (hotp(secretBase32, counter + off) === c) return { ok: true, offset: off, counter: counter + off };
   }
   return { ok: false, offset: null, counter: null };

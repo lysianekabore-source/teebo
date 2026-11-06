@@ -29,7 +29,22 @@
   function post(path, body) {
     return fetch(API + path, { method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) })
-      .then(function (r) { return r.json().catch(function(){return{};}).then(function (d) { if (!r.ok) throw new Error(d.error || 'error'); return d; }); });
+      .then(function (r) { return r.json().catch(function(){return{};}).then(function (d) {
+        if (!r.ok) {
+          // On conserve le corps de la réponse sur l'objet d'erreur : après un
+          // code 2FA erroné, le serveur renvoie un NOUVEAU « challenge » qu'il
+          // faut réutiliser pour la tentative suivante (sinon le défi déjà
+          // consommé fait échouer toutes les reprises).
+          var err = new Error(d.error || 'error');
+          err.data = d;
+          err.status = r.status;
+          if (d.challenge) err.challenge = d.challenge;
+          if (d.attempts_left != null) err.attempts_left = d.attempts_left;
+          if (d.locked_until) err.locked_until = d.locked_until;
+          throw err;
+        }
+        return d;
+      }); });
   }
   function msgFr(code) {
     var m = {
@@ -43,8 +58,11 @@
       twofa_required: 'Double authentification obligatoire : activez-la dans votre espace. Contactez votre administrateur si besoin.',
       session_expired: 'Votre session a expiré. Reconnectez-vous.',
       password_change_required: 'Vous devez changer votre mot de passe.',
-      invalid_code: 'Code invalide. Réessayez.',
+      invalid_code: 'Code invalide. Vérifiez que l’heure de votre téléphone est bien automatique, puis réessayez.',
+      replay: 'Ce code a déjà été utilisé. Attendez le code suivant dans votre application, puis réessayez.',
+      not_enabled: 'La double authentification n’est pas activée sur ce compte. Reconnectez-vous.',
       invalid_challenge: 'Session de vérification expirée. Reconnectez-vous.',
+      challenge_used: 'Session de vérification déjà utilisée. Reconnectez-vous.',
       challenge_expired: 'Le délai de saisie du code a expiré. Reconnectez-vous.',
       missing_challenge: 'Vérification impossible. Reconnectez-vous.',
       locked: 'Trop de tentatives. Réessayez dans quelques minutes.',
@@ -106,9 +124,23 @@
     post('/api/v1/auth/2fa/verify', body)
       .then(function () { return routeAfterLogin(); })
       .catch(function (err) {
-        if (err && err.challenge) CHALLENGE = err.challenge;
         btn.disabled = false; btn.textContent = oldLabel;
-        show(msgFr(err.message) , false);
+        var code = err && err.message;
+        // Le défi est perdu/expiré/déjà consommé côté serveur et ne peut pas
+        // être rejoué : on renvoie l'utilisateur sur l'écran de connexion pour
+        // qu'il ré obtienne un défi frais via son mot de passe.
+        if (code === 'invalid_challenge' || code === 'challenge_used' ||
+            code === 'challenge_expired' || code === 'missing_challenge') {
+          CHALLENGE = null;
+          backToLogin();
+          show(msgFr(code), false);
+          return;
+        }
+        // Code erroné (ou rejeu) : le serveur a émis un NOUVEAU défi, on le
+        // mémorise pour permettre une nouvelle tentative sans tout recommencer.
+        if (err && err.challenge) CHALLENGE = err.challenge;
+        try { $('otp').value = ''; $('otp').focus(); } catch (e) {}
+        show(msgFr(code), false);
       });
   }
 
