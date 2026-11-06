@@ -3,7 +3,8 @@ import crypto from 'crypto';
 import { q, tx } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
 import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL } from '../notify.js';
-import { getBranding, renderInvoice, setDocumentCsp } from '../documents.js';
+import { getBranding, renderInvoice, setDocumentCsp, moneyFcfa } from '../documents.js';
+import { buildInvoiceLines, LICENCE_CENTS } from '../pricing.js';
 
 const router = express.Router();
 
@@ -30,7 +31,13 @@ router.get('/requests', async (_req, res, next) => {
                  ORDER BY au.created_at ASC LIMIT 1) AS admin_user_id,
               (SELECT au.must_change_password FROM app_user au
                  WHERE au.imf_id = r.imf_id AND au.role = 'admin_imf'
-                 ORDER BY au.created_at ASC LIMIT 1) AS admin_must_change
+                 ORDER BY au.created_at ASC LIMIT 1) AS admin_must_change,
+              (SELECT iv.id FROM invoice iv
+                 WHERE iv.request_id = r.id AND iv.kind = 'definitive'
+                 ORDER BY iv.created_at DESC LIMIT 1) AS definitive_invoice_id,
+              (SELECT iv.invoice_no FROM invoice iv
+                 WHERE iv.request_id = r.id AND iv.kind = 'definitive'
+                 ORDER BY iv.created_at DESC LIMIT 1) AS definitive_invoice_no
          FROM access_request r JOIN imf i ON i.id = r.imf_id
         ORDER BY r.created_at DESC`
     );
@@ -55,26 +62,31 @@ router.post('/requests/:id/approve', async (req, res, next) => {
         [req.user.id, r.id]);
 
       // FACTURE DÉFINITIVE : génération du numéro séquentiel (fn_gen_invoice_no)
-      // et enregistrement de la facture émise au nom de l'IMF. Le taux de TVA
-      // provient du paramétrage du tenant (imf_document_settings.vat_rate_bp) :
-      // s'il est NULL, la facture porte la mention « TVA non applicable ».
-      const amountCents = r.proforma_amount_cents || 0;
+      // et enregistrement de la facture émise au nom de l'IMF. On reprend le
+      // détail tarifaire de la demande : licence (frais unique) + abonnement,
+      // la remise éventuelle du cycle annuel, puis la TVA du tenant.
+      const licenceCents = r.licence_cents != null ? r.licence_cents : LICENCE_CENTS;
+      const subscriptionCents = r.subscription_cents != null
+        ? r.subscription_cents : (r.proforma_amount_cents || 0);
+      const discountCents = r.discount_cents || 0;
+      const subtotalCents = licenceCents + subscriptionCents;       // HT avant remise
+      const netCents = Math.max(0, subtotalCents - discountCents);  // HT après remise
       const setRow = (await c.query(
         'SELECT vat_rate_bp FROM imf_document_settings WHERE imf_id=$1', [r.imf_id])).rows[0];
       const vatBp = (setRow && setRow.vat_rate_bp != null) ? setRow.vat_rate_bp : 0;
-      const vatCents = vatBp ? Math.round(amountCents * vatBp / 10000) : 0;
-      const totalCents = amountCents + vatCents;
+      const vatCents = vatBp ? Math.round(netCents * vatBp / 10000) : 0;
+      const totalCents = netCents + vatCents;
       const invoiceNo = (await c.query('SELECT fn_gen_invoice_no() AS n')).rows[0].n;
       const planRow = (await c.query('SELECT label FROM plan WHERE code=$1', [r.plan_code])).rows[0];
       const inv = (await c.query(
         `INSERT INTO invoice(imf_id, invoice_no, kind, request_id, plan_code, plan_label,
-             subtotal_cents, vat_rate_bp, vat_cents, total_cents, currency,
+             subtotal_cents, discount_cents, vat_rate_bp, vat_cents, total_cents, currency,
              status, issued_at, proforma_no, created_by)
-         VALUES ($1,$2,'definitive',$3,$4,$5,$6,$7,$8,$9,'XOF','emise',now(),$10,$11)
+         VALUES ($1,$2,'definitive',$3,$4,$5,$6,$7,$8,$9,$10,'XOF','emise',now(),$11,$12)
          RETURNING id, invoice_no`,
         [r.imf_id, invoiceNo, r.id, r.plan_code,
-         'Abonnement teebo — ' + (planRow ? planRow.label : (r.plan_code || '')),
-         amountCents, vatBp, vatCents, totalCents, r.proforma_no, req.user.id]
+         'Abonnement teeBo — ' + (planRow ? planRow.label : (r.plan_code || '')),
+         subtotalCents, discountCents, vatBp, vatCents, totalCents, r.proforma_no, req.user.id]
       )).rows[0];
 
       // Création de l'accès admin IMF avec un code d'accès (mot de passe à créer)
@@ -112,14 +124,24 @@ router.get('/invoices/:id.pdf', async (req, res, next) => {
     if (!inv) return res.status(404).json({ error: 'invoice_not_found' });
     const header = await getBranding(inv.imf_id);
     const imf = (await q('SELECT name, email FROM imf WHERE id=$1', [inv.imf_id])).rows[0] || {};
+    // Reconstitution des lignes (licence + abonnement) depuis la demande liée.
+    const ar = inv.request_id
+      ? (await q('SELECT billing_cycle, licence_cents, subscription_cents FROM access_request WHERE id=$1', [inv.request_id])).rows[0]
+      : null;
+    const planLabel = (inv.plan_label || inv.plan_code || '').replace(/^Abonnement teeBo — /, '');
+    const lines = (ar && (ar.licence_cents != null || ar.subscription_cents != null))
+      ? buildInvoiceLines({ planLabel, billing: ar.billing_cycle,
+          licenceCents: ar.licence_cents, subscriptionCents: ar.subscription_cents })
+      : null;
     const html = renderInvoice({
       header,
       kind: 'definitive',
       invoiceNo: inv.invoice_no,
       issuedAt: inv.issued_at,
       dueAt: inv.due_at,
-      periodLabel: inv.period_label,
+      periodLabel: inv.period_label || (ar && ar.billing_cycle === 'annuel' ? '12 mois (annuel)' : (ar ? '1 mois (mensuel)' : null)),
       plan: inv.plan_label || inv.plan_code,
+      lines,
       subtotalCents: inv.subtotal_cents,
       discountCents: inv.discount_cents,
       vatRateBp: inv.vat_rate_bp,

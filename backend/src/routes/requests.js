@@ -2,6 +2,7 @@ import express from 'express';
 import { q, tx } from '../db.js';
 import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL } from '../notify.js';
 import { getBranding, renderInvoice, moneyFcfa, setDocumentCsp } from '../documents.js';
+import { computePricing, buildInvoiceLines, BILLING_CYCLES, LICENCE_CENTS } from '../pricing.js';
 
 const router = express.Router();
 
@@ -40,6 +41,22 @@ router.post('/', async (req, res, next) => {
     if (!UEMOA_CODES.includes(b.country_code)) return res.status(422).json({ error: 'country_not_uemoa' });
     if (!['SA','SCOOP'].includes(b.imf_type)) return res.status(422).json({ error: 'invalid_imf_type' });
     if (!validEmail(b.email)) return res.status(422).json({ error: 'invalid_email' });
+
+    // --- Anti-doublon : une seule demande d'accès par IMF -------------------
+    // On refuse une 2e demande pour la même IMF, identifiée par son numéro
+    // d'agrément BCEAO OU par l'e-mail déjà enregistré. Une demande précédemment
+    // REJETÉE n'empêche pas de retenter (decision = 'rejected' exclue).
+    const dup = await q(
+      `SELECT i.code_imf
+         FROM imf i
+         JOIN access_request ar ON ar.imf_id = i.id
+        WHERE (lower(i.email) = lower($1) OR i.bceao_agreement_no = $2)
+          AND (ar.decision IS DISTINCT FROM 'rejected')
+        LIMIT 1`,
+      [b.email, b.bceao_agreement_no]);
+    if (dup.rows.length)
+      return res.status(409).json({ error: 'duplicate_request',
+        message: 'Une demande d’accès existe déjà pour cette IMF (numéro d’agrément BCEAO ou e-mail déjà enregistré). Contactez teeBo si vous pensez qu’il s’agit d’une erreur.' });
 
     const out = await tx(async (c) => {
       const code = (await c.query('SELECT fn_gen_imf_code($1) AS c', [b.country_code])).rows[0].c;
@@ -82,23 +99,34 @@ router.post('/', async (req, res, next) => {
 // --- Étape 2 : choix de la formule -> facture proforma ---------------------
 router.post('/:id/select-plan', async (req, res, next) => {
   try {
-    const { plan_code } = req.body || {};
+    const { plan_code, billing_cycle } = req.body || {};
+    const billing = BILLING_CYCLES.includes(billing_cycle) ? billing_cycle : 'mensuel';
     const plan = (await q('SELECT * FROM plan WHERE code=$1', [plan_code])).rows[0];
     if (!plan) return res.status(404).json({ error: 'plan_not_found' });
+    const pr = computePricing(plan.price_cents, billing);
     const proformaNo = 'PRO-' + new Date().getFullYear() + '-' +
       Math.floor(100000 + Math.random() * 900000);
     const { rows } = await q(
-      `UPDATE access_request SET plan_code=$1, proforma_no=$2, proforma_amount_cents=$3,
-          proforma_validated=false WHERE id=$4 RETURNING *`,
-      [plan.code, proformaNo, plan.price_cents, req.params.id]
+      `UPDATE access_request SET plan_code=$1, billing_cycle=$2, licence_cents=$3,
+          subscription_cents=$4, discount_cents=$5, proforma_no=$6,
+          proforma_amount_cents=$7, proforma_validated=false
+       WHERE id=$8 RETURNING *`,
+      [plan.code, pr.billing, pr.licenceCents, pr.subscriptionCents, pr.discountCents,
+       proformaNo, pr.totalCents, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'request_not_found' });
     const r = rows[0];
     const imf = (await q('SELECT * FROM imf WHERE id=$1', [r.imf_id])).rows[0];
     res.json({ ok: true, proforma: {
       no: proformaNo, plan: plan.label, plan_code: plan.code,
-      amount_cents: plan.price_cents,
-      billing_cycle: plan.billing_cycle, trial_days: 30,
+      billing_cycle: pr.billing, period_label: pr.periodLabel,
+      licence_cents: pr.licenceCents,
+      subscription_cents: pr.subscriptionCents,
+      discount_cents: pr.discountCents,
+      subtotal_cents: pr.subtotalCents,
+      amount_cents: pr.totalCents,
+      monthly_cents: plan.price_cents,
+      trial_days: 30,
       imf_name: imf ? imf.name : null,
       date: new Date().toISOString(),
       url: `/api/v1/requests/${r.id}/proforma.pdf`
@@ -116,15 +144,27 @@ router.get('/:id/proforma.pdf', async (req, res, next) => {
     const imf = (await q('SELECT * FROM imf WHERE id=$1', [r.imf_id])).rows[0];
     const header = await getBranding(r.imf_id);
     const plan = (await q('SELECT * FROM plan WHERE code=$1', [r.plan_code])).rows[0];
-    const amount = r.proforma_amount_cents || (plan ? plan.price_cents : 0);
+    // Reconstitution du détail : licence + abonnement (+ remise si cycle annuel).
+    const licenceCents = r.licence_cents != null ? r.licence_cents : LICENCE_CENTS;
+    const subscriptionCents = r.subscription_cents != null
+      ? r.subscription_cents : (plan ? plan.price_cents : 0);
+    const discountCents = r.discount_cents || 0;
+    const subtotalCents = licenceCents + subscriptionCents;
+    const totalCents = r.proforma_amount_cents != null
+      ? r.proforma_amount_cents : (subtotalCents - discountCents);
+    const lines = buildInvoiceLines({
+      planLabel: plan ? plan.label : (r.plan_code || ''),
+      billing: r.billing_cycle, licenceCents, subscriptionCents });
     const html = renderInvoice({
       header,
       kind: 'proforma',
       invoiceNo: r.proforma_no,
       issuedAt: r.created_at || new Date(),
-      plan: 'Abonnement teeBo — ' + (plan ? plan.label : (r.plan_code || '')),
-      subtotalCents: amount,
-      totalCents: amount,
+      periodLabel: r.billing_cycle === 'annuel' ? '12 mois (annuel)' : '1 mois (mensuel)',
+      lines,
+      subtotalCents,
+      discountCents,
+      totalCents,
       currency: 'XOF',
       status: r.proforma_validated ? 'emise' : null,
       clientName: imf ? imf.name : (header.legal_name || 'IMF'),

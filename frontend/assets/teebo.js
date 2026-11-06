@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   var me = null;
-  var VIEWS = ['requests', 'imfs', 'admins', 'profile'];
+  var VIEWS = ['dashboard', 'requests', 'imfs', 'admins', 'profile'];
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -33,6 +33,7 @@
       if (v === 'admins') loadAdmins();
       if (v === 'profile') loadProfile();
       if (v === 'requests') loadRequests();
+      if (v === 'dashboard') loadStats();
     });
   });
 
@@ -54,6 +55,27 @@
       ' <button class="btn btn--ghost btn--sm" data-copy="' + esc(code) + '">Copier</button>';
   }
 
+  // ----- Tableau de bord (statistiques plateforme) -----
+  function loadStats() {
+    return api('/api/v1/teebo/stats').then(function (d) {
+      var s = d.stats || {};
+      var cards = [
+        { k: 'Institutions (IMF)', v: s.imfs, cls: '' },
+        { k: 'Essais en cours', v: s.trials, cls: 'warn' },
+        { k: 'Abonnements actifs', v: s.actives, cls: 'ok' },
+        { k: 'Suspendues', v: s.suspended, cls: 'danger' },
+        { k: 'Demandes à traiter', v: s.pending, cls: 'warn' },
+        { k: 'Utilisateurs', v: s.users, cls: '' }
+      ];
+      var color = { '': 'var(--navy)', ok: '#1f9d55', warn: '#8a6d00', danger: '#c0392b' };
+      $('stats-cards').innerHTML = cards.map(function (c) {
+        return '<div style="background:#fff;border:1px solid var(--line,#e3e5ee);border-radius:14px;padding:20px 22px;box-shadow:0 6px 20px rgba(11,12,38,.05)">' +
+          '<div style="font-size:34px;font-weight:800;line-height:1;color:' + (color[c.cls] || color['']) + '">' + esc(String(c.v == null ? 0 : c.v)) + '</div>' +
+          '<div style="margin-top:8px;font-size:13px;color:var(--muted,#61647c)">' + esc(c.k) + '</div></div>';
+      }).join('');
+    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+
   // ----- Demandes -----
   function loadRequests() {
     return api('/api/v1/teebo/requests').then(function (d) {
@@ -67,13 +89,19 @@
             : (!r.decision ? '<span class="tag tag--warn">À approuver</span>'
             : (r.decision === 'approved' ? '<span class="tag tag--ok">Approuvée</span>' : '<span class="tag tag--danger">Rejetée</span>'));
           var canApprove = r.proforma_validated && !r.decision;
+          // Factures téléchargeables par l'éditeur teebo : proforma (dès qu'elle
+          // existe) et facture définitive (après approbation). Ouvertes dans un
+          // nouvel onglet (HTML imprimable → « Enregistrer en PDF »).
+          var docBtns = '';
+          if (r.proforma_no) docBtns += '<a class="btn btn--ghost btn--sm" target="_blank" rel="noopener" href="/api/v1/requests/' + esc(r.id) + '/proforma.pdf">Proforma</a> ';
+          if (r.definitive_invoice_id) docBtns += '<a class="btn btn--ghost btn--sm" target="_blank" rel="noopener" href="/api/v1/teebo/invoices/' + esc(r.definitive_invoice_id) + '.pdf">Facture</a> ';
           return '<tr><td><b>' + esc(r.imf_name) + '</b><br><code>' + esc(r.code_imf) + '</code> · ' + esc(r.country_code) + '</td>' +
             '<td>' + esc(r.type) + '</td>' +
             '<td>' + esc((r.requester_firstname || '') + ' ' + (r.requester_lastname || '')) + '<br><small style="color:var(--muted)">' + esc(r.requester_position || '') + '</small></td>' +
             '<td>' + esc(r.plan_code || '—') + (r.proforma_no ? '<br><small style="color:var(--muted)">' + esc(r.proforma_no) + ' · ' + money(r.proforma_amount_cents) + '</small>' : '') + '</td>' +
             '<td>' + status + '</td>' +
             '<td>' + codeCell(r.admin_code, r.admin_must_change) + '</td>' +
-            '<td style="text-align:right">' + (canApprove ? '<button class="btn btn--primary btn--sm" data-approve="' + r.id + '">Approuver</button> <button class="btn btn--ghost btn--sm" data-reject="' + r.id + '">Rejeter</button>' : '') + '</td></tr>';
+            '<td style="text-align:right;white-space:nowrap">' + docBtns + (canApprove ? '<button class="btn btn--primary btn--sm" data-approve="' + r.id + '">Approuver</button> <button class="btn btn--ghost btn--sm" data-reject="' + r.id + '">Rejeter</button>' : '') + '</td></tr>';
         }).join('') + '</tbody></table>';
       $('requests-table').querySelectorAll('[data-approve]').forEach(function (b) { b.addEventListener('click', function () { approve(b.dataset.approve); }); });
       $('requests-table').querySelectorAll('[data-reject]').forEach(function (b) { b.addEventListener('click', function () { reject(b.dataset.reject); }); });
@@ -233,9 +261,11 @@
   }
   function startEnroll() {
     api('/api/v1/auth/2fa/enroll/start', 'POST').then(function (d) {
-      var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(d.otpauth_uri);
+      // QR généré LOCALEMENT par le serveur (data URL) : conforme à la CSP
+      // stricte (img-src 'self' data:) et sans dépendance réseau externe.
+      var qr = d.qr_data_url || '';
       openModal('<h3>Activer la double authentification</h3><p class="sub">Scannez ce QR code avec Google Authenticator, Authy ou FreeOTP, puis saisissez le code à 6 chiffres affiché.</p>' +
-        '<div style="text-align:center;margin:10px 0"><img src="' + qr + '" width="180" height="180" alt="QR" style="border-radius:10px;background:#fff;padding:8px"></div>' +
+        '<div style="text-align:center;margin:10px 0"><img src="' + esc(qr) + '" width="180" height="180" alt="QR" style="border-radius:10px;background:#fff;padding:8px"></div>' +
         '<p class="sub">Clé manuelle : <code>' + esc(d.secret) + '</code></p>' +
         '<div class="fld"><label for="otp">Code à 6 chiffres</label><input id="otp" inputmode="numeric" maxlength="6" placeholder="••••••"></div>' +
         '<div class="modal__nav"><button class="btn btn--ghost" id="e-cancel">Annuler</button><button class="btn btn--primary" id="e-ok">Confirmer et activer</button></div>');
@@ -260,6 +290,6 @@
     if (d.user.role !== 'teebo_admin') { notify('Accès réservé à teebo.', 'err'); setTimeout(function () { window.location.assign('/app.html'); }, 1200); return; }
     $('u-name').textContent = d.user.full_name;
     $('u-email').textContent = d.user.email;
-    return loadRequests();
+    return loadStats();
   }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
 })();

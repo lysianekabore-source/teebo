@@ -19,7 +19,8 @@
       <span>tee<b>B</b>o</span>
     </div>
     <div class="side__label">Console teebo</div>
-    <button class="nav-item active" data-view="requests"><span class="ic">▤</span> Demandes</button>
+    <button class="nav-item active" data-view="dashboard"><span class="ic">▦</span> Tableau de bord</button>
+    <button class="nav-item" data-view="requests"><span class="ic">▤</span> Demandes</button>
     <button class="nav-item" data-view="imfs"><span class="ic">⌂</span> Institutions</button>
     <button class="nav-item" data-view="admins"><span class="ic">☺</span> Administrateurs IMF</button>
     <button class="nav-item" data-view="profile"><span class="ic">⛨</span> Mon profil</button>
@@ -34,8 +35,14 @@
   <main class="main">
     <div id="global-alert" class="alert" hidden></div>
 
+    <!-- Vue : Tableau de bord -->
+    <section class="view" id="view-dashboard">
+      <div class="topbar"><div><h1>Tableau de bord</h1><p>Vue d’ensemble de la plateforme teebo : institutions, essais, abonnements actifs et demandes à traiter.</p></div></div>
+      <div id="stats-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px"><div class="empty">Chargement…</div></div>
+    </section>
+
     <!-- Vue : Demandes -->
-    <section class="view" id="view-requests">
+    <section class="view" id="view-requests" hidden>
       <div class="topbar">
         <div><h1>Demandes d’accès</h1><p>Approuvez une demande pour déclencher l’essai gratuit de 30 jours et générer le code admin de l’IMF.</p></div>
         <div class="chips" id="req-chips"></div>

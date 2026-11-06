@@ -111,6 +111,7 @@ function docStyles(embed = false) {
   .head{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding-bottom:20px;border-bottom:3px solid var(--navy)}
   .org{display:flex;gap:14px;align-items:center}
   .logo{width:66px;height:66px;object-fit:contain;border-radius:10px}
+  .logo--teebo{width:168px;height:auto;max-height:56px;object-fit:contain;display:block}
   .logo--ph{width:66px;height:66px;border-radius:10px;background:var(--navy);color:var(--neon);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:22px}
   .org h1{font-size:19px;letter-spacing:-.4px;line-height:1.2}
   .org .meta{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.5}
@@ -148,6 +149,37 @@ function docStyles(embed = false) {
     .actions{display:none}
     @page{size:A4;margin:12mm}
   }`;
+}
+
+/* Entête réservé aux FACTURES teebo : logo officiel teeBo seul + identité du
+   prestataire (émetteur). Aucune coordonnée ni adresse de l'IMF n'y figure :
+   la facture est émise PAR teeBo, l'IMF n'apparaît qu'en tant que client. */
+function docHeadInvoice() {
+  const s = TEEBO_SUPPLIER;
+  return `<div class="head">
+    <div class="org"><img class="logo--teebo" src="/assets/teebo-logo.png" alt="teeBo"></div>
+    <div class="supplier">
+      <b>${esc(s.name)}</b>
+      ${esc(s.address)}<br>${esc(s.address2)}<br>
+      Tél. ${esc(s.tel)} · ${esc(s.email)}
+    </div>
+  </div>`;
+}
+
+/* Mentions légales de l'ÉMETTEUR (teeBo) pour les factures : on n'affiche plus
+   les mentions de l'IMF (plus aucune adresse IMF sur la facture). */
+function docLegalTeebo() {
+  const s = TEEBO_SUPPLIER;
+  const rows = [
+    ['Prestataire', s.name],
+    ['Adresse du siège', s.address + ' · ' + s.address2],
+    ['Téléphone', s.tel],
+    ['E-mail', s.email]
+  ];
+  return `<div class="legal">
+    <h4>Émetteur de la facture</h4>
+    <div class="grid">${rows.map((r) => `<div><b>${esc(r[0])} :</b> ${esc(r[1] || '—')}</div>`).join('')}</div>
+  </div>`;
 }
 
 function docHead(header, logoAlt) {
@@ -274,7 +306,7 @@ export function renderStatement({ header, client, account, operations, generated
 
 /* ============================== FACTURES ================================= */
 export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, dueAt, periodLabel,
-  plan, subtotalCents, discountCents = 0, vatRateBp = 0, vatCents = 0, totalCents,
+  plan, lines, subtotalCents, discountCents = 0, vatRateBp = 0, vatCents = 0, totalCents,
   currency = 'XOF', status, amountPaidCents, clientName, clientCode, notes, embed = false }) {
   const cur = currency || 'XOF';
   const isFinal = kind === 'definitive';
@@ -290,8 +322,14 @@ export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, 
     ? `<div><span>Montant réglé</span><b>${esc(moneyFcfa(amountPaidCents, cur))}</b></div>
        <div><span>Reste à payer</span><b>${esc(moneyFcfa(Math.max(0, Number(totalCents || 0) - Number(amountPaidCents || 0)), cur))}</b></div>` : '';
 
+  const itemLines = (Array.isArray(lines) && lines.length)
+    ? lines
+    : [{ label: plan || 'Abonnement teebo', amountCents: subtotalCents }];
+  const rowsHtml = itemLines.map((l) =>
+    `<tr><td>${esc(l.label || '')}</td><td class="r">${esc(moneyFcfa(l.amountCents || 0, cur))}</td></tr>`).join('');
+
   const body = `
-  ${docHead(header, 'Logo ' + (header.legal_name || ''))}
+  ${docHeadInvoice()}
   <div class="title">${title} n° ${esc(invoiceNo || '—')} ${statusBadge}
     <small>Émise le ${esc(fmtDate(issuedAt))}${dueAt ? ' · échéance le ' + esc(fmtDate(dueAt)) : ''}${periodLabel ? ' · période : ' + esc(periodLabel) : ''}</small>
   </div>
@@ -306,7 +344,7 @@ export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, 
   <table>
     <thead><tr><th>Désignation</th><th class="r">Montant HT</th></tr></thead>
     <tbody>
-      <tr><td>${esc(plan || 'Abonnement teebo')}</td><td class="r">${esc(moneyFcfa(subtotalCents, cur))}</td></tr>
+      ${rowsHtml}
     </tbody>
   </table>
   <div class="totals">
@@ -317,7 +355,7 @@ export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, 
     ${paidLine}
   </div>
   ${notes ? `<div class="legal"><h4>Observations</h4>${esc(notes)}</div>` : ''}
-  ${docLegal(header)}
+  ${docLegalTeebo()}
   <div class="sign">
     ${isFinal
       ? `Facture émise par ${esc(TEEBO_SUPPLIER.name)} (prestataire de la solution teebo). Règlement par virement ou Mobile Money selon les coordonnées ci-dessus.`

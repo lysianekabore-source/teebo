@@ -41,23 +41,10 @@
     return m[code] || 'Une erreur est survenue. Réessayez.';
   }
 
-  // Onglet « Premier accès » : visible au 1er accès seulement.
-  // Dès la 2e connexion sur cet appareil, on ne garde que « Connexion ».
-  (function () {
-    var SEEN = 'teebo_seen';
-    var seen = false;
-    try { seen = !!localStorage.getItem(SEEN); } catch (e) {}
-    var activate = document.querySelector('.tab[data-tab="activate"]');
-    if (seen && activate) {
-      activate.parentNode.removeChild(activate);
-      var f = document.getElementById('form-activate');
-      if (f) f.parentNode.removeChild(f);
-      var l = document.querySelector('.tab[data-tab="login"]');
-      if (l) l.classList.add('active');
-    } else {
-      try { localStorage.setItem(SEEN, '1'); } catch (e) {}
-    }
-  })();
+  // Onglet « Premier accès » : TOUJOURS disponible. L'administrateur de l'IMF
+  // doit pouvoir activer son compte avec le code reçu de l'éditeur à tout
+  // moment (y compris s'il a déjà ouvert la page de connexion auparavant).
+  // On ne masque donc plus jamais cet onglet.
 
   // Onglets
   document.querySelectorAll('.tab').forEach(function (t) {
@@ -142,7 +129,16 @@
     if ($('new_password').value !== $('confirm').value) { show('Les mots de passe ne correspondent pas.', false); return; }
     var b = e.target.querySelector('button[type=submit]'); b.disabled = true; var old = b.textContent; b.textContent = 'Activation…';
     post('/api/v1/auth/activate', { code: $('code').value.trim(), password: $('new_password').value })
-      .then(function () { window.location.assign('/app.html'); })
+      .then(function (d) {
+        // Premier accès avec 2FA obligatoire : le mot de passe est créé, on
+        // enchaîne immédiatement sur l'enrôlement de la double authentification.
+        if (d && d.twofa_enrollment_required) {
+          b.disabled = false; b.textContent = old;
+          startEnrollment(d.enrollment_token);
+          return;
+        }
+        window.location.assign('/app.html');
+      })
       .catch(function (err) { b.disabled = false; b.textContent = old; show(msgFr(err.message), false); });
   });
 

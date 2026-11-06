@@ -27,7 +27,7 @@ router.post('/activate', async (req, res, next) => {
     const { code, password } = req.body || {};
     if (!code || weakPassword(password)) return res.status(422).json({ error: 'weak_password' });
     const { rows } = await q(
-      'SELECT id, imf_id, password_hash FROM app_user WHERE code_user = $1 AND is_active = true',
+      'SELECT id, imf_id, role, email, code_user, full_name, password_hash FROM app_user WHERE code_user = $1 AND is_active = true',
       [code]
     );
     if (!rows.length) return res.status(404).json({ error: 'code_not_found' });
@@ -38,8 +38,20 @@ router.post('/activate', async (req, res, next) => {
       `UPDATE app_user SET password_hash=$1, password_set_at=now(), must_change_password=false
        WHERE id=$2`, [hash, u.id]
     );
-    const full = (await q('SELECT id, imf_id FROM app_user WHERE id=$1', [u.id])).rows[0];
-    const { token } = await createSession(full);
+    // Le mot de passe est créé. La double authentification étant OBLIGATOIRE
+    // pour l'administrateur IMF (comme pour tous les comptes), on n'ouvre PAS
+    // de session tout de suite : on impose l'enrôlement 2FA via un ticket court
+    // (mêmes routes /2fa/enroll/* qu'au login). La session réelle sera créée
+    // après confirmation d'un premier code. Si la 2FA n'est pas requise (mode
+    // test TEEBO_2FA_OPTIONAL), on ouvre directement la session.
+    const st = await getStatus(u.id);
+    if (is2faRequired(u.role) && !st.enabled) {
+      const ticket = await createEnrollmentTicket(u);
+      return res.json({ ok: true, twofa_enrollment_required: true,
+        enrollment_token: ticket.token, expires_in: ticket.expires_in,
+        message: 'Mot de passe créé. La double authentification est obligatoire : enrôlez votre application d’authentification pour finaliser votre premier accès.' });
+    }
+    const { token } = await createSession({ id: u.id, imf_id: u.imf_id });
     res.cookie('teebo_session', token, COOKIE);
     res.json({ ok: true });
   } catch (e) { next(e); }
@@ -223,7 +235,7 @@ router.post('/logout', authenticate, async (req, res, next) => {
 });
 
 // --- Profil courant (avec contexte IMF + essai) -----------------------------
-router.get('/me', authenticate, async (req, res) => {
+router.get('/me', authenticate, async (req, res, next) => {
   try {
     const { rows } = await q(
       `SELECT code_imf, name AS imf_name, status AS imf_status, trial_ends_at
