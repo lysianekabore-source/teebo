@@ -33,7 +33,7 @@
       if (v === 'admins') loadAdmins();
       if (v === 'profile') loadProfile();
       if (v === 'requests') loadRequests();
-      if (v === 'dashboard') loadStats();
+      if (v === 'dashboard') { loadStats(); loadSubscriptions(); }
     });
   });
 
@@ -76,7 +76,33 @@
     }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
   }
 
-  // ----- Demandes -----
+  // ----- Échéances d'abonnement (annuel / mensuel) -----
+  function loadSubscriptions() {
+    return api('/api/v1/teebo/subscriptions').then(function (d) {
+      var subs = d.subscriptions || [], r = d.recap || {};
+      $('subs-chips').innerHTML =
+        '<span class="chip">Annuels <b>' + (r.annuel || 0) + '</b></span>' +
+        '<span class="chip">Mensuels <b>' + (r.mensuel || 0) + '</b></span>' +
+        '<span class="chip chip--warn">Échéance ≤ 30 j <b>' + (r.due_30d || 0) + '</b></span>' +
+        '<span class="chip chip--danger">En retard <b>' + (r.overdue || 0) + '</b></span>' +
+        '<span class="chip">MRR <b>' + money(r.mrr_cents) + '</b></span>';
+      if (!subs.length) { $('subs-table').innerHTML = '<div class="empty">Aucun abonnement.</div>'; return; }
+      $('subs-table').innerHTML = '<table class="tbl"><thead><tr><th>Institution</th><th>Cycle</th><th>Montant</th><th>Statut</th><th>Prochaine échéance</th><th>Délai</th></tr></thead><tbody>' +
+        subs.map(function (s) {
+          var cyc = s.billing_cycle === 'annuel' ? '<span class="tag tag--ok">Annuel</span>' : '<span class="tag tag--muted">Mensuel</span>';
+          var delai = s.days_left == null ? '—'
+            : (s.overdue ? '<span class="tag tag--danger">En retard de ' + Math.abs(s.days_left) + ' j</span>'
+            : (s.days_left <= 30 ? '<span class="tag tag--warn">Dans ' + s.days_left + ' j</span>'
+            : '<span class="tag tag--muted">Dans ' + s.days_left + ' j</span>'));
+          return '<tr><td><b>' + esc(s.name) + '</b><br><code>' + esc(s.code_imf) + '</code></td>' +
+            '<td>' + cyc + '</td>' +
+            '<td>' + (s.subscription_cents != null ? money(s.subscription_cents) : '—') + '</td>' +
+            '<td>' + esc(s.status) + '</td>' +
+            '<td>' + dfr(s.next_due_at) + '</td>' +
+            '<td>' + delai + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
   function loadRequests() {
     return api('/api/v1/teebo/requests').then(function (d) {
       var rs = d.requests || [];
@@ -95,6 +121,9 @@
           var docBtns = '';
           if (r.proforma_no) docBtns += '<a class="btn btn--ghost btn--sm" target="_blank" rel="noopener" href="/api/v1/requests/' + esc(r.id) + '/proforma.pdf">Proforma</a> ';
           if (r.definitive_invoice_id) docBtns += '<a class="btn btn--ghost btn--sm" target="_blank" rel="noopener" href="/api/v1/teebo/invoices/' + esc(r.definitive_invoice_id) + '.pdf">Facture</a> ';
+          // Envoi des factures au prospect/IMF par e-mail et WhatsApp.
+          if (r.proforma_no) docBtns += '<button class="btn btn--ghost btn--sm" data-send-proforma="' + r.id + '">Envoyer proforma</button> ';
+          if (r.definitive_invoice_id) docBtns += '<button class="btn btn--ghost btn--sm" data-send-invoice="' + r.id + '">Envoyer facture</button> ';
           return '<tr><td><b>' + esc(r.imf_name) + '</b><br><code>' + esc(r.code_imf) + '</code> · ' + esc(r.country_code) + '</td>' +
             '<td>' + esc(r.type) + '</td>' +
             '<td>' + esc((r.requester_firstname || '') + ' ' + (r.requester_lastname || '')) + '<br><small style="color:var(--muted)">' + esc(r.requester_position || '') + '</small></td>' +
@@ -106,7 +135,17 @@
       $('requests-table').querySelectorAll('[data-approve]').forEach(function (b) { b.addEventListener('click', function () { approve(b.dataset.approve); }); });
       $('requests-table').querySelectorAll('[data-reject]').forEach(function (b) { b.addEventListener('click', function () { reject(b.dataset.reject); }); });
       $('requests-table').querySelectorAll('[data-copy]').forEach(function (b) { b.addEventListener('click', function () { copyCode(b.dataset.copy); }); });
+      $('requests-table').querySelectorAll('[data-send-proforma]').forEach(function (b) { b.addEventListener('click', function () { sendDoc(b.dataset.sendProforma, 'proforma'); }); });
+      $('requests-table').querySelectorAll('[data-send-invoice]').forEach(function (b) { b.addEventListener('click', function () { sendDoc(b.dataset.sendInvoice, 'invoice'); }); });
     }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+
+  function sendDoc(id, kind) {
+    var path = kind === 'invoice' ? '/send-invoice' : '/send-proforma';
+    var lbl = kind === 'invoice' ? 'Facture définitive' : 'Facture proforma';
+    api('/api/v1/teebo/requests/' + id + path, 'POST')
+      .then(function (d) { notify(lbl + ' envoyée' + (d.sent_to ? ' → ' + d.sent_to : '') + '.', 'ok'); })
+      .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
   }
 
   function approve(id) {
@@ -290,6 +329,7 @@
     if (d.user.role !== 'teebo_admin') { notify('Accès réservé à teebo.', 'err'); setTimeout(function () { window.location.assign('/app.html'); }, 1200); return; }
     $('u-name').textContent = d.user.full_name;
     $('u-email').textContent = d.user.email;
+    loadSubscriptions();
     return loadStats();
   }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
 })();

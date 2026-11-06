@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { q, tx } from '../db.js';
 import { authenticate, requireFreshPassword, requireRole } from '../auth.js';
 import { notifyWhatsApp, notifyEmail } from '../notify.js';
+import { msgUserAccessCode, msgUserResendCode } from '../messages.js';
 
 const router = express.Router();
 router.use(authenticate, requireFreshPassword);
@@ -97,8 +98,7 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
       return r;
     });
     // Envoi du code d'accès par e-mail et WhatsApp
-    const msg = `teebo: votre accès est créé. Code d'accès : ${out.code_user}. ` +
-      `Connectez-vous et créez immédiatement votre mot de passe.`;
+    const msg = msgUserAccessCode({ code: out.code_user, fullName: full_name });
     if (phone) await notifyWhatsApp(phone, msg);
     await notifyEmail(email, 'Votre accès teebo', msg);
     res.json({ ok: true, code_user: out.code_user });
@@ -155,6 +155,47 @@ router.delete('/users/:id', requireRole('admin_imf','direction'), async (req, re
     if (u.imf_id !== req.user.imf_id) return res.status(403).json({ error: 'forbidden' });
     await q('DELETE FROM app_user WHERE id=$1', [req.params.id]);
     res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// --- Renvoyer le code d'accès d'un utilisateur (sans le régénérer) ----------
+// L'admin IMF peut renvoyer à l'un de SES utilisateurs son code d'accès par
+// WhatsApp et/ou e-mail. Cloisonnement : uniquement les users de la même IMF.
+router.post('/users/:id/resend-code', requireRole('admin_imf','direction'), async (req, res, next) => {
+  try {
+    const u = (await q(
+      'SELECT id, imf_id, code_user, full_name, email, phone FROM app_user WHERE id=$1',
+      [req.params.id])).rows[0];
+    if (!u) return res.status(404).json({ error: 'not_found' });
+    if (u.imf_id !== req.user.imf_id) return res.status(403).json({ error: 'forbidden' });
+    if (!u.code_user) return res.status(409).json({ error: 'no_code' });
+    const msg = msgUserResendCode({ code: u.code_user, fullName: u.full_name });
+    if (u.phone) await notifyWhatsApp(u.phone, msg);
+    await notifyEmail(u.email, 'Rappel : votre code d\'accès teebo', msg);
+    res.json({ ok: true, code_user: u.code_user, sent_to: u.email });
+  } catch (e) { next(e); }
+});
+
+// --- Régénérer le code d'accès d'un utilisateur ------------------------------
+// Nouveau code + réinitialisation du mot de passe (création après 1re connexion).
+router.post('/users/:id/regenerate-code', requireRole('admin_imf','direction'), async (req, res, next) => {
+  try {
+    const out = await tx(async (c) => {
+      const u = (await c.query(
+        'SELECT id, imf_id, full_name, email, phone FROM app_user WHERE id=$1 FOR UPDATE',
+        [req.params.id])).rows[0];
+      if (!u) { const e = new Error('not_found'); e.status = 404; throw e; }
+      if (u.imf_id !== req.user.imf_id) { const e = new Error('forbidden'); e.status = 403; throw e; }
+      const code = (await c.query('SELECT fn_gen_user_code($1) AS c', [u.imf_id])).rows[0].c;
+      await c.query(
+        'UPDATE app_user SET code_user=$1, password_hash=NULL, must_change_password=true WHERE id=$2',
+        [code, u.id]);
+      return { code, fullName: u.full_name, email: u.email, phone: u.phone };
+    });
+    const msg = msgUserResendCode({ code: out.code, fullName: out.fullName });
+    if (out.phone) await notifyWhatsApp(out.phone, msg);
+    await notifyEmail(out.email, 'Votre nouveau code d\'accès teebo', msg);
+    res.json({ ok: true, code_user: out.code, sent_to: out.email });
   } catch (e) { next(e); }
 });
 

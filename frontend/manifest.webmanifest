@@ -2,7 +2,7 @@
   "name": "teebo — La finance à visage humain",
   "short_name": "teebo",
   "description": "Plateforme des IMF en zone UEMOA : accès sécurisé, collecte mobile, conformité BCEAO.",
-  "start_url": "/",
+  "start_url": "/login",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",

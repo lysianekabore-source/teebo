@@ -39,6 +39,12 @@
     <section class="view" id="view-dashboard">
       <div class="topbar"><div><h1>Tableau de bord</h1><p>Vue d’ensemble de la plateforme teebo : institutions, essais, abonnements actifs et demandes à traiter.</p></div></div>
       <div id="stats-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px"><div class="empty">Chargement…</div></div>
+      <div style="margin-top:28px">
+        <h2 style="font-size:18px;margin:0 0 4px">Échéances d’abonnement</h2>
+        <p style="margin:0 0 14px;color:var(--muted,#61647c);font-size:13px">Suivi des abonnements annuels et mensuels des institutions, avec la prochaine échéance de paiement.</p>
+        <div id="subs-chips" style="margin-bottom:12px"></div>
+        <div id="subs-table"><div class="empty">Chargement…</div></div>
+      </div>
     </section>
 
     <!-- Vue : Demandes -->

@@ -27,6 +27,7 @@ router.use((req, res, next) => {
 router.get('/org-settings', async (req, res, next) => {
   try {
     const b = await getBranding(req.user.imf_id);
+    const notif = await currentNotif(req.user.imf_id);
     res.json({
       settings: {
         logo_data_url: b.logo_data_url,
@@ -47,6 +48,9 @@ router.get('/org-settings', async (req, res, next) => {
         phone_main: b.imf.phone_main, email: b.imf.email, whatsapp: b.imf.whatsapp
       },
       vat_rate_bp: await currentVatBp(req.user.imf_id),
+      // Coordonnées d'envoi des codes/notifications aux utilisateurs de l'IMF.
+      notif_whatsapp: notif.notif_whatsapp,
+      notif_email: notif.notif_email,
       supplier: TEEBO_SUPPLIER,
       can_edit: canEdit(req.user.role)
     });
@@ -113,6 +117,18 @@ router.post('/org-settings', requireRole('admin_imf', 'direction'), async (req, 
           `INSERT INTO imf_document_settings(imf_id, vat_rate_bp) VALUES ($1,$2)
            ON CONFLICT (imf_id) DO UPDATE SET vat_rate_bp=EXCLUDED.vat_rate_bp, updated_at=now()`,
           [req.user.imf_id, bp]);
+      }
+      // Coordonnées de notification (WhatsApp / e-mail) pour l'envoi des codes
+      // d'accès aux utilisateurs de l'IMF. Configurables à tout moment.
+      if (b.notif_whatsapp !== undefined || b.notif_email !== undefined) {
+        await c.query(
+          `INSERT INTO imf_document_settings(imf_id, notif_whatsapp, notif_email) VALUES ($1,$2,$3)
+           ON CONFLICT (imf_id) DO UPDATE SET
+             notif_whatsapp = CASE WHEN $4::boolean THEN EXCLUDED.notif_whatsapp ELSE imf_document_settings.notif_whatsapp END,
+             notif_email    = CASE WHEN $5::boolean THEN EXCLUDED.notif_email ELSE imf_document_settings.notif_email END,
+             updated_at = now()`,
+          [req.user.imf_id, strOrNull(b.notif_whatsapp), strOrNull(b.notif_email),
+           b.notif_whatsapp !== undefined, b.notif_email !== undefined]);
       }
       // Répercussion des mentions légales sur la fiche imf (cohérence).
       if (b.legal_name || b.legal_address) {
@@ -182,6 +198,11 @@ function canEdit(role) { return ['admin_imf', 'direction'].includes(role); }
 async function currentVatBp(imfId) {
   const r = (await q('SELECT vat_rate_bp FROM imf_document_settings WHERE imf_id=$1', [imfId])).rows[0];
   return r ? r.vat_rate_bp : null;
+}
+
+async function currentNotif(imfId) {
+  const r = (await q('SELECT notif_whatsapp, notif_email FROM imf_document_settings WHERE imf_id=$1', [imfId])).rows[0];
+  return { notif_whatsapp: r ? r.notif_whatsapp : null, notif_email: r ? r.notif_email : null };
 }
 
 export default router;

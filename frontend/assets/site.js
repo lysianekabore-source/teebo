@@ -89,7 +89,14 @@
       body: body ? JSON.stringify(body) : undefined
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (d) {
-        if (!r.ok) throw new Error(d.error || 'Erreur');
+        if (!r.ok) {
+          // On conserve le code technique dans le message ET le détail renvoyé
+          // par le serveur (d.message, d.field, statut HTTP) pour un affichage
+          // précis côté formulaire (ex. doublon 409).
+          var err = new Error(d.error || 'Erreur');
+          err.data = d; err.status = r.status;
+          throw err;
+        }
         return d;
       });
     });
@@ -266,24 +273,35 @@
         render();
       }).catch(function (e) {
         btn.disabled = false; btn.textContent = old;
-        errSlot.appendChild(alertBox('err', messageFr(e.message)));
+        errSlot.appendChild(alertBox('err', messageFr(e.message, e)));
       });
     });
 
     return panel;
   }
 
-  function messageFr(code) {
+  function messageFr(code, e) {
     var m = {
       missing_field: 'Un champ obligatoire est manquant.',
       country_not_uemoa: 'Sélectionnez un pays de l’UEMOA.',
       invalid_imf_type: 'Type d’IMF invalide (SA ou SCOOP).',
       invalid_email: 'Email invalide.',
+      duplicate_request: 'Une demande d’accès existe déjà pour cette IMF (numéro d’agrément BCEAO ou e-mail déjà enregistré). Contactez teeBo si vous pensez qu’il s’agit d’une erreur.',
+      request_not_found: 'Demande introuvable. Reprenez le formulaire depuis le début.',
       plan_not_found: 'Formule introuvable.',
       no_proforma: 'Aucune facture proforma à valider.',
       Erreur: 'Une erreur est survenue. Réessayez.'
     };
-    return m[code] || 'Une erreur est survenue. Réessayez.';
+    // 1) Code métier connu -> message dédié. 2) Sinon, message explicite
+    // renvoyé par le serveur (champ `message`). 3) En dernier recours, message
+    // générique. On évite ainsi de masquer la vraie cause (ex. doublon).
+    if (m[code]) return m[code];
+    if (e && e.data && e.data.message) return e.data.message;
+    if (code && /^[A-Z]/.test(code) === false && code.indexOf(' ') === -1) {
+      // code technique non mappé : on reste générique mais on garde la cause
+      return 'Une erreur est survenue. Réessayez.';
+    }
+    return code || 'Une erreur est survenue. Réessayez.';
   }
 
   // ================= ÉTAPE 2 : OFFRE + FORMULE =================
@@ -323,7 +341,7 @@
       nextBtn.disabled = true; var old = nextBtn.textContent; nextBtn.textContent = 'Génération…';
       api('/api/v1/requests/' + state.imf.request_id + '/select-plan', 'POST', { plan_code: state.selectedPlan.code })
         .then(function (d) { state.proforma = d.proforma; state.step = 3; render(); })
-        .catch(function (e) { nextBtn.disabled = false; nextBtn.textContent = old; errSlot.appendChild(alertBox('err', messageFr(e.message))); });
+        .catch(function (e) { nextBtn.disabled = false; nextBtn.textContent = old; errSlot.appendChild(alertBox('err', messageFr(e.message, e))); });
     });
     nav.appendChild(back); nav.appendChild(nextBtn);
     panel.appendChild(nav);
@@ -371,7 +389,7 @@
       ok.disabled = true; var old = ok.textContent; ok.textContent = 'Validation…';
       api('/api/v1/requests/' + state.imf.request_id + '/validate-proforma', 'POST', {})
         .then(function () { state.step = 4; render(); })
-        .catch(function (e) { ok.disabled = false; ok.textContent = old; errSlot.appendChild(alertBox('err', messageFr(e.message))); });
+        .catch(function (e) { ok.disabled = false; ok.textContent = old; errSlot.appendChild(alertBox('err', messageFr(e.message, e))); });
     });
     nav.appendChild(back); nav.appendChild(ok);
     panel.appendChild(nav);
