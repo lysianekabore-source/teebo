@@ -1,8 +1,10 @@
 # teebo — Matrice d'habilitation par profil
 
 > Version : VAGUE 7 (module Objectifs & Cibles hiérarchiques)
-> Source de vérité technique : `backend/src/habilitations.js`
-> Contact : hello@teebo.africa — WhatsApp +226 50 32 14 32
+> Source de vérité technique : `backend/src/habilitations.js` (droits appliqués aux routes)
+> Contact : hello@teebo.africa — WhatsApp +226 50 32 14 32 · www.teebo.africa
+
+> 📌 **Récapitulatif par profil :** pour la vue « habilitations accordées par défaut, profil par profil », voir le document compagnon **`RECAP_HABILITATIONS_PAR_PROFIL.md`**, généré automatiquement à partir de `backend/src/permissions.js` (matrice des habilitations par défaut à la création d'un compte utilisateur IMF).
 
 ---
 
