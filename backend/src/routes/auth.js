@@ -3,7 +3,8 @@ import bcrypt from 'bcryptjs';
 import { q, tx } from '../db.js';
 import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken } from '../auth.js';
 import { getStatus, is2faRequired, createChallenge, consumeChallenge, verifyForUser,
-  verifyRecoveryCode, startEnrollment, confirmEnrollment, disable } from '../twofa.js';
+  verifyRecoveryCode, startEnrollment, confirmEnrollment, disable,
+  createEnrollmentTicket, resolveEnrollmentTicket, consumeEnrollmentTicket } from '../twofa.js';
 
 const router = express.Router();
 
@@ -70,12 +71,14 @@ router.post('/login', async (req, res, next) => {
         message: 'Saisissez le code à 6 chiffres de votre application d’authentification.' });
     }
     // Si la 2FA est obligatoire mais pas encore activée : on impose l'enrôlement
-    // immédiatement. On n'ouvre PAS de session applicative tant qu'un premier
-    // code n'a pas été confirmé (le client doit terminer l'enrôlement).
+    // immédiatement. On n'ouvre PAS de session applicative ; on émet un ticket
+    // d'enrôlement court qui autorise uniquement les routes /2fa/enroll/*. La
+    // session réelle sera créée après confirmation d'un premier code.
     if (is2faRequired(u.role) && !st.enabled) {
+      const ticket = await createEnrollmentTicket(u);
       return res.json({ ok: false, twofa_enrollment_required: true,
-        enrollment_token: hashToken('enroll:' + u.id + ':' + Date.now() + ':' + Math.random()),
-        user_id: u.id,
+        enrollment_token: ticket.token,
+        expires_in: ticket.expires_in,
         message: 'La double authentification est obligatoire. Installez une application d’authentification puis enrôlez ce compte.' });
     }
 
@@ -120,7 +123,24 @@ router.post('/2fa/verify', async (req, res, next) => {
 });
 
 // --- Enrôlement 2FA : démarrer (renvoie le secret + l'URI otpauth) ---------
-router.post('/2fa/enroll/start', authenticate, async (req, res, next) => {
+// Accessible soit avec une session (ré-enrôlement depuis l'espace), soit avec
+// un ticket d'enrôlement émis au login (premier enrôlement obligatoire, avant
+// toute session). Dans ce dernier cas, l'utilisateur provient du ticket.
+async function authOrEnroll(req, res, next) {
+  // 1) Session normale si cookie présent et valide.
+  if (req.cookies?.teebo_session) return authenticate(req, res, next);
+  // 2) Sinon, ticket d'enrôlement fourni dans le corps de la requête.
+  try {
+    const { user, challengeId } = await resolveEnrollmentTicket((req.body || {}).enrollment_token);
+    req.user = user;
+    req.enrollTicketId = challengeId;
+    next();
+  } catch (e) {
+    return res.status(e.status || 401).json({ error: e.code || 'not_authenticated', message: e.message });
+  }
+}
+
+router.post('/2fa/enroll/start', authOrEnroll, async (req, res, next) => {
   try {
     const out = await startEnrollment({ id: req.user.id, imf_id: req.user.imf_id,
       email: req.user.email, code_user: req.user.code_user, full_name: req.user.full_name });
@@ -131,11 +151,22 @@ router.post('/2fa/enroll/start', authenticate, async (req, res, next) => {
 });
 
 // --- Enrôlement 2FA : confirmer (active + renvoie les codes de secours) ----
-router.post('/2fa/enroll/confirm', authenticate, async (req, res, next) => {
+router.post('/2fa/enroll/confirm', authOrEnroll, async (req, res, next) => {
   try {
     const { code } = req.body || {};
     const out = await confirmEnrollment(req.user.id, code);
+    // Enrôlement via ticket (premier login) : on consomme le ticket et on ouvre
+    // enfin la session applicative, pour que l'utilisateur soit directement
+    // connecté après activation de la 2FA.
+    let loggedIn = false;
+    if (req.enrollTicketId) {
+      await consumeEnrollmentTicket(req.enrollTicketId);
+      const { token } = await createSession({ id: req.user.id, imf_id: req.user.imf_id });
+      res.cookie('teebo_session', token, COOKIE);
+      loggedIn = true;
+    }
     res.json({ ok: true, enabled: out.enabled, recovery_codes: out.recovery_codes,
+      logged_in: loggedIn,
       message: 'Double authentification activée. Conservez vos codes de secours.' });
   } catch (e) {
     if (e.status) return res.status(e.status).json({ error: e.code || 'error', message: e.message });

@@ -148,6 +148,28 @@ Si une page reste blanche : videz le cache du navigateur (Ctrl+Shift+R).
 | « relation … does not exist » | Schémas non appliqués | Rejouez l'ÉTAPE 2 |
 | `npm run test:migrations` échoue sur un objet | Schémas incomplets | Rejouez l'ÉTAPE 2 puis relancez l'ÉTAPE 4 bis |
 | L'aperçu de facture reste vide | Paramètres IMF incomplets | Renseignez les mentions légales (module Paramètres) |
+| `ENOENT ... /app/frontend/index.html` (Render) | le dossier `frontend` n'était pas copié dans l'image | corrigé : le `Dockerfile` copie désormais `frontend` ; **re-déployez** (Manual Deploy > Clear build cache & deploy) |
+| Impossible de se connecter après le mot de passe | enrôlement 2FA obligatoire à terminer | suivez l'écran « Activer la double authentification » (scan du QR + code à 6 chiffres) |
+
+---
+
+## Première connexion : double authentification (2FA)
+
+La double authentification (code à 6 chiffres) est **obligatoire pour tous les
+comptes**. À la toute première connexion, après avoir saisi l'identifiant et le
+mot de passe, l'écran d'**enrôlement** s'affiche automatiquement :
+
+1. Ouvrez une application d'authentification (Google Authenticator, Authy,
+   FreeOTP…) sur votre téléphone.
+2. **Scannez le QR code** affiché (ou saisissez la clé proposée manuellement).
+3. Saisissez le **code à 6 chiffres** généré par l'application, puis validez.
+4. **Notez vos codes de secours** (affichés une seule fois) : ils dépannent en
+   cas de perte du téléphone. Vous êtes ensuite connecté directement.
+
+Aux connexions suivantes, il suffira de saisir le code à 6 chiffres après le
+mot de passe. Le QR code est généré **localement** par le serveur (image
+`data:` intégrée) : aucun appel à un service externe, conforme à la politique
+de sécurité (CSP) stricte.
 | Accès refusé (403) sur une action | Profil non autorisé | Vérifiez `MATRICE_HABILITATIONS.md` |
 
 ---

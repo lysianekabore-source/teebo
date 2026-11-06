@@ -12,6 +12,12 @@ RUN cd backend && npm install --omit=dev
 # Code applicatif
 COPY backend/src ./backend/src
 
+# Frontend statique (login.html, app.html, assets…) servi par le serveur Express.
+# INDISPENSABLE : sans cette copie, le serveur renvoie
+#   [Error: ENOENT: no such file or directory, stat '/app/frontend/index.html']
+# et aucune page (y compris la connexion) ne s'affiche.
+COPY frontend ./frontend
+
 # Schema de base de donnees (necessaire pour la migration au demarrage)
 COPY db ./db
 

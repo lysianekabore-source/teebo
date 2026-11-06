@@ -161,3 +161,47 @@ export async function purgeChallenges(imfId = null) {
   await q(`DELETE FROM login_challenge WHERE expires_at < now() - interval '1 day'
            AND ($1::uuid IS NULL OR imf_id=$1)`, [imfId]);
 }
+
+/* ----------- Ticket d'enrôlement (2FA obligatoire, pas encore activée) ------
+ * Au login, si la 2FA est obligatoire mais pas encore activée, on n'ouvre PAS
+ * de session applicative. On émet à la place un « ticket d'enrôlement »
+ * court (réutilise la table login_challenge) qui autorise UNIQUEMENT les routes
+ * d'enrôlement 2FA. La session réelle n'est créée qu'après confirmation d'un
+ * premier code (confirmEnrollment). Cela évite le blocage « login -> enrôlement
+ * impossible car aucune session » (les routes /2fa/enroll/* exigeaient une
+ * session qui n'existait jamais à ce stade).
+ */
+const ENROLL_TTL_MINUTES = 15;
+
+/** Crée un ticket d'enrôlement et renvoie le token opaque à renvoyer au client. */
+export async function createEnrollmentTicket(user) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  await q(
+    `INSERT INTO login_challenge(user_id, imf_id, token_hash, expires_at)
+     VALUES ($1,$2,$3, now() + interval '${ENROLL_TTL_MINUTES} minutes')`,
+    [user.id, user.imf_id, hashToken(token)]);
+  return { token, expires_in: ENROLL_TTL_MINUTES * 60 };
+}
+
+/** Résout un ticket d'enrôlement SANS le consommer (utilisé par enroll/start
+ *  et enroll/confirm). Renvoie l'utilisateur associé ou lève une erreur. */
+export async function resolveEnrollmentTicket(token) {
+  if (!token) { const e = new Error('Ticket d’enrôlement manquant.'); e.status = 401; e.code = 'missing_enrollment'; throw e; }
+  const hash = hashToken(token);
+  const ch = (await q(
+    `SELECT lc.id, lc.consumed, lc.expires_at,
+            u.id AS uid, u.imf_id, u.role, u.email, u.full_name, u.code_user, u.is_active
+       FROM login_challenge lc JOIN app_user u ON u.id = lc.user_id
+      WHERE lc.token_hash=$1`, [hash])).rows[0];
+  if (!ch) { const e = new Error('Ticket d’enrôlement introuvable.'); e.status = 401; e.code = 'invalid_enrollment'; throw e; }
+  if (ch.consumed) { const e = new Error('Ticket d’enrôlement déjà utilisé.'); e.status = 401; e.code = 'enrollment_used'; throw e; }
+  if (new Date(ch.expires_at) < new Date()) { const e = new Error('Ticket d’enrôlement expiré. Reconnectez-vous.'); e.status = 401; e.code = 'enrollment_expired'; throw e; }
+  if (!ch.is_active) { const e = new Error('Compte désactivé.'); e.status = 403; e.code = 'user_disabled'; throw e; }
+  return { challengeId: ch.id, user: { id: ch.uid, imf_id: ch.imf_id, role: ch.role,
+    email: ch.email, full_name: ch.full_name, code_user: ch.code_user, is_active: ch.is_active } };
+}
+
+/** Marque un ticket d'enrôlement comme consommé (après activation réussie). */
+export async function consumeEnrollmentTicket(challengeId) {
+  await q('UPDATE login_challenge SET consumed=true, attempts=attempts+1 WHERE id=$1', [challengeId]);
+}

@@ -81,6 +81,31 @@
       </div>
     </form>
 
+    <!-- Enrôlement 2FA obligatoire (premier accès avec double authentification) -->
+    <form id="form-enroll" class="pane" hidden novalidate>
+      <p class="hint">La <b>double authentification</b> est obligatoire. Étape 1 : scannez ce QR code avec votre application d'authentification (Google Authenticator, Authy, FreeOTP…), ou saisissez la clé manuellement.</p>
+      <div class="field enroll-qr-wrap">
+        <img id="enroll-qr" class="enroll-qr" alt="QR code d'enrôlement 2FA" width="200" height="200">
+      </div>
+      <div class="field">
+        <label for="enroll-secret">Clé à saisir manuellement (si le QR ne peut pas être scanné)</label>
+        <input id="enroll-secret" class="enroll-secret" type="text" readonly>
+      </div>
+      <p class="hint">Étape 2 : saisissez le <b>code à 6 chiffres</b> affiché par votre application pour confirmer.</p>
+      <div class="field">
+        <label for="enroll-otp">Code de confirmation</label>
+        <input id="enroll-otp" name="enroll-otp" class="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" required placeholder="••••••">
+      </div>
+      <button type="submit" class="btn btn--primary btn--block" id="btn-enroll">Activer la double authentification</button>
+    </form>
+
+    <!-- Codes de secours (affichés une seule fois après activation) -->
+    <div id="form-recovery-list" class="pane" hidden>
+      <p class="hint"><b>Double authentification activée.</b> Conservez ces <b>codes de secours</b> en lieu sûr : ils permettent de vous connecter si vous perdez l'accès à votre application. Chaque code ne sert qu'une fois.</p>
+      <ul id="recovery-codes" class="recovery-codes"></ul>
+      <button type="button" class="btn btn--primary btn--block" id="btn-enroll-done">J'ai noté mes codes, continuer</button>
+    </div>
+
     <p class="foot"><span class="brand">teeBo</span> — La finance à visage humain<br>Copyright © <span class="brand">teebo</span> 2026</p>
   </div>
 </main>

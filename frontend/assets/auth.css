@@ -37,3 +37,10 @@ body{font-family:'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-
 .foot{text-align:center;margin-top:20px;font-size:11px;color:#a7a9bd}
 .foot .brand{color:var(--navy);font-weight:700}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* Enrôlement 2FA obligatoire (QR + clé + codes de secours) */
+.enroll-qr-wrap{text-align:center}
+.enroll-qr{border-radius:12px;background:#fff;padding:8px;width:200px;height:200px}
+.enroll-secret{font-family:monospace;letter-spacing:1px}
+.recovery-codes{list-style:none;padding:0;margin:0 0 14px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-family:monospace;font-size:15px}
+.recovery-codes li{background:#f3f4fb;border:1px solid #e0e2f0;border-radius:8px;padding:8px 10px;text-align:center}

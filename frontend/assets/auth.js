@@ -127,9 +127,7 @@
         if (d.twofa_required) { b.disabled = false; b.textContent = old; showTwofaPane(d.challenge); return; }
         if (d.twofa_enrollment_required) {
           b.disabled = false; b.textContent = old;
-          try { sessionStorage.setItem('teebo_2fa_enroll', '1'); } catch (e) {}
-          show('La double authentification est obligatoire. Vous allez activer votre compte.', false);
-          setTimeout(function () { window.location.assign('/login.html'); }, 400);
+          startEnrollment(d.enrollment_token);
           return;
         }
         if (d.password_change_required) { b.disabled = false; b.textContent = old; showChangePane(); return; }
@@ -175,6 +173,74 @@
       var b = this; b.disabled = true; var old = b.textContent; b.textContent = 'Vérification…';
       submitTwofa({ challenge: CHALLENGE, recovery_code: rc }, b, old);
     });
+  }
+
+  // --- Enrôlement 2FA obligatoire (premier accès) ------------------------
+  // Flux : login -> ticket d'enrôlement -> /2fa/enroll/start (QR + secret)
+  // -> saisie d'un premier code -> /2fa/enroll/confirm (active + session +
+  // codes de secours). Aucun script inline ; tout passe par addEventListener.
+  var ENROLL_TOKEN = null;
+
+  function hideAllPanes() {
+    document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
+    ['form-login','form-activate','form-change','form-2fa','form-enroll','form-recovery-list']
+      .forEach(function (f) { if ($(f)) $(f).hidden = true; });
+  }
+
+  function startEnrollment(token) {
+    ENROLL_TOKEN = token || null;
+    if (!ENROLL_TOKEN) { show(msgFr('missing_challenge'), false); return; }
+    post('/api/v1/auth/2fa/enroll/start', { enrollment_token: ENROLL_TOKEN })
+      .then(function (d) {
+        hideAllPanes();
+        if ($('enroll-qr') && d.qr_data_url) $('enroll-qr').src = d.qr_data_url;
+        if ($('enroll-secret')) $('enroll-secret').value = d.secret || '';
+        if ($('form-enroll')) $('form-enroll').hidden = false;
+        show('Scannez le QR puis saisissez le code à 6 chiffres pour activer la double authentification.', false);
+        try { $('enroll-otp').focus(); } catch (e) {}
+      })
+      .catch(function (err) { show(enrollMsg(err.message), false); });
+  }
+
+  function enrollMsg(code) {
+    var m = {
+      missing_enrollment: 'Session d’enrôlement expirée. Reconnectez-vous.',
+      invalid_enrollment: 'Session d’enrôlement invalide. Reconnectez-vous.',
+      enrollment_used: 'Cet enrôlement a déjà été utilisé. Reconnectez-vous.',
+      enrollment_expired: 'Le délai d’enrôlement a expiré. Reconnectez-vous.',
+      no_enrollment: 'Aucun enrôlement en cours. Reconnectez-vous.',
+      invalid_code: 'Code invalide. Vérifiez l’heure de votre téléphone et réessayez.'
+    };
+    return m[code] || msgFr(code);
+  }
+
+  if ($('form-enroll')) {
+    $('form-enroll').addEventListener('submit', function (e) {
+      e.preventDefault(); hide();
+      var code = ($('enroll-otp').value || '').replace(/\D/g, '');
+      if (code.length !== 6) { show('Le code doit comporter 6 chiffres.', false); return; }
+      var b = e.target.querySelector('button[type=submit]'); b.disabled = true; var old = b.textContent; b.textContent = 'Activation…';
+      post('/api/v1/auth/2fa/enroll/confirm', { enrollment_token: ENROLL_TOKEN, code: code })
+        .then(function (d) {
+          hideAllPanes();
+          var ul = $('recovery-codes');
+          if (ul) {
+            ul.textContent = '';
+            (d.recovery_codes || []).forEach(function (c) {
+              var li = document.createElement('li');
+              li.textContent = c;
+              ul.appendChild(li);
+            });
+          }
+          if ($('form-recovery-list')) $('form-recovery-list').hidden = false;
+          show('Double authentification activée. Notez vos codes de secours.', true);
+        })
+        .catch(function (err) { b.disabled = false; b.textContent = old; show(enrollMsg(err.message), false); });
+    });
+  }
+
+  if ($('btn-enroll-done')) {
+    $('btn-enroll-done').addEventListener('click', function () { routeAfterLogin(); });
   }
 
 })();
