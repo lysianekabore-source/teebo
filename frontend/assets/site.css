@@ -1,3 +1,4 @@
+
 /* teebo — site + assistant d'inscription (production) */
 :root{
   --navy:#0b0c26;--navy-2:#13152f;--navy-3:#1c1f42;
@@ -28,7 +29,13 @@ a{color:inherit;text-decoration:none}
 .nav__links a:hover{color:#fff}
 .nav__cta{background:var(--neon);color:var(--navy)!important;font-weight:700!important;padding:9px 16px;border-radius:10px}
 .nav__cta:hover{background:var(--neon-dark)}
-@media(max-width:760px){.nav__links a:not(.nav__cta){display:none}}
+.nav__login{border:1px solid rgba(255,255,255,.3);color:#fff!important;font-weight:600!important;padding:8px 15px;border-radius:10px}
+.nav__login:hover{background:rgba(255,255,255,.1);color:#fff!important}
+.nav__install{display:inline-flex;align-items:center;gap:6px;background:rgba(216,245,0,.12);border:1px solid rgba(216,245,0,.4);color:var(--neon)!important;font-weight:700!important;padding:8px 14px;border-radius:10px;cursor:pointer;font-size:14px;font-family:inherit}
+.nav__install:hover{background:rgba(216,245,0,.2)}
+.nav__install[hidden]{display:none}
+@media(max-width:860px){.nav__links a.nav__linktext{display:none}}
+@media(max-width:620px){.nav__install .nav__install-label,.nav__login-label{display:none}}
 
 /* Hero */
 .hero{background:linear-gradient(165deg,var(--navy) 0%,var(--navy-2) 55%,var(--navy-3) 100%);color:#fff;padding:76px 0 84px;overflow:hidden}
@@ -249,3 +256,24 @@ a{color:inherit;text-decoration:none}
 .spinner{width:15px;height:15px;border-radius:50%;border:2px solid rgba(11,12,38,.25);border-top-color:var(--navy);animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto}.spinner{animation:none}}
+
+/* Hero — promesse de conversion */
+.hero__promise{font-size:14px;color:#d8dae8;margin-top:14px;padding:12px 16px;background:rgba(216,245,0,.07);border:1px solid rgba(216,245,0,.22);border-radius:12px;max-width:540px}
+.hero__promise b{color:var(--neon)}
+
+/* Formulaire IMF — design optimisé */
+.panel{position:relative}
+.panel h3{display:flex;align-items:center;gap:10px}
+.panel h3::before{content:'';width:5px;height:22px;border-radius:3px;background:var(--neon);display:inline-block}
+.field label{text-transform:uppercase;letter-spacing:.3px;font-size:11.5px}
+.field input::placeholder{color:#a9adc2}
+.field input:hover:not(:focus),.field select:hover:not(:focus){border-color:#c9ccdb}
+.phone-group .dial{letter-spacing:.3px}
+@media(max-width:600px){.phone-group .dial{flex:0 0 78px;font-size:13px}}
+
+/* Bouton d'installation — fiche d'aide (iOS / navigateurs sans invite) */
+.install-help{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);max-width:340px;width:calc(100% - 32px);background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 20px 60px rgba(11,12,38,.25);padding:18px 20px;z-index:200;font-size:14px;color:var(--ink);line-height:1.5}
+.install-help[hidden]{display:none}
+.install-help b{display:block;margin-bottom:6px;color:var(--navy)}
+.install-help__close{position:absolute;top:10px;right:12px;border:none;background:transparent;font-size:20px;line-height:1;cursor:pointer;color:var(--muted)}
+

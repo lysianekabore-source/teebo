@@ -1,3 +1,4 @@
+
 /* teebo — assistant d'inscription IMF (production)
    Parcours : 1) Formulaire IMF  2) Offre unique  3) Facture proforma
              4) Confirmation approbation teebo (essai 30 j)
@@ -264,7 +265,8 @@
     var wIn = el('input'); wIn.type = 'tel'; wIn.id = 'whatsapp'; wIn.name = 'whatsapp'; wIn.placeholder = '00 00 00 00'; wIn.required = true;
     wgrp.appendChild(dial1); wgrp.appendChild(wIn); waf.appendChild(wgrp);
     var werr = el('p', 'field__err'); werr.hidden = true; werr.setAttribute('data-for', 'whatsapp'); waf.appendChild(werr);
-    panel.appendChild(waf);
+    var gphone = el('div', 'grid2');
+    gphone.appendChild(waf);
 
     // Numéro d'appel IMF avec indicatif auto
     var phf = el('div', 'field');
@@ -275,7 +277,8 @@
     var pIn = el('input'); pIn.type = 'tel'; pIn.id = 'phone_main'; pIn.name = 'phone_main'; pIn.placeholder = '00 00 00 00'; pIn.required = true;
     pgrp.appendChild(dial2); pgrp.appendChild(pIn); phf.appendChild(pgrp);
     var perr = el('p', 'field__err'); perr.hidden = true; perr.setAttribute('data-for', 'phone_main'); phf.appendChild(perr);
-    panel.appendChild(phf);
+    gphone.appendChild(phf);
+    panel.appendChild(gphone);
 
     var g3 = el('div', 'grid2');
     g3.appendChild(field('Montant du capital social (FCFA)', 'capital', { required: true, inputmode: 'numeric', placeholder: 'Ex : 25 000 000' }));
@@ -613,4 +616,82 @@
     renderPricing();
     render();
   });
+})();
+
+
+
+(function () {
+  'use strict';
+  var isFile = location.protocol === 'file:';
+  var installBtns = [];
+  var b1 = document.getElementById('install-btn');
+  var b2 = document.getElementById('install-btn-hero');
+  if (b1) installBtns.push(b1);
+  if (b2) installBtns.push(b2);
+  var deferredPrompt = null;
+
+  function standalone() {
+    return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+           window.navigator.standalone === true;
+  }
+  function showBtns() { installBtns.forEach(function (b) { b.hidden = false; }); }
+  function hideBtns() { installBtns.forEach(function (b) { b.hidden = true; }); }
+
+  // 1) Enregistrement du service worker (hors file:// et aperçu local).
+  if ('serviceWorker' in navigator && !isFile) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js').catch(function () { /* silencieux */ });
+    });
+  }
+
+  // 2) Invite d'installation native (Chrome, Edge, Android…).
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    deferredPrompt = e;
+    if (!standalone()) showBtns();
+  });
+
+  // 3) Fiche d'aide (iOS / Safari et navigateurs sans invite native).
+  var ua = navigator.userAgent || '';
+  var isIOS = /iphone|ipad|ipod/i.test(ua);
+  function helpCard() {
+    var card = document.querySelector('.install-help');
+    if (card) return card;
+    card = document.createElement('div');
+    card.className = 'install-help';
+    card.innerHTML = isIOS
+      ? '<b>Installer teebo sur votre iPhone</b>Appuyez sur le bouton <b style="display:inline">Partager</b> de Safari, puis choisissez <b style="display:inline">« Sur l’écran d’accueil »</b>. L’icône ouvrira directement la page de connexion.'
+      : '<b>Installer teebo</b>Ouvrez le menu de votre navigateur et choisissez <b style="display:inline">« Installer l’application »</b> ou <b style="display:inline">« Ajouter à l’écran d’accueil »</b>. L’icône ouvrira directement la page de connexion.';
+    var close = document.createElement('button');
+    close.className = 'install-help__close';
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Fermer');
+    close.textContent = '×';
+    close.addEventListener('click', function () { card.hidden = true; });
+    card.appendChild(close);
+    document.body.appendChild(card);
+    return card;
+  }
+
+  // 4) Clic sur les boutons d'installation.
+  installBtns.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then(function (choice) {
+          if (choice && choice.outcome === 'accepted') hideBtns();
+          deferredPrompt = null;
+        });
+      } else {
+        var card = helpCard();
+        card.hidden = false;
+      }
+    });
+  });
+
+  // 5) Sur iOS, pas d'invite native : proposer l'installation manuelle.
+  if (isIOS && !standalone()) showBtns();
+
+  // 6) L'application vient d'être installée.
+  window.addEventListener('appinstalled', function () { hideBtns(); });
 })();
