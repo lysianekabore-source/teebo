@@ -127,10 +127,9 @@ router.post('/requests/:id/approve', async (req, res, next) => {
     // Notification WhatsApp + e-mail à l'IMF (code d'accès + essai 30 jours)
     const invoiceUrl = invoicePublicUrl(out.invoiceId);
     const subject = 'Votre accès teebo est approuvé (essai 30 jours)';
-    const msg = `teebo: votre accès à l'essai gratuit de 30 jours est approuvé. ` +
+    const msg = `Bonjour: votre accès à l'essai gratuit de 30 jours sur teebo est approuvé. ` +
       `Code d'accès admin (IMF ${out.imfCode}) : ${out.code}. ` +
-      `Facture définitive ${out.invoiceNo} : ${invoiceUrl} . ` +
-      `Connectez-vous sur ${PUBLIC_SITE_URL} et créez immédiatement votre mot de passe.`;
+      `Connectez-vous sur https://teebo-imf.netlify.app/login puis créez immédiatement votre propre mot de passe.`;
     const waTo = out.whatsapp || out.phone_main;
     const resWa = await notifyWhatsApp(waTo, msg);
     const resMail = await notifyEmail(out.email, subject, msg);
