@@ -19,7 +19,9 @@
   var MSG = { proforma_not_validated: 'La facture proforma n’a pas été validée par le prospect.', not_found: 'Élément introuvable.',
     no_admin: 'Aucun administrateur IMF pour cette institution.', no_code: 'Aucun code d’accès à renvoyer.',
     invalid_status: 'Statut invalide.', forbidden: 'Réservé aux administrateurs teebo.', idle_timeout: 'Session expirée (30 min d’inactivité).',
-    session_expired: 'Session expirée.', not_authenticated: 'Non connecté.', invalid_session: 'Session invalide.' };
+    session_expired: 'Session expirée.', not_authenticated: 'Non connecté.', invalid_session: 'Session invalide.',
+    cannot_delete_system_tenant: 'Le tenant système teebo ne peut pas être supprimé.',
+    confirm_code_mismatch: 'Le code saisi ne correspond pas au code de l’IMF.' };
   function fr(e) { return MSG[e] || 'Une erreur est survenue.'; }
   function guard(e) { if (['idle_timeout','session_expired','invalid_session','not_authenticated','session_revoked'].indexOf(e.message) >= 0) { window.location.assign('/login.html'); return true; } return false; }
 
@@ -169,7 +171,8 @@
           acts += '<button class="btn btn--ghost btn--sm" data-resend="' + i.id + '">Renvoyer le code</button> ';
           acts += '<button class="btn btn--ghost btn--sm" data-regen="' + i.id + '">Régénérer</button> ';
           acts += '<button class="btn btn--ghost btn--sm" data-detail="' + i.id + '">Détail</button> ';
-          acts += '<button class="btn btn--ghost btn--sm" data-status="' + i.id + '">Statut</button>';
+          acts += '<button class="btn btn--ghost btn--sm" data-status="' + i.id + '">Statut</button> ';
+          acts += '<button class="btn btn--danger btn--sm" data-del="' + i.id + '">Supprimer</button>';
           return '<tr><td><b>' + esc(i.name) + '</b><br><small style="color:var(--muted)">' + esc(i.city) + '</small></td><td><code>' + esc(i.code_imf) + '</code></td>' +
             '<td>' + esc(i.country_code) + '</td><td>' + esc(i.type) + '</td>' +
             '<td><span class="tag ' + cls + '">' + esc(LABEL[i.status] || i.status) + '</span></td>' +
@@ -182,6 +185,7 @@
       $('imfs-table').querySelectorAll('[data-regen]').forEach(function (b) { b.addEventListener('click', function () { regen(b.dataset.regen); }); });
       $('imfs-table').querySelectorAll('[data-detail]').forEach(function (b) { b.addEventListener('click', function () { detail(b.dataset.detail); }); });
       $('imfs-table').querySelectorAll('[data-status]').forEach(function (b) { b.addEventListener('click', function () { changeStatus(b.dataset.status); }); });
+      $('imfs-table').querySelectorAll('[data-del]').forEach(function (b) { b.addEventListener('click', function () { delImf(b.dataset.del); }); });
     }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
   }
 
@@ -247,6 +251,30 @@
       var self = this; self.disabled = true;
       api('/api/v1/teebo/imfs/' + id + '/status', 'POST', { status: $('st').value, extend_trial_days: parseInt($('ext').value, 10) || 0 })
         .then(function () { close(); notify('Statut mis à jour.', 'ok'); return loadImfs(); })
+        .catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+
+  function delImf(id) {
+    var i = null;
+    for (var k = 0; k < IMFS.length; k++) { if (String(IMFS[k].id) === String(id)) { i = IMFS[k]; break; } }
+    if (!i) { notify('Institution introuvable.', 'err'); return; }
+    if (i.code_imf === 'TBO-SYS-000000') { notify('Le tenant système teebo ne peut pas être supprimé.', 'err'); return; }
+    openModal('<h3>Supprimer l’institution</h3>' +
+      '<p class="sub" style="color:var(--danger,#c0392b)"><b>Action irréversible.</b> La suppression efface en cascade tous les comptes, clients, budgets et données de <b>' + esc(i.name) + '</b> (<code>' + esc(i.code_imf) + '</code>).</p>' +
+      '<div class="fld"><label><input type="radio" name="delmode" value="soft" checked> Archiver (soft) — masquer l’IMF sans effacer les données</label></div>' +
+      '<div class="fld"><label><input type="radio" name="delmode" value="hard"> Supprimer définitivement (hard) — purge en cascade</label></div>' +
+      '<div class="fld"><label for="delc">Pour confirmer, saisissez le code de l’IMF : <code>' + esc(i.code_imf) + '</code></label><input id="delc" type="text" autocomplete="off" placeholder="' + esc(i.code_imf) + '"></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="del-cancel">Annuler</button><button class="btn btn--danger" id="del-ok">Supprimer</button></div>');
+    $('del-cancel').addEventListener('click', close);
+    $('del-ok').addEventListener('click', function () {
+      var self = this;
+      var code = ($('delc').value || '').trim();
+      if (code !== i.code_imf) { notify('Le code saisi ne correspond pas.', 'err'); return; }
+      var mode = (document.querySelector('input[name="delmode"]:checked') || {}).value || 'soft';
+      self.disabled = true;
+      api('/api/v1/teebo/imfs/' + id + '/delete', 'POST', { confirm_code: code, mode: mode })
+        .then(function () { close(); notify('Institution ' + (mode === 'hard' ? 'supprimée définitivement' : 'archivée') + '.', 'ok'); return loadImfs(); })
         .catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
     });
   }

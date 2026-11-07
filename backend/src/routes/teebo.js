@@ -362,6 +362,71 @@ router.post('/imfs/:id/extend-trial', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// --- Supprimer une institution (super-admin teebo) -------------------------
+// Suppression DÉFINITIVE d'une IMF et de TOUTES ses données (utilisateurs,
+// clients, comptes, opérations, factures, terminaux…) grâce au ON DELETE
+// CASCADE défini sur imf_id dans tout le schéma.
+// Garde-fous :
+//   1. On ne peut JAMAIS supprimer le tenant système teebo (qui héberge le
+//      compte super-admin teebo_admin).
+//   2. La suppression exige la confirmation du code exact de l'IMF
+//      (confirm_code === code_imf) pour éviter toute erreur de manipulation.
+//   3. mode='soft' => archivage (statut suspendu + deleted_at) sans purge ;
+//      mode='hard' (défaut) => purge physique en cascade.
+async function deleteImf(req, res, next) {
+  try {
+    const mode = ((req.body || {}).mode === 'soft') ? 'soft' : 'hard';
+    const confirm = ((req.body || {}).confirm_code || '').trim();
+    const imf = (await q('SELECT * FROM imf WHERE id=$1', [req.params.id])).rows[0];
+    if (!imf) return res.status(404).json({ error: 'not_found' });
+
+    // Garde-fou 1 : jamais le tenant système / super-admin teebo.
+    const sysUser = (await q(
+      "SELECT 1 FROM app_user WHERE imf_id=$1 AND role='teebo_admin' LIMIT 1", [imf.id])).rows[0];
+    if (sysUser || imf.code_imf === 'TBO-SYS-000000') {
+      return res.status(403).json({ error: 'cannot_delete_system_tenant',
+        message: 'Le tenant système teebo (super-administrateur) ne peut pas être supprimé.' });
+    }
+    // Garde-fou 2 : confirmation par le code exact de l'IMF.
+    if (confirm !== imf.code_imf) {
+      return res.status(422).json({ error: 'confirm_code_mismatch',
+        message: 'Confirmation requise : saisissez exactement le code de l\'IMF (' + imf.code_imf + ').' });
+    }
+
+    // Décompte des entités pour l'audit (avant purge).
+    const counts = (await q(
+      `SELECT
+        (SELECT count(*) FROM app_user WHERE imf_id=$1) AS users,
+        (SELECT count(*) FROM client   WHERE imf_id=$1) AS clients,
+        (SELECT count(*) FROM account  WHERE imf_id=$1) AS accounts`, [imf.id])).rows[0];
+
+    const out = await tx(async (c) => {
+      if (mode === 'soft') {
+        await c.query(
+          `UPDATE imf SET status='suspended', deleted_at=now(), deleted_by=$2 WHERE id=$1`,
+          [imf.id, req.user.id]);
+        await c.query('UPDATE app_user SET is_active=false WHERE imf_id=$1', [imf.id]);
+        await c.query('UPDATE session SET revoked=true WHERE user_id IN (SELECT id FROM app_user WHERE imf_id=$1)', [imf.id]);
+      } else {
+        // Purge physique : le ON DELETE CASCADE (imf_id) propage à toutes les tables.
+        await c.query('DELETE FROM imf WHERE id=$1', [imf.id]);
+      }
+      await c.query(
+        `INSERT INTO imf_deletion_log(imf_code, imf_name, mode, stats, deleted_by, deleted_by_email)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [imf.code_imf, imf.name, mode, counts, req.user.id, req.user.email]);
+      return counts;
+    });
+
+    res.json({ ok: true, mode, imf_code: imf.code_imf, imf_name: imf.name, deleted: out,
+      message: mode === 'soft'
+        ? 'Institution archivée (données conservées, accès révoqués).'
+        : 'Institution et toutes ses données supprimées définitivement.' });
+  } catch (e) { next(e); }
+}
+router.delete('/imfs/:id', deleteImf);
+router.post('/imfs/:id/delete', deleteImf);
+
 // --- Activer / désactiver l'accès d'un utilisateur IMF ---------------------
 router.post('/users/:id/toggle', async (req, res, next) => {
   try {

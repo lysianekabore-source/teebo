@@ -35,7 +35,7 @@ router.post('/', async (req, res, next) => {
   try {
     const b = req.body || {};
     const required = ['lastname','firstname','position','country_code','imf_type',
-      'capital_cents','bceao_agreement_no','whatsapp','phone_main','city','email','admin_name','imf_name'];
+      'capital_cents','bceao_agreement_no','rccm','ifu','whatsapp','phone_main','city','email','admin_name','imf_name'];
     for (const f of required) if (b[f] === undefined || b[f] === null || b[f] === '')
       return res.status(422).json({ error: 'missing_field', field: f });
     if (!UEMOA_CODES.includes(b.country_code)) return res.status(422).json({ error: 'country_not_uemoa' });
@@ -79,16 +79,21 @@ router.post('/', async (req, res, next) => {
       // resteront modifiables par l'admin de l'IMF une fois son accès ouvert.
       await c.query(
         `INSERT INTO imf_branding(imf_id, legal_name, legal_form, bceao_agreement_no,
+             trade_register_no, tax_id,
              share_capital_cents, legal_address)
-         VALUES ($1,$2,$3,$4,$5,$6)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (imf_id) DO UPDATE SET
              legal_name         = COALESCE(imf_branding.legal_name, EXCLUDED.legal_name),
              legal_form         = COALESCE(imf_branding.legal_form, EXCLUDED.legal_form),
              bceao_agreement_no = COALESCE(imf_branding.bceao_agreement_no, EXCLUDED.bceao_agreement_no),
+             trade_register_no  = COALESCE(imf_branding.trade_register_no, EXCLUDED.trade_register_no),
+             tax_id             = COALESCE(imf_branding.tax_id, EXCLUDED.tax_id),
              share_capital_cents= COALESCE(imf_branding.share_capital_cents, EXCLUDED.share_capital_cents),
              legal_address      = COALESCE(imf_branding.legal_address, EXCLUDED.legal_address),
              updated_at         = now()`,
-        [imf.id, b.imf_name, b.imf_type, b.bceao_agreement_no, Number(b.capital_cents) || 0,
+        [imf.id, b.imf_name, b.imf_type, b.bceao_agreement_no,
+         String(b.rccm).trim(), String(b.ifu).trim(),
+         Number(b.capital_cents) || 0,
          [b.city, b.country_code].filter(Boolean).join(', ')]);
       return { imf, requestId: reqRow.id };
     });
@@ -122,6 +127,8 @@ router.post('/:id/select-plan', async (req, res, next) => {
       billing_cycle: pr.billing, period_label: pr.periodLabel,
       licence_cents: pr.licenceCents,
       subscription_cents: pr.subscriptionCents,
+      gross_subscription_cents: pr.grossSubscriptionCents,
+      savings_cents: pr.savingsCents,
       discount_cents: pr.discountCents,
       subtotal_cents: pr.subtotalCents,
       amount_cents: pr.totalCents,

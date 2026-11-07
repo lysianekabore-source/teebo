@@ -30,6 +30,38 @@ const SUP_ROLES = ['admin_imf','direction','department','service', 'direction', 
 /** Champs KYC qui doivent être renseignés pour compléter un enrôlement. */
 const KYC_FIELDS = ['birth_date', 'id_number', 'address'];
 
+/**
+ * Socle KYC BCEAO / UEMOA (connaissance du client).
+ * Normalise les champs d'identification exigés à l'entrée en relation :
+ * état civil, pièce d'identité, identifiant fiscal, profession, adresse,
+ * objet de la relation, origine des fonds, PPE et bénéficiaire effectif.
+ * Tous les champs sont optionnels au niveau SQL (la complétion est contrôlée
+ * par les règles métier / l'échéance d'un mois), mais recommandés dès l'entrée.
+ */
+function readBceaoKyc(b) {
+  const str = (v) => (v === undefined || v === null || String(v).trim() === '') ? null : String(v).trim();
+  const date = (v) => isISODate(v) ? v : null;
+  return {
+    gender: str(b.gender),
+    birth_place: str(b.birth_place),
+    nationality: str(b.nationality),
+    marital_status: str(b.marital_status),
+    profession: str(b.profession),
+    employer: str(b.employer),
+    id_type: str(b.id_type),
+    id_issuer: str(b.id_issuer),
+    id_issue_date: date(b.id_issue_date),
+    id_expiry_date: date(b.id_expiry_date),
+    tax_id: str(b.tax_id || b.niu || b.nina),
+    activity_sector: str(b.activity_sector),
+    fund_origin: str(b.fund_origin),
+    business_purpose: str(b.business_purpose),
+    is_pep: b.is_pep === true || b.is_pep === 'oui' || b.is_pep === 'true',
+    pep_detail: str(b.pep_detail),
+    beneficial_owner: str(b.beneficial_owner)
+  };
+}
+
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 
 /** Vrai si la date fournie est une date ISO valide (YYYY-MM-DD). */
@@ -124,13 +156,21 @@ r.post('/clients/new', requireRole('admin_imf','direction','department','service
       const dev = await activeDevice(c, req.user.imf_id, req.user.id, req);
       const chain = await resolveChain(c, req.user.imf_id, req.user.id);
       const code = (await c.query('SELECT fn_gen_client_code($1) AS code', [req.user.imf_id])).rows[0].code;
+      const k = readBceaoKyc(b);
       const cl = (await c.query(
         `INSERT INTO client(imf_id,code_client,full_name,birth_date,phone,id_number,address,
-              collectrice_user_id,superviseur_user_id,agency_unit_id,origin,created_by_user_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'new',$11) RETURNING *`,
+              collectrice_user_id,superviseur_user_id,agency_unit_id,origin,created_by_user_id,
+              gender,birth_place,nationality,marital_status,profession,employer,
+              id_type,id_issuer,id_issue_date,id_expiry_date,tax_id,activity_sector,
+              fund_origin,business_purpose,is_pep,pep_detail,beneficial_owner)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'new',$11,
+              $12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28) RETURNING *`,
         [req.user.imf_id, code, fullName, b.birth_date || null, b.phone || null, b.id_number || null,
          b.address || null, chain.collectrice.id, chain.superviseur ? chain.superviseur.id : null,
-         chain.collectrice.org_unit_id, req.user.id])).rows[0];
+         chain.collectrice.org_unit_id, req.user.id,
+         k.gender, k.birth_place, k.nationality, k.marital_status, k.profession, k.employer,
+         k.id_type, k.id_issuer, k.id_issue_date, k.id_expiry_date, k.tax_id, k.activity_sector,
+         k.fund_origin, k.business_purpose, k.is_pep, k.pep_detail, k.beneficial_owner])).rows[0];
       return { client: cl, chain, device: dev ? dev.id : null };
     });
     res.status(201).json({
@@ -177,13 +217,21 @@ r.post('/clients/enroll', requireRole('admin_imf','direction','department','serv
       const dev = await activeDevice(c, req.user.imf_id, req.user.id, req);
       const chain = await resolveChain(c, req.user.imf_id, req.user.id);
       const code = (await c.query('SELECT fn_gen_client_code($1) AS code', [req.user.imf_id])).rows[0].code;
+      const k = readBceaoKyc(b);
       const cl = (await c.query(
         `INSERT INTO client(imf_id,code_client,full_name,birth_date,phone,id_number,address,
-              collectrice_user_id,superviseur_user_id,agency_unit_id,origin,created_by_user_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'enrolled',$11) RETURNING *`,
+              collectrice_user_id,superviseur_user_id,agency_unit_id,origin,created_by_user_id,
+              gender,birth_place,nationality,marital_status,profession,employer,
+              id_type,id_issuer,id_issue_date,id_expiry_date,tax_id,activity_sector,
+              fund_origin,business_purpose,is_pep,pep_detail,beneficial_owner)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'enrolled',$11,
+              $12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28) RETURNING *`,
         [req.user.imf_id, code, fullName, b.birth_date || null, b.phone || null, b.id_number || null,
          b.address || null, chain.collectrice.id, chain.superviseur ? chain.superviseur.id : null,
-         chain.collectrice.org_unit_id, req.user.id])).rows[0];
+         chain.collectrice.org_unit_id, req.user.id,
+         k.gender, k.birth_place, k.nationality, k.marital_status, k.profession, k.employer,
+         k.id_type, k.id_issuer, k.id_issue_date, k.id_expiry_date, k.tax_id, k.activity_sector,
+         k.fund_origin, k.business_purpose, k.is_pep, k.pep_detail, k.beneficial_owner])).rows[0];
 
       // Compte repris du SIG : créé dès l'enrôlement, alimenté avec le solde déclaré.
       const acode = (await c.query('SELECT fn_gen_account_code($1) AS code', [req.user.imf_id])).rows[0].code;
@@ -198,12 +246,19 @@ r.post('/clients/enroll', requireRole('admin_imf','direction','department','serv
       const en = (await c.query(
         `INSERT INTO client_enrollment(imf_id,client_id,account_id,collectrice_user_id,
               sig_account_no,sig_balance_cents,sig_balance_as_of,sig_system,
-              birth_date,id_number,address,next_of_kin,deadline_at,status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now() + interval '1 month','pending')
+              birth_date,id_number,address,next_of_kin,deadline_at,status,
+              gender,birth_place,nationality,marital_status,profession,employer,
+              id_type,id_issuer,id_issue_date,id_expiry_date,tax_id,activity_sector,
+              fund_origin,business_purpose,is_pep,pep_detail,beneficial_owner)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now() + interval '1 month','pending',
+              $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
          RETURNING *`,
         [req.user.imf_id, cl.id, acc.id, chain.collectrice.id,
          String(b.sig_account_no).trim(), Math.round(bal), asOf, b.sig_system || null,
-         b.birth_date || null, b.id_number || null, b.address || null, b.next_of_kin || null])).rows[0];
+         b.birth_date || null, b.id_number || null, b.address || null, b.next_of_kin || null,
+         k.gender, k.birth_place, k.nationality, k.marital_status, k.profession, k.employer,
+         k.id_type, k.id_issuer, k.id_issue_date, k.id_expiry_date, k.tax_id, k.activity_sector,
+         k.fund_origin, k.business_purpose, k.is_pep, k.pep_detail, k.beneficial_owner])).rows[0];
 
       return { client: cl, account: acc, enrollment: en, chain };
     });
@@ -249,16 +304,43 @@ r.post('/clients/:id/complete-enrollment', requireRole('admin_imf','direction','
     const stillMissing = KYC_FIELDS.filter((f) => !merged[f]);
     if (stillMissing.length) return res.status(400).json({ error: 'kyc_incomplet', missing: stillMissing });
 
+    // Socle KYC BCEAO : on complète avec les nouvelles valeurs si fournies,
+    // sinon on conserve celles déjà saisies à l'enrôlement.
+    const k = readBceaoKyc(b);
+    const KB = ['gender','birth_place','nationality','marital_status','profession','employer',
+      'id_type','id_issuer','id_issue_date','id_expiry_date','tax_id','activity_sector',
+      'fund_origin','business_purpose','pep_detail','beneficial_owner'];
+    const mk = {};
+    for (const f of KB) mk[f] = (k[f] != null ? k[f] : (en[f] != null ? en[f] : null));
+    mk.is_pep = (b.is_pep !== undefined) ? k.is_pep : (en.is_pep === true);
+
     const out = await tx(async (c) => {
       await c.query(
-        `UPDATE client SET birth_date=$1, id_number=$2, address=$3, phone=COALESCE($4, phone) WHERE id=$5`,
-        [merged.birth_date, merged.id_number, merged.address, b.phone || null, cl.id]);
+        `UPDATE client SET birth_date=$1, id_number=$2, address=$3, phone=COALESCE($4, phone),
+              gender=$5, birth_place=$6, nationality=$7, marital_status=$8, profession=$9,
+              employer=$10, id_type=$11, id_issuer=$12, id_issue_date=$13, id_expiry_date=$14,
+              tax_id=$15, activity_sector=$16, fund_origin=$17, business_purpose=$18,
+              is_pep=$19, pep_detail=$20, beneficial_owner=$21
+          WHERE id=$22`,
+        [merged.birth_date, merged.id_number, merged.address, b.phone || null,
+         mk.gender, mk.birth_place, mk.nationality, mk.marital_status, mk.profession,
+         mk.employer, mk.id_type, mk.id_issuer, mk.id_issue_date, mk.id_expiry_date,
+         mk.tax_id, mk.activity_sector, mk.fund_origin, mk.business_purpose,
+         mk.is_pep, mk.pep_detail, mk.beneficial_owner, cl.id]);
       const e2 = (await c.query(
         `UPDATE client_enrollment SET birth_date=$1, id_number=$2, address=$3, id_document_url=$4,
-              next_of_kin=$5, status='completed', completed_at=now()
-          WHERE client_id=$6 RETURNING *`,
+              next_of_kin=$5, status='completed', completed_at=now(),
+              gender=$6, birth_place=$7, nationality=$8, marital_status=$9, profession=$10,
+              employer=$11, id_type=$12, id_issuer=$13, id_issue_date=$14, id_expiry_date=$15,
+              tax_id=$16, activity_sector=$17, fund_origin=$18, business_purpose=$19,
+              is_pep=$20, pep_detail=$21, beneficial_owner=$22
+          WHERE client_id=$23 RETURNING *`,
         [merged.birth_date, merged.id_number, merged.address, b.id_document_url || en.id_document_url,
-         b.next_of_kin || en.next_of_kin, cl.id])).rows[0];
+         b.next_of_kin || en.next_of_kin,
+         mk.gender, mk.birth_place, mk.nationality, mk.marital_status, mk.profession,
+         mk.employer, mk.id_type, mk.id_issuer, mk.id_issue_date, mk.id_expiry_date,
+         mk.tax_id, mk.activity_sector, mk.fund_origin, mk.business_purpose,
+         mk.is_pep, mk.pep_detail, mk.beneficial_owner, cl.id])).rows[0];
       // Le compte éventuellement bloqué pour défaut de complétion est réactivé.
       const acc = (await c.query(
         `UPDATE account SET status='active', blocked_at=NULL, blocked_reason=NULL

@@ -20,7 +20,14 @@ export const TEEBO_SUPPLIER = {
   address: 'Secteur 51, Ouaga 2000 — Parcelle 10, Lot 26, Section TY',
   address2: '11 BP 74 Ouagadougou 11 — Burkina Faso',
   tel: '+226 50 32 14 32',
-  email: 'hello@teebo.africa'
+  email: 'hello@teebo.africa',
+  // Mentions légales de l'émetteur teebo — à renseigner via variables
+  // d'environnement (ne JAMAIS inventer). Affichées « — » tant que vides.
+  legal_form: process.env.TEEBO_LEGAL_FORM || '',
+  rccm: process.env.TEEBO_RCCM || '',
+  ifu: process.env.TEEBO_IFU || '',
+  vat: process.env.TEEBO_VAT || '',
+  capital: process.env.TEEBO_CAPITAL || ''
 };
 
 export const CURRENCY_LABEL = { XOF: 'FCFA', XAF: 'FCFA' };
@@ -138,6 +145,9 @@ function docStyles(embed = false) {
   .legal{margin-top:26px;padding:14px 16px;background:var(--soft);border:1px solid var(--line);border-radius:9px;font-size:11.5px;color:#3c3f57;line-height:1.65}
   .legal h4{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px}
   .legal .grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 22px}
+  .legal .pcols{display:grid;grid-template-columns:1fr 1fr;gap:10px 26px}
+  .legal .pcols>div>div{padding:3px 0;border-bottom:1px dotted var(--line);display:flex;justify-content:space-between;gap:10px}
+  .legal .pcols h4{margin:0 0 6px}
   .sign{margin-top:22px;font-size:12px;color:var(--muted);line-height:1.6}
   .foot{margin-top:24px;padding-top:14px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
   .badge{display:inline-block;background:#eef7d6;color:#3d5c00;border:1px solid #d5e9a8;border-radius:999px;font-size:11px;font-weight:700;padding:3px 10px}
@@ -166,6 +176,50 @@ function docHeadInvoice() {
       ${esc(s.address)}<br>${esc(s.address2)}<br>
       Tél. ${esc(s.tel)} · ${esc(s.email)}
     </div>
+  </div>`;
+}
+
+/* Mentions légales des DEUX parties sur les factures : le CLIENT (l'IMF) et
+   l'ÉMETTEUR (teebo). Toutes les mentions obligatoires OHADA/UEMOA figurent
+   côte à côte (raison sociale, forme juridique, RCCM, IFU/NIF, agrément
+   BCEAO, capital social, siège). Les identifiants teebo proviennent de
+   variables d'environnement — affichés « — » tant qu'ils ne sont pas fournis. */
+function docLegalParties(header) {
+  const b = header;
+  const s = TEEBO_SUPPLIER;
+  const client = [
+    ['Raison sociale', b.legal_name || b.imf.name || ''],
+    ['Forme juridique', b.legal_form || '—'],
+    ['RCCM', b.trade_register_no || '—'],
+    ['IFU / NIF', b.tax_id || '—'],
+    ['N° contribuable / TVA', b.vat_number || '—'],
+    ['Agrément BCEAO', b.bceao_agreement_no || '—'],
+    ['Capital social', b.share_capital_cents != null ? moneyFcfa(b.share_capital_cents) : '—'],
+    ['Siège social', b.legal_address || '—']
+  ];
+  const supplier = [
+    ['Dénomination', s.name],
+    ['Forme / régime', s.legal_form || '—'],
+    ['RCCM', s.rccm || '—'],
+    ['IFU / NIF', s.ifu || '—'],
+    ['N° contribuable / TVA', s.vat || '—'],
+    ['Capital social', s.capital || '—'],
+    ['Siège social', s.address + ' · ' + s.address2],
+    ['Contact', s.tel + ' · ' + s.email]
+  ];
+  const col = (title, rows) =>
+    `<div><h4>${esc(title)}</h4>` +
+    rows.map((r) => `<div><span>${esc(r[0])}</span><b>${esc(r[1] || '—')}</b></div>`).join('') +
+    `</div>`;
+  const bank = b.bank_details
+    ? `<div style="margin-top:10px"><h4>Coordonnées bancaires de règlement</h4>${esc(b.bank_details)}</div>` : '';
+  return `<div class="legal">
+    <h4>Mentions légales obligatoires</h4>
+    <div class="pcols">
+      ${col('Client — l\'IMF', client)}
+      ${col('Émetteur — ' + s.name, supplier)}
+    </div>
+    ${bank}
   </div>`;
 }
 
@@ -358,7 +412,7 @@ export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, 
     ${paidLine}
   </div>
   ${notes ? `<div class="legal"><h4>Observations</h4>${esc(notes)}</div>` : ''}
-  ${docLegalTeebo()}
+  ${docLegalParties(header)}
   <div class="sign">
     ${isFinal
       ? `Facture émise par ${esc(TEEBO_SUPPLIER.name)} (prestataire de la solution teebo). Règlement par virement ou Mobile Money selon les coordonnées ci-dessus.`

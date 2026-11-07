@@ -402,6 +402,7 @@
     if (act === 'credit') sheetCredit();
     if (act === 'request') sheetRequest();
     if (act === 'clientspace') sheetClientSpace();
+    if (act === 'newclient') sheetNewClient();
     if (act === 'remit') sheetRemit();
     if (act === 'settings') sheetSettings();
   });
@@ -802,19 +803,108 @@
     };
   }
 
+  // Créer un espace en ligne pour un client EXISTANT : on recherche le
+  // client, puis on configure son mode de connexion et son format de relevé.
   function sheetClientSpace() {
-    openSheet(`<h3>Créer un espace client</h3><p class="sub">Le client pourra consulter son relevé en ligne.</p>
-      <form id="f"><div class="fld"><label>Nom complet</label><input id="nm" required></div>
-      <div class="fld"><label>Téléphone</label><input id="ph" inputmode="tel"></div>
+    OPS_CLIENT = null;
+    openSheet(`<h3>Créer un espace client</h3><p class="sub">Recherchez le client existant : il pourra ensuite consulter son relevé en ligne.</p>
+      <div class="alert alert--err" hidden id="ferr"></div>
+      <div id="pick-wrap"><div class="pick"><input id="pq" type="search" placeholder="Rechercher le client (nom, code, téléphone)…" autocomplete="off"><button class="btn btn--primary" type="button" id="pqg">Chercher</button></div><div class="pick-results" id="pres"></div></div>
+      <form id="f" hidden><div id="chosen-wrap"></div>
       <div class="fld"><label>Mode de connexion client</label><select id="lm"><option value="mot_de_passe">Mot de passe</option><option value="sms_otp">Validation par SMS</option><option value="pin">Code PIN</option></select></div>
       <div class="fld"><label>Format de relevé</label><select id="sf"><option value="pdf">PDF</option><option value="csv">CSV</option><option value="les_deux">Les deux</option></select></div>
       <div class="sheet__nav"><button type="button" class="btn btn--ghost" data-x>Annuler</button><button class="btn btn--primary" type="submit">Créer l'espace</button></div></form>`);
     $('[data-x]', root).onclick = closeSheet;
-    $("#f", root).onsubmit = async (e) => { e.preventDefault();
-      try { const r = await api('/clients', { method: 'POST', body: { full_name: $('#nm', root).value.trim(), phone: $('#ph', root).value.trim(), login_mode: $('#lm', root).value, statement_format: $('#sf', root).value } });
-        alert('Espace client créé.\nCode client : ' + r.client.code_client + '\nCompte : ' + r.account.code_account + '\nMot de passe temporaire : ' + r.credentials.temporary_password);
+    wirePick({ onPick: (c) => { OPS_CLIENT = c; $('#pick-wrap', root).hidden = true; $('#f', root).hidden = false;
+      $('#chosen-wrap', root).innerHTML = chosenBlock(c); const rb = $('#rech', root); if (rb) rb.onclick = () => sheetClientSpace(); } });
+    $("#f", root).onsubmit = async (e) => { e.preventDefault(); clearErr();
+      if (!OPS_CLIENT) { formErr('Sélectionnez d\'abord un client.'); return; }
+      try { const r = await api('/clients/' + encodeURIComponent(OPS_CLIENT.client_id) + '/portal', { method: 'POST', body: { login_mode: $('#lm', root).value, statement_format: $('#sf', root).value } });
+        alert('Espace client créé pour ' + ((r.client && r.client.full_name) || OPS_CLIENT.full_name) + '.\nMot de passe temporaire : ' + ((r.credentials && r.credentials.temporary_password) || '—'));
         closeSheet();
-      } catch (err) { alert(err.message); }
+      } catch (err) {
+        if (err.data && err.data.error === 'espace_deja_cree') { formErr('Cet espace client existe déjà.'); }
+        else { formErr(err.message); }
+      }
+    };
+  }
+
+  // Enregistrer un NOUVEAU client avec son socle d'identité (KYC BCEAO),
+  // chez lui : le GPS du lieu de collecte est capté automatiquement.
+  function sheetNewClient() {
+    openSheet(`<h3>Nouveau client (KYC BCEAO)</h3><p class="sub">À remplir chez le client : le GPS du lieu est enregistré automatiquement. Les champs marqués d'une étoile sont obligatoires.</p>
+      <div class="alert alert--err" hidden id="ferr"></div>
+      <form id="f">
+      <div class="fld"><label>Nom complet <span class="req-mark">*</span></label><input id="nm" required placeholder="Prénom(s) et nom"></div>
+      <div class="fld"><label>Date de naissance <span class="req-mark">*</span></label><input id="bd" type="date" max="${todayISO()}" required></div>
+      <div class="fld"><label>Lieu de naissance</label><input id="bp" placeholder="Ville / localité"></div>
+      <div class="fld"><label>Sexe</label><select id="gd"><option value="">—</option><option value="F">Féminin</option><option value="M">Masculin</option></select></div>
+      <div class="fld"><label>Nationalité</label><input id="nat" placeholder="Ex. Ivoirienne"></div>
+      <div class="fld"><label>Situation matrimoniale</label><select id="ms"><option value="">—</option><option value="celibataire">Célibataire</option><option value="marie">Marié(e)</option><option value="divorce">Divorcé(e)</option><option value="veuf">Veuf/Veuve</option></select></div>
+      <div class="fld"><label>Téléphone</label><input id="ph" inputmode="tel"></div>
+      <div class="fld"><label>Adresse / domicile</label><input id="ad" placeholder="Quartier, ville"></div>
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:12px 0">
+      <div class="fld"><label>Type de pièce d'identité</label><select id="idt"><option value="">—</option><option value="CNI">CNI</option><option value="passeport">Passeport</option><option value="permis">Permis de conduire</option><option value="carte_consulaire">Carte consulaire</option><option value="autre">Autre</option></select></div>
+      <div class="fld"><label>N° de pièce d'identité <span class="req-mark">*</span></label><input id="idn" required></div>
+      <div class="fld"><label>Autorité de délivrance</label><input id="idi" placeholder="Ex. ONECI"></div>
+      <div class="fld"><label>Date de délivrance</label><input id="idd" type="date" max="${todayISO()}"></div>
+      <div class="fld"><label>Date d'expiration</label><input id="ide" type="date"></div>
+      <div class="fld"><label>Identifiant fiscal (NIU/NINA)</label><input id="tax"></div>
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:12px 0">
+      <div class="fld"><label>Profession</label><input id="prof"></div>
+      <div class="fld"><label>Employeur</label><input id="emp"></div>
+      <div class="fld"><label>Secteur d'activité</label><input id="sec"></div>
+      <div class="fld"><label>Origine des fonds</label><input id="fo" placeholder="Ex. commerce, salaire"></div>
+      <div class="fld"><label>Objet de la relation d'affaires</label><input id="bpz" placeholder="Ex. épargne, crédit"></div>
+      <div class="fld"><label>Bénéficiaire effectif (si différent)</label><input id="bo"></div>
+      <div class="fld"><label><input type="checkbox" id="pep"> Personne politiquement exposée (PPE)</label></div>
+      <div class="fld" id="pepd-wrap" hidden><label>Précisions PPE</label><input id="pepd"></div>
+      <div class="sheet__nav"><button type="button" class="btn btn--ghost" data-x>Annuler</button><button class="btn btn--primary" type="submit">Enregistrer le client</button></div></form>`);
+    $('[data-x]', root).onclick = closeSheet;
+    $('#pep', root).onchange = () => { $('#pepd-wrap', root).hidden = !$('#pep', root).checked; };
+    $("#f", root).onsubmit = async (e) => { e.preventDefault(); clearErr();
+      const full_name = $('#nm', root).value.trim();
+      const birth_date = $('#bd', root).value;
+      const id_number = $('#idn', root).value.trim();
+      if (!full_name) { formErr('Le nom complet est obligatoire.'); return; }
+      if (!birth_date) { formErr('La date de naissance est obligatoire.'); return; }
+      if (!id_number) { formErr('Le numéro de pièce d\'identité est obligatoire.'); return; }
+      const btn = $('#f button[type=submit]', root); if (btn) { btn.disabled = true; btn.textContent = 'Localisation…'; }
+      const pos = await locate(); positionLine();
+      if (!pos) { if (btn) { btn.disabled = false; btn.textContent = 'Enregistrer le client'; }
+        formErr('Position GPS indisponible. Autorisez la localisation : le client doit être enregistré chez lui.'); return; }
+      const body = {
+        full_name, birth_date, id_number,
+        birth_place: $('#bp', root).value.trim() || null,
+        gender: $('#gd', root).value || null,
+        nationality: $('#nat', root).value.trim() || null,
+        marital_status: $('#ms', root).value || null,
+        phone: $('#ph', root).value.trim() || null,
+        address: $('#ad', root).value.trim() || null,
+        id_type: $('#idt', root).value || null,
+        id_issuer: $('#idi', root).value.trim() || null,
+        id_issue_date: $('#idd', root).value || null,
+        id_expiry_date: $('#ide', root).value || null,
+        tax_id: $('#tax', root).value.trim() || null,
+        profession: $('#prof', root).value.trim() || null,
+        employer: $('#emp', root).value.trim() || null,
+        activity_sector: $('#sec', root).value.trim() || null,
+        fund_origin: $('#fo', root).value.trim() || null,
+        business_purpose: $('#bpz', root).value.trim() || null,
+        beneficial_owner: $('#bo', root).value.trim() || null,
+        is_pep: $('#pep', root).checked,
+        pep_detail: $('#pep', root).checked ? ($('#pepd', root).value.trim() || null) : null,
+        gps_lat: pos.lat, gps_lng: pos.lng, gps_accuracy_m: pos.accuracy_m
+      };
+      try { const r = await api('/clients/new', { method: 'POST', body });
+        alert('Client enregistré : ' + (r.client.full_name) + '\nCode client : ' + r.client.code_client + '\n\n' + (r.note || 'Ouvrez maintenant son compte d\'épargne.'));
+        closeSheet(); loadRound();
+      } catch (err) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Enregistrer le client'; }
+        if (err.data && err.data.error === 'missing_field') { formErr('Champ obligatoire manquant : ' + (err.data.field || '')); }
+        else if (err.data && err.data.error === 'gps_required') { formErr(err.message); }
+        else { formErr(err.message); }
+      }
     };
   }
 })();

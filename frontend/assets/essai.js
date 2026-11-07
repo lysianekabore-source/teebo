@@ -10,15 +10,26 @@
     if (!r.ok) { const e = new Error((j && (j.error || j.message)) || ('Erreur ' + r.status)); e.status = r.status; e.data = j; throw e; }
     return j;
   }
-  const PLANS = [
-    { code: 'essentiel', name: 'Essentiel', price: 'Sur devis', feats: ['Jusqu\'à 5 agences', 'Collecte mobile', 'Reporting BCEAO de base'] },
-    { code: 'pro', name: 'Professionnel', price: 'Sur devis', feats: ['Agences illimitées', 'Espaces clients en ligne', 'Autorisations fines inter-entités'] },
-    { code: 'gere', name: 'Délégué', price: 'Sur devis', feats: ['Infogérance', 'Personnalisation des états', 'Accompagnement terrain'] }
-  ];
+  // Offre unique teeBo : licence unique + abonnement mensuel ou annuel (−15 %).
+  const OFFER = {
+    name: 'teeBo — offre unique',
+    licence: '250 000 FCFA',
+    monthly: '75 000 FCFA / mois',
+    yearly: '63 750 FCFA / mois (765 000 FCFA / an, −15 %)',
+    feats: ['Agences illimitées', 'Utilisateurs illimités', 'Collecte de proximité & synchronisation terrain',
+      'Espaces clients en ligne', 'Rapports prudentiels DSC-SFD', 'Autorisations fines inter-entités',
+      'Sécurité bancaire & cloisonnement des données', 'Support inclus']
+  };
 
   function renderPlans() {
-    $('#plans').innerHTML = PLANS.map((p) => `<div class="plan"><h4>${esc(p.name)}</h4><div class="price">${esc(p.price)}</div>
-      <ul>${p.feats.map((f) => `<li>${esc(f)}</li>`).join('')}</ul></div>`).join('');
+    $('#plans').innerHTML =
+      '<div class="plan chosen" style="text-align:left">' +
+        '<h4>' + esc(OFFER.name) + '</h4>' +
+        '<div class="price">' + esc(OFFER.monthly) + '</div>' +
+        '<div class="cycle">ou ' + esc(OFFER.yearly) + '</div>' +
+        '<div class="cycle" style="margin-top:6px">+ Licence unique ' + esc(OFFER.licence) + ' (facturée après l’essai)</div>' +
+        '<ul>' + OFFER.feats.map((f) => `<li>${esc(f)}</li>`).join('') + '</ul>' +
+      '</div>';
   }
 
   function renderTimeline(days) {
@@ -32,7 +43,7 @@
         : 'Application désactivée (utilisateurs et admin bloqués).';
       return `<div style="display:flex;gap:14px;padding:12px 0;border-bottom:1px solid var(--line);align-items:flex-start">
         <b style="flex:0 0 40px;height:40px;border-radius:50%;background:${reached ? 'var(--navy)' : '#eef0f6'};color:${reached ? 'var(--neon)' : 'var(--muted)'};display:flex;align-items:center;justify-content:center;font-weight:800">J${d}</b>
-        <div><b style="font-size:14px">${esc(txt)}</b>${d === 31 ? '<div class="hint">Réactivation immédiate dès validation de la formule par teebo.</div>' : ''}</div></div>`;
+        <div><b style="font-size:14px">${esc(txt)}</b>${d === 31 ? '<div class="hint">Réactivation immédiate dès activation de l’offre par teebo.</div>' : ''}</div></div>`;
     }).join('');
   }
 
@@ -63,7 +74,7 @@
 
     const b = $('#trial-banner');
     if (s.banner) { b.className = 'alert alert--warn'; b.innerHTML = '⏳ ' + esc(s.banner.message); b.hidden = false; }
-    else if (s.locked) { b.className = 'alert alert--err'; b.textContent = 'Votre essai est terminé. Contactez teebo pour activer votre formule.'; b.hidden = false; }
+    else if (s.locked) { b.className = 'alert alert--err'; b.textContent = 'Votre essai est terminé. Contactez teebo pour activer votre offre.'; b.hidden = false; }
 
     renderTimeline(s.days_left);
   }

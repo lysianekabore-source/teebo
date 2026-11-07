@@ -1,5 +1,5 @@
 /* teebo — assistant d'inscription IMF (production)
-   Parcours : 1) Formulaire IMF  2) Offre + formule  3) Facture proforma
+   Parcours : 1) Formulaire IMF  2) Offre unique  3) Facture proforma
              4) Confirmation approbation teebo (essai 30 j)
    Aucun gestionnaire inline (compatible CSP stricte). */
 (function () {
@@ -8,52 +8,132 @@
   var API = ''; // même origine en production
   var root = document.getElementById('wizard');
 
-  // --- Grille tarifaire (accueil) ---------------------------------------
-  // Les montants proviennent du paramétrage des formules (pas de valeur figée) ;
-  // un repli statique n'est utilisé que si l'API est injoignable au chargement.
-  var FALLBACK_TIERS = [
-    { code:'starter', label:'Starter', desc:'Pour les IMF qui démarrent leur digitalisation.',
-      price_cents:4500000, billing_cycle:'mensuel', max_agencies:3, max_users:15,
-      features:['3 agences','15 utilisateurs','Collecte mobile','Support e-mail'] },
-    { code:'business', label:'Business', desc:'Pour les IMF multi-agences en croissance.',
-      price_cents:12000000, billing_cycle:'mensuel', max_agencies:10, max_users:60,
-      features:['10 agences','60 utilisateurs','Collecte mobile','Reporting BCEAO','Support prioritaire'] },
-    { code:'enterprise', label:'Enterprise', desc:'Pour les réseaux et institutions matures.',
-      price_cents:35000000, billing_cycle:'mensuel', max_agencies:null, max_users:null,
-      features:['Agences illimitées','Utilisateurs illimités','Collecte mobile','Reporting BCEAO','Sécurité renforcée','Support dédié'] }
-  ];
+  // --- Offre unique (accueil) -------------------------------------------
+  // teebo propose UNE SEULE offre, transparente, sans palier :
+  //   • Abonnement mensuel de base : 75 000 FCFA / mois ;
+  //   • Cycle annuel : remise de 15 % (63 750 FCFA / mois, soit 765 000 / an) ;
+  //   • Licence unique d'activation : 250 000 FCFA, facturée APRÈS l'essai ;
+  //   • Essai gratuit de 30 jours calendaires, sans engagement initial.
+  // Le prix mensuel de base vient de l'API (plan unique) ; un repli statique
+  // garantit un affichage même si l'API est injoignable au chargement.
+  var MONTHLY_BASE_CENTS = 7500000;   // 75 000 FCFA / mois
+  var LICENCE_CENTS = 25000000;       // 250 000 FCFA (frais unique d'activation)
+  var ANNUAL_DISCOUNT = 0.15;         // -15 % sur l'abonnement en cycle annuel
+  var TRIAL_DAYS = 30;
 
-  function renderPricing(plans) {
-    var host = document.getElementById('pricing');
-    if (!host) return;
-    host.innerHTML = '';
-    if (!plans || !plans.length) {
-      host.appendChild(el('p', 'pricing__loading', 'Tarifs momentanément indisponibles. Contactez-nous : hello@teebo.africa'));
-      return;
-    }
-    plans.forEach(function (p, i) {
-      var feats = p.features;
-      if (typeof feats === 'string') { try { feats = JSON.parse(feats); } catch (_) { feats = []; } }
-      var best = i === 1;
-      var t = el('article', 'tier' + (best ? ' tier--best' : ''));
-      var caps = [];
-      if (p.max_agencies) caps.push(p.max_agencies + ' agences');
-      if (p.max_users) caps.push(p.max_users + ' utilisateurs');
-      t.innerHTML =
-        (best ? '<span class="tier__ribbon">Le plus choisi</span>' : '') +
-        '<div class="tier__name">' + esc(p.label || p.name) + '</div>' +
-        '<div class="tier__desc">' + esc(p.desc || p.description || '') + '</div>' +
-        '<div class="tier__price">' + money(p.price_cents) + '</div>' +
-        '<div class="tier__cycle">/ ' + esc(p.billing_cycle || 'mensuel') + '</div>' +
-        (caps.length ? '<div class="tier__cap">' + esc(caps.join(' · ')) + '</div>' : '') +
-        '<ul>' + (feats || []).map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul>' +
-        '<a class="btn ' + (best ? '' : 'btn--primary') + '" href="#inscription">Demander un accès</a>';
-      host.appendChild(t);
-    });
+  var FALLBACK_PLAN = {
+    code: 'standard', label: 'teeBo',
+    desc: 'L’offre unique et transparente pour toute IMF de la zone UEMOA.',
+    price_cents: MONTHLY_BASE_CENTS, billing_cycle: 'mensuel',
+    max_agencies: null, max_users: null,
+    features: ['Agences illimitées', 'Utilisateurs illimités',
+      'Collecte de proximité & synchronisation terrain', 'Gestion multi-agences',
+      'Rapports prudentiels DSC-SFD', 'Sécurité bancaire & cloisonnement des données',
+      'Support inclus']
+  };
+  // Compat : la grille d'accueil et l'inscription partagent la même offre.
+  var FALLBACK_TIERS = [FALLBACK_PLAN];
+
+  // Périodicité choisie sur la grille d'accueil : 'mensuel' | 'annuel'.
+  var landingBilling = 'mensuel';
+
+  // Abonnement NET affiché selon le cycle (remise annuelle déjà incluse).
+  function subNet(monthlyCents, cycle) {
+    if (cycle === 'annuel') return Math.round(monthlyCents * 12 * (1 - ANNUAL_DISCOUNT));
+    return Math.round(monthlyCents);
+  }
+  // Mensualisation affichée (« équivalent / mois ») selon le cycle.
+  function perMonth(monthlyCents, cycle) {
+    if (cycle === 'annuel') return Math.round(monthlyCents * (1 - ANNUAL_DISCOUNT));
+    return Math.round(monthlyCents);
   }
 
-  // Rendu immédiat de la grille tarifaire (repli), puis affinage via l'API.
-  renderPricing(FALLBACK_TIERS);
+  function landingMonthly() {
+    var p = (state && state.plans && state.plans[0]) ? state.plans[0] : FALLBACK_PLAN;
+    var c = Number(p.price_cents) || MONTHLY_BASE_CENTS;
+    return c > 0 ? c : MONTHLY_BASE_CENTS;
+  }
+
+  // Rendu de la section tarifs : carte d'essai gratuit (au premier plan) +
+  // carte de l'offre unique, avec bascule Mensuel / Annuel (−15 %).
+  function renderPricing() {
+    var host = document.getElementById('pricing');
+    if (!host) return;
+    var monthly = landingMonthly();
+    var cycle = landingBilling;
+    var net = subNet(monthly, cycle);
+    var pm = perMonth(monthly, cycle);
+    var total = LICENCE_CENTS + net;
+    var savings = Math.round(monthly * 12 * ANNUAL_DISCOUNT);
+
+    host.innerHTML = '';
+
+    // --- Bascule Mensuel / Annuel ---
+    var toggle = el('div', 'ptoggle');
+    [['mensuel', 'Mensuel'], ['annuel', 'Annuel · −15 %']].forEach(function (opt) {
+      var active = cycle === opt[0];
+      var b = el('button', 'ptoggle__btn' + (active ? ' is-active' : ''), esc(opt[1]));
+      b.type = 'button';
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+      b.addEventListener('click', function () {
+        if (landingBilling === opt[0]) return;
+        landingBilling = opt[0];
+        renderPricing();
+      });
+      toggle.appendChild(b);
+    });
+    host.appendChild(toggle);
+
+    var grid = el('div', 'offer');
+
+    // --- Carte ESSAI GRATUIT (au premier plan) ---
+    var trial = el('article', 'trial-card');
+    trial.innerHTML =
+      '<div class="trial-card__badge">\uD83C\uDF81 Essai gratuit — 30 jours</div>' +
+      '<p class="trial-card__lead">Activez votre accès complet sans aucun engagement financier initial. ' +
+      'Testez toutes les fonctionnalités de collecte de proximité, de synchronisation terrain et de ' +
+      'gestion multi-agences en conditions réelles.</p>' +
+      '<ul class="trial-card__list">' +
+        '<li><b>0 FCFA</b> pendant 30 jours calendaires</li>' +
+        '<li>Accès illimité à l’application terrain collectrice</li>' +
+        '<li>Rapports prudentiels DSC-SFD fonctionnels</li>' +
+        '<li>Licence (' + money(LICENCE_CENTS) + ') facturée uniquement après la validation de votre essai</li>' +
+      '</ul>' +
+      '<a class="btn btn--primary trial-card__cta" href="#inscription">Commencer mon essai gratuit</a>';
+    grid.appendChild(trial);
+
+    // --- Carte OFFRE UNIQUE ---
+    var plan = (state && state.plans && state.plans[0]) ? state.plans[0] : FALLBACK_PLAN;
+    var feats = plan.features;
+    if (typeof feats === 'string') { try { feats = JSON.parse(feats); } catch (_) { feats = []; } }
+    var card = el('article', 'offer-card');
+    var savingsNote = cycle === 'annuel'
+      ? '<div class="offer-card__save">−15 % · économie ' + money(savings) + ' / an</div>'
+      : '<div class="offer-card__save offer-card__save--muted">Passez à l’annuel : −15 % sur l’abonnement</div>';
+    var annualLine = cycle === 'annuel'
+      ? '<div class="offer-card__sub">soit ' + money(net) + ' / an, facturés en une fois</div>'
+      : '<div class="offer-card__sub">facturé chaque mois, sans engagement de durée</div>';
+    card.innerHTML =
+      '<div class="offer-card__ribbon">Offre unique</div>' +
+      '<div class="offer-card__name">' + esc(plan.label || 'teeBo') + '</div>' +
+      '<div class="offer-card__desc">' + esc(plan.desc || plan.description || FALLBACK_PLAN.desc) + '</div>' +
+      '<div class="offer-card__price">' + money(pm) + ' <small>/ mois</small></div>' +
+      savingsNote +
+      annualLine +
+      '<div class="offer-card__licence">+ Licence unique ' + money(LICENCE_CENTS) +
+        ' <span>(une seule fois, facturée après l’essai)</span></div>' +
+      '<ul class="offer-card__feats">' +
+        (feats || []).map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') +
+      '</ul>' +
+      '<div class="offer-card__total">1<sup>er</sup> règlement après l’essai : <b>' + money(total) + '</b></div>' +
+      '<a class="btn offer-card__cta" href="#inscription">Demander un accès</a>';
+    grid.appendChild(card);
+
+    host.appendChild(grid);
+  }
+
+  // Rendu immédiat de la section tarifs (repli), puis affinage via l'API.
+  renderPricing();
 
   if (!root) return;
 
@@ -98,7 +178,7 @@
 
   function renderSteps() {
     var wrap = el('div', 'wiz__steps');
-    var labels = ['IMF', 'Formule', 'Proforma', 'Confirmation'];
+    var labels = ['IMF', 'Offre', 'Proforma', 'Confirmation'];
     labels.forEach(function (lab, i) {
       var n = i + 1;
       var s = el('div', 'wiz__step' + (state.step === n ? ' active' : (state.step > n ? ' done' : '')));
@@ -202,6 +282,12 @@
     g3.appendChild(field('Numéro d’agrément BCEAO', 'bceao_agreement_no', { required: true, placeholder: 'Ex : 2024-XXX-IM-001' }));
     panel.appendChild(g3);
 
+    // Identifiants légaux requis pour la facturation
+    var g4 = el('div', 'grid2');
+    g4.appendChild(field('Numéro RCCM', 'rccm', { required: true, placeholder: 'Ex : BF-OUA-2024-B-12345' }));
+    g4.appendChild(field('Numéro IFU', 'ifu', { required: true, placeholder: 'Ex : 00012345 A' }));
+    panel.appendChild(g4);
+
     panel.appendChild(field('Email valide de l’IMF', 'email', { type: 'email', required: true, placeholder: 'contact@monimf.bf' }));
 
     var nav = el('div', 'wiz__nav');
@@ -236,6 +322,8 @@
         city: panel.querySelector('#city').value.trim(),
         email: panel.querySelector('#email').value.trim(),
         bceao_agreement_no: panel.querySelector('#bceao_agreement_no').value.trim(),
+        rccm: panel.querySelector('#rccm').value.trim(),
+        ifu: panel.querySelector('#ifu').value.trim(),
         whatsapp: dial1.textContent + ' ' + wIn.value.replace(/^0+/, ''),
         phone_main: dial2.textContent + ' ' + pIn.value.replace(/^0+/, '')
       };
@@ -245,7 +333,9 @@
       var errors = false;
       [['lastname','Le nom est requis.'],['firstname','Le prénom est requis.'],['position','Le poste est requis.'],
        ['imf_name','Le nom de l’IMF est requis.'],['admin_name','Le nom de l’admin est requis.'],['city','La ville est requise.'],
-       ['bceao_agreement_no','Le n° d’agrément est requis.']].forEach(function (p) {
+       ['bceao_agreement_no','Le n° d’agrément est requis.'],
+       ['rccm','Le numéro RCCM est requis (facturation).'],
+       ['ifu','Le numéro IFU est requis (facturation).']].forEach(function (p) {
         if (!v[p[0]]) { showErr(panel, p[0], p[1]); errors = true; }
       });
       if (!v.country_code) { showErr(panel, 'country_code', 'Le pays est requis.'); errors = true; }
@@ -263,6 +353,7 @@
       var old = btn.textContent; btn.textContent = 'Envoi…';
       api('/api/v1/requests', 'POST', v).then(function (d) {
         state.imf = d;
+        state.billing_ids = { rccm: v.rccm, ifu: v.ifu };
         state.step = 2;
         render();
       }).catch(function (e) {
@@ -287,84 +378,89 @@
     return m[code] || 'Une erreur est survenue. Réessayez.';
   }
 
-  // ================= ÉTAPE 2 : OFFRE + FORMULE =================
-  // Tarification : licence unique + abonnement au choix MENSUEL ou ANNUEL.
-  // Le cycle annuel (12 mois) bénéficie d'une remise de 15 % sur l'abonnement.
-  var LICENCE_CENTS = 25000000;      // 250 000 FCFA (frais unique d'activation)
-  var ANNUAL_DISCOUNT = 0.15;        // -15 % sur la part abonnement en annuel
+  // ================= ÉTAPE 2 : OFFRE UNIQUE =================
+  // Offre unique standardisée : licence unique + abonnement au choix MENSUEL
+  // ou ANNUEL (remise de 15 % en annuel). Plus de 3 formules : une seule offre.
+  // Les helpers subNet / perMonth sont définis plus haut (section accueil).
 
-  // Prix de l'abonnement affiché selon le cycle choisi (hors licence).
-  function subFor(monthlyCents, cycle) {
-    if (cycle === 'annuel') return Math.round(monthlyCents * 12 * (1 - ANNUAL_DISCOUNT));
-    return Math.round(monthlyCents);
+  // Retourne l'offre unique à présenter (API si dispo, sinon repli statique).
+  function singlePlan() {
+    return (state.plans && state.plans[0]) ? state.plans[0] : FALLBACK_PLAN;
   }
-  function cycleLabel(cycle) { return cycle === 'annuel' ? 'an' : 'mois'; }
 
   function renderPlans() {
     if (!state.billing) state.billing = 'mensuel';
+    var plan = singlePlan();
+    // L'offre étant unique, elle est sélectionnée d'office : on ne demande que
+    // le rythme de facturation (mensuel / annuel).
+    state.selectedPlan = plan;
+
     var panel = el('div', 'panel');
-    panel.appendChild(el('h3', null, 'Votre offre financière'));
-    panel.appendChild(el('p', 'panel__hint', 'Choisissez d’abord la périodicité, puis la formule qui correspond à votre institution. Vous pourrez en changer plus tard.'));
+    panel.appendChild(el('h3', null, '2. Validez l’offre unique'));
+    panel.appendChild(el('p', 'panel__hint',
+      'Prenez connaissance des conditions financières transparentes de la plateforme ' +
+      '(Licence unique de ' + money(LICENCE_CENTS) + ' + Abonnement à partir de ' +
+      money(perMonth(plan.price_cents || MONTHLY_BASE_CENTS, 'annuel')) + '/mois) ' +
+      'et sélectionnez votre rythme de facturation (mensuel ou annuel avec −15 %).'));
     var errSlot = el('div'); panel.appendChild(errSlot);
 
-    // --- Sélecteur de périodicité : Mensuel / Annuel (-15 %) ---
-    var toggle = el('div', 'billing-toggle');
-    toggle.style.cssText = 'display:inline-flex;gap:6px;padding:5px;border:1px solid var(--line,#e3e5ee);border-radius:12px;margin:0 0 18px';
+    // --- Bascule de périodicité : Mensuel / Annuel (−15 %) ---
+    var toggle = el('div', 'ptoggle ptoggle--wiz');
     [['mensuel', 'Mensuel'], ['annuel', 'Annuel · −15 %']].forEach(function (opt) {
       var active = state.billing === opt[0];
-      var b = el('button', 'btn btn--sm' + (active ? ' btn--primary' : ' btn--ghost'), opt[1]);
+      var b = el('button', 'ptoggle__btn' + (active ? ' is-active' : ''), opt[1]);
       b.type = 'button';
-      if (!active) { b.style.color = 'var(--ink)'; b.style.borderColor = 'transparent'; }
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
       b.addEventListener('click', function () {
         if (state.billing === opt[0]) return;
         state.billing = opt[0];
-        state.selectedPlan = null;   // on redéclenche le choix après changement de cycle
         render();
       });
       toggle.appendChild(b);
     });
     panel.appendChild(toggle);
 
-    var plans = el('div', 'plans');
-    state.plans.forEach(function (p) {
-      var card = el('button', 'plan'); card.type = 'button';
-      if (state.selectedPlan && state.selectedPlan.code === p.code) card.classList.add('chosen');
-      var feats = (p.features || []);
-      if (typeof feats === 'string') { try { feats = JSON.parse(feats); } catch (_) { feats = []; } }
-      var subCents = subFor(p.price_cents, state.billing);
-      var totalCents = LICENCE_CENTS + subCents;
-      var saveNote = state.billing === 'annuel'
-        ? '<div class="cycle" style="color:#1f9d55">Économie ' + money(Math.round(p.price_cents * 12 * ANNUAL_DISCOUNT)) + ' / an</div>'
-        : '';
-      card.innerHTML =
-        '<h4>' + esc(p.label) + '</h4>' +
-        '<div class="price">' + money(subCents) + '</div>' +
-        '<div class="cycle">/ ' + cycleLabel(state.billing) + '</div>' +
-        saveNote +
-        '<div class="cycle" style="margin-top:6px">+ licence unique ' + money(LICENCE_CENTS) + '</div>' +
-        '<div class="cycle" style="font-weight:700;color:var(--ink,#0b0c26)">Total 1<sup>er</sup> règlement : ' + money(totalCents) + '</div>' +
-        '<ul>' + feats.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul>';
-      card.addEventListener('click', function () {
-        panel.querySelectorAll('.plan').forEach(function (x) { x.classList.remove('chosen'); });
-        card.classList.add('chosen');
-        state.selectedPlan = p;
-        nextBtn.disabled = false;
-      });
-      plans.appendChild(card);
-    });
-    panel.appendChild(plans);
+    // --- Carte de l'offre unique (récapitulatif financier) ---
+    var monthly = Number(plan.price_cents) || MONTHLY_BASE_CENTS;
+    var net = subNet(monthly, state.billing);
+    var pm = perMonth(monthly, state.billing);
+    var total = LICENCE_CENTS + net;
+    var savings = Math.round(monthly * 12 * ANNUAL_DISCOUNT);
+    var feats = plan.features;
+    if (typeof feats === 'string') { try { feats = JSON.parse(feats); } catch (_) { feats = []; } }
+
+    var savingsNote = state.billing === 'annuel'
+      ? '<div class="offer-card__save">−15 % · économie ' + money(savings) + ' / an</div>'
+      : '<div class="offer-card__save offer-card__save--muted">Passez à l’annuel : −15 % sur l’abonnement</div>';
+    var annualLine = state.billing === 'annuel'
+      ? '<div class="offer-card__sub">soit ' + money(net) + ' / an, facturés en une fois</div>'
+      : '<div class="offer-card__sub">facturé chaque mois, sans engagement de durée</div>';
+
+    var card = el('article', 'offer-card offer-card--wiz is-selected');
+    card.innerHTML =
+      '<div class="offer-card__ribbon">Offre unique</div>' +
+      '<div class="offer-card__name">' + esc(plan.label || 'teeBo') + '</div>' +
+      '<div class="offer-card__price">' + money(pm) + ' <small>/ mois</small></div>' +
+      savingsNote +
+      annualLine +
+      '<div class="offer-card__licence">+ Licence unique ' + money(LICENCE_CENTS) +
+        ' <span>(une seule fois, facturée après l’essai)</span></div>' +
+      '<ul class="offer-card__feats">' +
+        (feats || []).map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') +
+      '</ul>' +
+      '<div class="offer-card__total">1<sup>er</sup> règlement après l’essai : <b>' + money(total) + '</b></div>' +
+      '<div class="offer-card__trial">\uD83C\uDF81 Essai gratuit de ' + TRIAL_DAYS + ' jours — aucun paiement initial</div>';
+    panel.appendChild(card);
 
     var nav = el('div', 'wiz__nav');
     var back = el('button', 'btn btn--ghost', 'Retour'); back.type = 'button';
     back.style.color = 'var(--ink)'; back.style.borderColor = 'var(--line)';
     back.addEventListener('click', function () { state.step = 1; render(); });
-    var nextBtn = el('button', 'btn btn--primary', 'Choisir cette formule'); nextBtn.type = 'button';
-    nextBtn.disabled = !state.selectedPlan;
+    var nextBtn = el('button', 'btn btn--primary', 'Continuer'); nextBtn.type = 'button';
     nextBtn.addEventListener('click', function () {
-      if (!state.selectedPlan) return;
       nextBtn.disabled = true; var old = nextBtn.textContent; nextBtn.textContent = 'Génération…';
       api('/api/v1/requests/' + state.imf.request_id + '/select-plan', 'POST',
-          { plan_code: state.selectedPlan.code, billing_cycle: state.billing })
+          { plan_code: plan.code, billing_cycle: state.billing })
         .then(function (d) { state.proforma = d.proforma; state.step = 3; render(); })
         .catch(function (e) { nextBtn.disabled = false; nextBtn.textContent = old; errSlot.appendChild(alertBox('err', messageFr(e.message))); });
     });
@@ -383,21 +479,28 @@
 
     var box = el('div', 'proforma');
     var cyc = p.billing_cycle === 'annuel' ? 'Annuel (12 mois)' : 'Mensuel (1 mois)';
+    var aboLabel = p.billing_cycle === 'annuel'
+      ? 'Abonnement annuel (12 mois, −15 % inclus)'
+      : 'Abonnement mensuel (1er mois)';
     var rows = '' +
       '<tr><td>Institution</td><td>' + esc((state.imf && state.imf.imf_code) || '') + '</td></tr>' +
-      '<tr><td>Formule</td><td>' + esc(p.plan) + '</td></tr>' +
+      '<tr><td>N° RCCM</td><td>' + esc((state.billing_ids && state.billing_ids.rccm) || '') + '</td></tr>' +
+      '<tr><td>N° IFU</td><td>' + esc((state.billing_ids && state.billing_ids.ifu) || '') + '</td></tr>' +
+      '<tr><td>Offre</td><td>' + esc(p.plan || 'teeBo') + '</td></tr>' +
       '<tr><td>Périodicité</td><td>' + esc(cyc) + '</td></tr>' +
-      '<tr><td>Licence teeBo (frais unique)</td><td>' + money(p.licence_cents) + '</td></tr>' +
-      '<tr><td>Abonnement ' + esc(p.period_label || '') + '</td><td>' + money(p.subscription_cents) + '</td></tr>';
-    if (p.discount_cents) rows +=
-      '<tr><td>Remise cycle annuel (−15 %)</td><td>−' + money(p.discount_cents) + '</td></tr>';
+      '<tr><td>Frais de licence unique</td><td>' + money(p.licence_cents) + ' HT</td></tr>' +
+      '<tr><td>' + esc(aboLabel) + '</td><td>' + money(p.subscription_cents) + ' HT</td></tr>';
+    if (p.billing_cycle === 'annuel' && p.savings_cents)
+      rows += '<tr><td>Économie réalisée (cycle annuel)</td><td>−' + money(p.savings_cents) + '</td></tr>';
     rows +=
-      '<tr><td>Montant de la facture (HT)</td><td>' + money(p.amount_cents) + '</td></tr>' +
+      '<tr><td><b>Total partiel (HT)</b></td><td><b>' + money(p.amount_cents) + '</b></td></tr>' +
       '<tr><td>Période d’essai</td><td>' + esc(p.trial_days) + ' jours calendaires — gratuit</td></tr>' +
       '<tr class="total"><td>Total à payer pendant l’essai</td><td>0 FCFA</td></tr>';
     box.innerHTML =
       '<div class="proforma__head"><b>Facture proforma n° ' + esc(p.no) + '</b><small>teebo · hello@teebo.africa</small></div>' +
-      '<table>' + rows + '</table>';
+      '<table>' + rows + '</table>' +
+      '<p class="proforma__legal">Montants hors taxes exprimés en FCFA (XOF). La TVA éventuelle est ' +
+      'appliquée selon le paramétrage légal de chaque IMF.</p>';
     panel.appendChild(box);
 
     // Lien vers la facture proforma imprimable (PDF via HTML) — ouverte dans
@@ -507,7 +610,7 @@
       ? normPlans(pRes.value.plans) : [];
     state.plans = plans.length ? plans : normPlans(FALLBACK_PLANS);
 
-    renderPricing(state.plans);
+    renderPricing();
     render();
   });
 })();

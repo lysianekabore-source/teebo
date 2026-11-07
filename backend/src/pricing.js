@@ -1,21 +1,32 @@
 /**
- * teebo — Tarification de l'abonnement SaaS
+ * teebo — Tarification de l'abonnement SaaS (OFFRE UNIQUE)
  * ---------------------------------------------------------------------------
- * Le prix total proposé à l'IMF se compose de DEUX éléments :
+ * teebo propose désormais UNE SEULE offre, transparente, sans palier. Le prix
+ * total proposé à l'IMF se compose de DEUX éléments :
  *   1) une LICENCE teeBo, frais UNIQUE d'activation : 250 000 FCFA ;
  *   2) un ABONNEMENT, facturé au choix en cycle MENSUEL ou ANNUEL.
  *
- * Le cycle ANNUEL (12 mois réglés d'avance) bénéficie d'une remise de 15 %,
- * appliquée uniquement sur la part abonnement (la licence reste au plein tarif).
+ * Barème unique (fourni par teebo, non arbitraire) :
+ *   - Abonnement mensuel de base ........ 75 000 FCFA / mois ;
+ *   - Cycle ANNUEL (12 mois d'avance) .... remise de 15 % sur l'abonnement,
+ *     soit 63 750 FCFA / mois -> 765 000 FCFA / an (licence au plein tarif) ;
+ *   - Essai gratuit de 30 jours : la licence n'est facturée qu'APRÈS l'essai.
  *
- * Valeurs fournies par le client (non arbitraires). Elles restent surchargeables
- * par variable d'environnement si besoin, sans être figées dans la logique.
+ * Pour rester lisible sur la proforma et la facture, l'abonnement annuel est
+ * présenté NET (remise de 15 % déjà incluse dans le montant affiché) : il n'y a
+ * donc pas de ligne « remise » séparée à soustraire. Toutes les valeurs restent
+ * surchargeables par variable d'environnement, sans être figées dans la logique.
  */
 
-// Licence : 250 000 FCFA = 25 000 000 centimes.
+// Licence : 250 000 FCFA = 25 000 000 centimes (frais unique d'activation).
 export const LICENCE_CENTS = Number(process.env.TEEBO_LICENCE_CENTS || 25000000);
+// Abonnement mensuel de base : 75 000 FCFA = 7 500 000 centimes.
+export const MONTHLY_BASE_CENTS = Number(process.env.TEEBO_MONTHLY_CENTS || 7500000);
 // Remise du cycle annuel : 15 % = 1500 points de base.
 export const ANNUAL_DISCOUNT_BP = Number(process.env.TEEBO_ANNUAL_DISCOUNT_BP || 1500);
+
+// Code de l'offre unique standardisée (référence en base : table `plan`).
+export const STANDARD_PLAN_CODE = process.env.TEEBO_PLAN_CODE || 'standard';
 
 export const BILLING_CYCLES = ['mensuel', 'annuel'];
 
@@ -36,27 +47,34 @@ export const TRIAL_BILLING_NOTE =
  */
 export function computePricing(monthlyCents, billing) {
   const cycle = BILLING_CYCLES.includes(billing) ? billing : 'mensuel';
-  const monthly = Math.round(Number(monthlyCents || 0));
+  const monthly = Math.round(Number(monthlyCents || MONTHLY_BASE_CENTS));
   const licenceCents = LICENCE_CENTS;
 
-  let subscriptionCents, discountCents, months, periodLabel;
+  // `subscriptionCents` est TOUJOURS le montant NET facturé (remise déjà
+  // incluse en annuel). `savingsCents` = économie réalisée grâce au cycle
+  // annuel, fournie uniquement à titre informatif. `discountCents` reste à 0
+  // (plus de ligne « remise » à soustraire : la remise est déjà dans le net).
+  let subscriptionCents, grossSubscriptionCents, savingsCents, months, periodLabel;
   if (cycle === 'annuel') {
     months = 12;
-    subscriptionCents = monthly * 12;
-    discountCents = Math.round(subscriptionCents * ANNUAL_DISCOUNT_BP / 10000);
-    periodLabel = '12 mois (annuel)';
+    grossSubscriptionCents = monthly * 12;
+    savingsCents = Math.round(grossSubscriptionCents * ANNUAL_DISCOUNT_BP / 10000);
+    subscriptionCents = grossSubscriptionCents - savingsCents; // net annuel
+    periodLabel = '12 mois (annuel, remise \u221215 % incluse)';
   } else {
     months = 1;
+    grossSubscriptionCents = monthly;
+    savingsCents = 0;
     subscriptionCents = monthly;
-    discountCents = 0;
     periodLabel = '1 mois (mensuel)';
   }
 
-  const subtotalCents = licenceCents + subscriptionCents; // HT avant remise
-  const totalCents = subtotalCents - discountCents;        // HT après remise
+  const discountCents = 0;                                  // aucune remise à soustraire
+  const subtotalCents = licenceCents + subscriptionCents;   // HT (net) = total
+  const totalCents = subtotalCents;                          // HT
 
-  return { billing: cycle, licenceCents, subscriptionCents, discountCents,
-    subtotalCents, totalCents, periodLabel, months };
+  return { billing: cycle, licenceCents, subscriptionCents, grossSubscriptionCents,
+    savingsCents, discountCents, subtotalCents, totalCents, periodLabel, months };
 }
 
 /**
@@ -65,9 +83,11 @@ export function computePricing(monthlyCents, billing) {
  */
 export function buildInvoiceLines({ planLabel, billing, licenceCents, subscriptionCents }) {
   const cycle = BILLING_CYCLES.includes(billing) ? billing : 'mensuel';
-  const period = cycle === 'annuel' ? '12 mois (annuel)' : '1 mois (mensuel)';
+  const period = cycle === 'annuel'
+    ? '12 mois (annuel, remise \u221215 % incluse)'
+    : '1 mois (mensuel)';
   return [
-    { label: 'Licence teeBo — activation (frais unique)', amountCents: Number(licenceCents || 0) },
-    { label: 'Abonnement ' + (planLabel || 'teeBo') + ' — ' + period, amountCents: Number(subscriptionCents || 0) }
+    { label: 'Licence teeBo \u2014 activation (frais unique)', amountCents: Number(licenceCents || 0) },
+    { label: 'Abonnement ' + (planLabel || 'teeBo') + ' \u2014 ' + period, amountCents: Number(subscriptionCents || 0) }
   ];
 }

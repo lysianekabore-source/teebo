@@ -31,10 +31,20 @@ Durée estimée : 20 à 30 minutes la première fois.
    - En ligne de commande : `createdb teebo`
    - OU via l'interface graphique pgAdmin : clic droit sur « Databases » →
      **Create** → **Database…** → nom `teebo` → **Save**.
-3. Appliquez les schémas dans l'ordre :
-   - Ouvrez pgAdmin → clic droit sur la base `teebo` → **Query Tool**.
-   - Copiez-collez le contenu de `db/schema.sql` → **Run** (F5).
-   - Puis copiez-collez le contenu de `db/schema_v3.sql` → **Run** (F5).
+3. Appliquez les schémas.
+
+   **Méthode recommandée (automatique) :** vous n'avez rien à copier à la main.
+   La commande `npm run migrate` de l'ÉTAPE 4 applique **tous** les schémas
+   dans le bon ordre (`schema.sql`, puis `schema_v3.sql` → `schema_v9.sql`).
+
+   **Méthode manuelle (pgAdmin), si vous y tenez :** ouvrez pgAdmin → clic droit
+   sur la base `teebo` → **Query Tool**, puis copiez-collez et exécutez (**Run**,
+   F5) le contenu de chaque fichier **dans cet ordre** :
+   `schema.sql`, `schema_v3.sql`, `schema_v4.sql`, `schema_v5.sql`,
+   `schema_v6.sql`, `schema_v7.sql`, `schema_v8.sql`, `schema_v9.sql`.
+   Le schéma `schema_v9.sql` ajoute le socle KYC BCEAO (état civil, pièce
+   d'identité, profession, origine des fonds, PPE, bénéficiaire effectif) et la
+   suppression d'IMF (archivage/purge + journal d'audit).
 
 > Astuce : les schémas sont **idempotents** — les relancer est sans danger.
 
@@ -123,6 +133,28 @@ Messages possibles :
    le document se régénère immédiatement avec les nouvelles valeurs.
 
 Si une page reste blanche : videz le cache du navigateur (Ctrl+Shift+R).
+
+### Vérifier les nouvelles fonctionnalités (suppression d'IMF + enrôlement KYC)
+
+1. **Suppression d'une IMF (super-admin teebo)** : connecté en administrateur
+   éditeur teebo, ouvrez le module **Institutions**. Chaque ligne propose un
+   bouton rouge **Supprimer**. Il ouvre une fenêtre de confirmation où vous
+   choisissez **Archiver** (masquer sans effacer) ou **Supprimer
+   définitivement** (purge en cascade), puis vous devez **ressaisir le code de
+   l'IMF** pour confirmer. Le tenant système teebo (`TBO-SYS-000000`) est
+   protégé et ne peut pas être supprimé.
+2. **Nouveau client KYC BCEAO (collectrice)** : ouvrez l'application terrain,
+   connectez-vous en collectrice, puis **Nouveau client (KYC BCEAO)**. Le
+   formulaire reprend le socle d'identité BCEAO (état civil, pièce d'identité,
+   profession, origine des fonds, PPE, bénéficiaire effectif). La position GPS
+   du lieu est capturée automatiquement : le client doit être enregistré chez
+   lui.
+3. **Espace client pour tout client** : dans l'application terrain, **Créer un
+   espace client** permet désormais de **rechercher un client existant** puis de
+   lui ouvrir un accès en ligne (mode de connexion + format de relevé).
+
+> Un guide de vérification détaillé en local est fourni :
+> **`VERIFIER_FONCTIONNALITES_LOCAL.md`**.
 
 ---
 

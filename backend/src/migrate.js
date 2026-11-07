@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
   // Applique les schémas dans l'ordre : socle puis extensions (VAGUE 7).
-  const schemaFiles = ['schema.sql', 'schema_v3.sql', 'schema_v4.sql', 'schema_v5.sql', 'schema_v6.sql', 'schema_v7.sql'];
+  const schemaFiles = ['schema.sql', 'schema_v3.sql', 'schema_v4.sql', 'schema_v5.sql', 'schema_v6.sql', 'schema_v7.sql', 'schema_v8.sql', 'schema_v9.sql'];
   for (const file of schemaFiles) {
     const schemaPath = path.resolve(__dirname, '../../db/' + file);
     if (!fs.existsSync(schemaPath)) {
