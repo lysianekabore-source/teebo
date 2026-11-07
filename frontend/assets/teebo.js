@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   var me = null;
-  var VIEWS = ['dashboard', 'requests', 'imfs', 'admins', 'profile'];
+  var VIEWS = ['dashboard', 'requests', 'imfs', 'admins', 'profiles', 'profile'];
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -32,8 +32,9 @@
       if (v === 'imfs') loadImfs();
       if (v === 'admins') loadAdmins();
       if (v === 'profile') loadProfile();
+      if (v === 'profiles') loadProfilesMatrix();
       if (v === 'requests') loadRequests();
-      if (v === 'dashboard') { loadStats(); loadSubscriptions(); }
+      if (v === 'dashboard') loadStats();
     });
   });
 
@@ -53,6 +54,21 @@
     var state = mustChange ? ' <span class="tag tag--warn">À activer</span>' : ' <span class="tag tag--ok">Activé</span>';
     return '<code>' + esc(code) + '</code>' + state +
       ' <button class="btn btn--ghost btn--sm" data-copy="' + esc(code) + '">Copier</button>';
+  }
+
+  // Bloc « Envoyer » : liens WhatsApp (click-to-chat) + e-mail (mailto) +
+  // facture. Garantit l'envoi du code et de la facture même sans API Cloud/SMTP.
+  function sendBlock(send) {
+    if (!send) return '';
+    var parts = [];
+    if (send.auto_sent) parts.push('<p class="sub" style="color:#1f9d55">Envoyé automatiquement. Vous pouvez aussi renvoyer manuellement :</p>');
+    else parts.push('<p class="sub">Cliquez pour envoyer depuis WhatsApp (+22650321432) ou votre messagerie (hello@teebo.africa) :</p>');
+    var btns = [];
+    if (send.wa_link) btns.push('<a class="btn btn--primary btn--sm" target="_blank" rel="noopener" href="' + esc(send.wa_link) + '">Envoyer par WhatsApp</a>');
+    if (send.mailto_link) btns.push('<a class="btn btn--ghost btn--sm" href="' + esc(send.mailto_link) + '">Envoyer par e-mail</a>');
+    if (send.invoice_public_url) btns.push('<a class="btn btn--ghost btn--sm" target="_blank" rel="noopener" href="' + esc(send.invoice_public_url) + '">Ouvrir la facture</a>');
+    parts.push('<div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0">' + btns.join('') + '</div>');
+    return parts.join('');
   }
 
   // ----- Tableau de bord (statistiques plateforme) -----
@@ -76,33 +92,7 @@
     }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
   }
 
-  // ----- Échéances d'abonnement (annuel / mensuel) -----
-  function loadSubscriptions() {
-    return api('/api/v1/teebo/subscriptions').then(function (d) {
-      var subs = d.subscriptions || [], r = d.recap || {};
-      $('subs-chips').innerHTML =
-        '<span class="chip">Annuels <b>' + (r.annuel || 0) + '</b></span>' +
-        '<span class="chip">Mensuels <b>' + (r.mensuel || 0) + '</b></span>' +
-        '<span class="chip chip--warn">Échéance ≤ 30 j <b>' + (r.due_30d || 0) + '</b></span>' +
-        '<span class="chip chip--danger">En retard <b>' + (r.overdue || 0) + '</b></span>' +
-        '<span class="chip">MRR <b>' + money(r.mrr_cents) + '</b></span>';
-      if (!subs.length) { $('subs-table').innerHTML = '<div class="empty">Aucun abonnement.</div>'; return; }
-      $('subs-table').innerHTML = '<table class="tbl"><thead><tr><th>Institution</th><th>Cycle</th><th>Montant</th><th>Statut</th><th>Prochaine échéance</th><th>Délai</th></tr></thead><tbody>' +
-        subs.map(function (s) {
-          var cyc = s.billing_cycle === 'annuel' ? '<span class="tag tag--ok">Annuel</span>' : '<span class="tag tag--muted">Mensuel</span>';
-          var delai = s.days_left == null ? '—'
-            : (s.overdue ? '<span class="tag tag--danger">En retard de ' + Math.abs(s.days_left) + ' j</span>'
-            : (s.days_left <= 30 ? '<span class="tag tag--warn">Dans ' + s.days_left + ' j</span>'
-            : '<span class="tag tag--muted">Dans ' + s.days_left + ' j</span>'));
-          return '<tr><td><b>' + esc(s.name) + '</b><br><code>' + esc(s.code_imf) + '</code></td>' +
-            '<td>' + cyc + '</td>' +
-            '<td>' + (s.subscription_cents != null ? money(s.subscription_cents) : '—') + '</td>' +
-            '<td>' + esc(s.status) + '</td>' +
-            '<td>' + dfr(s.next_due_at) + '</td>' +
-            '<td>' + delai + '</td></tr>';
-        }).join('') + '</tbody></table>';
-    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
-  }
+  // ----- Demandes -----
   function loadRequests() {
     return api('/api/v1/teebo/requests').then(function (d) {
       var rs = d.requests || [];
@@ -121,9 +111,6 @@
           var docBtns = '';
           if (r.proforma_no) docBtns += '<a class="btn btn--ghost btn--sm" target="_blank" rel="noopener" href="/api/v1/requests/' + esc(r.id) + '/proforma.pdf">Proforma</a> ';
           if (r.definitive_invoice_id) docBtns += '<a class="btn btn--ghost btn--sm" target="_blank" rel="noopener" href="/api/v1/teebo/invoices/' + esc(r.definitive_invoice_id) + '.pdf">Facture</a> ';
-          // Envoi des factures au prospect/IMF par e-mail et WhatsApp.
-          if (r.proforma_no) docBtns += '<button class="btn btn--ghost btn--sm" data-send-proforma="' + r.id + '">Envoyer proforma</button> ';
-          if (r.definitive_invoice_id) docBtns += '<button class="btn btn--ghost btn--sm" data-send-invoice="' + r.id + '">Envoyer facture</button> ';
           return '<tr><td><b>' + esc(r.imf_name) + '</b><br><code>' + esc(r.code_imf) + '</code> · ' + esc(r.country_code) + '</td>' +
             '<td>' + esc(r.type) + '</td>' +
             '<td>' + esc((r.requester_firstname || '') + ' ' + (r.requester_lastname || '')) + '<br><small style="color:var(--muted)">' + esc(r.requester_position || '') + '</small></td>' +
@@ -135,17 +122,7 @@
       $('requests-table').querySelectorAll('[data-approve]').forEach(function (b) { b.addEventListener('click', function () { approve(b.dataset.approve); }); });
       $('requests-table').querySelectorAll('[data-reject]').forEach(function (b) { b.addEventListener('click', function () { reject(b.dataset.reject); }); });
       $('requests-table').querySelectorAll('[data-copy]').forEach(function (b) { b.addEventListener('click', function () { copyCode(b.dataset.copy); }); });
-      $('requests-table').querySelectorAll('[data-send-proforma]').forEach(function (b) { b.addEventListener('click', function () { sendDoc(b.dataset.sendProforma, 'proforma'); }); });
-      $('requests-table').querySelectorAll('[data-send-invoice]').forEach(function (b) { b.addEventListener('click', function () { sendDoc(b.dataset.sendInvoice, 'invoice'); }); });
     }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
-  }
-
-  function sendDoc(id, kind) {
-    var path = kind === 'invoice' ? '/send-invoice' : '/send-proforma';
-    var lbl = kind === 'invoice' ? 'Facture définitive' : 'Facture proforma';
-    api('/api/v1/teebo/requests/' + id + path, 'POST')
-      .then(function (d) { notify(lbl + ' envoyée' + (d.sent_to ? ' → ' + d.sent_to : '') + '.', 'ok'); })
-      .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
   }
 
   function approve(id) {
@@ -158,7 +135,8 @@
         close();
         openModal('<h3>Demande approuvée ✅</h3><p class="sub">Essai gratuit de 30 jours activé. Communiquez ce code d’accès à l’IMF :</p>' +
           '<div style="font-size:22px;font-weight:700;letter-spacing:1px;margin:14px 0"><code>' + esc(d.code_user) + '</code></div>' +
-          '<p class="sub">IMF <b>' + esc(d.imf_code) + '</b>. Le code a aussi été envoyé par WhatsApp et e-mail.</p>' +
+          '<p class="sub">IMF <b>' + esc(d.imf_code) + '</b>' + (d.invoice_no ? ' · Facture <b>' + esc(d.invoice_no) + '</b>' : '') + '.</p>' +
+          sendBlock(d.send) +
           '<div class="modal__nav"><button class="btn btn--ghost" id="cp">Copier le code</button><button class="btn btn--primary" id="okm">Terminé</button></div>');
         $('cp').addEventListener('click', function () { copyCode(d.code_user); });
         $('okm').addEventListener('click', close);
@@ -209,7 +187,14 @@
 
   function resend(id) {
     api('/api/v1/teebo/imfs/' + id + '/resend-code', 'POST')
-      .then(function (d) { notify('Code d’accès renvoyé : ' + d.code_user + ' → ' + d.sent_to, 'ok'); })
+      .then(function (d) {
+        openModal('<h3>Renvoyer le code d’accès</h3>' +
+          '<div style="font-size:22px;font-weight:700;letter-spacing:1px;margin:14px 0"><code>' + esc(d.code_user) + '</code></div>' +
+          sendBlock(d.send) +
+          '<div class="modal__nav"><button class="btn btn--ghost" id="cp">Copier</button><button class="btn btn--primary" id="okm">Terminé</button></div>');
+        $('cp').addEventListener('click', function () { copyCode(d.code_user); });
+        $('okm').addEventListener('click', close);
+      })
       .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
   }
   function regen(id) {
@@ -222,7 +207,7 @@
         close();
         openModal('<h3>Nouveau code généré ✅</h3><p class="sub">Code d’accès de l’IMF <b>' + esc(d.code_user) + '</b> :</p>' +
           '<div style="font-size:22px;font-weight:700;letter-spacing:1px;margin:14px 0"><code>' + esc(d.code_user) + '</code></div>' +
-          '<p class="sub">Envoyé à ' + esc(d.sent_to || 'l’IMF') + '.</p>' +
+          sendBlock(d.send) +
           '<div class="modal__nav"><button class="btn btn--ghost" id="cp">Copier</button><button class="btn btn--primary" id="okm">Terminé</button></div>');
         $('cp').addEventListener('click', function () { copyCode(d.code_user); });
         $('okm').addEventListener('click', function () { close(); loadImfs(); });
@@ -283,6 +268,26 @@
   }
 
   // ----- Mon profil éditeur + 2FA -----
+  function loadProfilesMatrix() {
+    api('/api/v1/teebo/profiles-matrix').then(function (m) {
+      var roles = m.roles || [], perms = m.permissions || [], grid = m.grid || {};
+      var head = '<tr><th style="min-width:220px">Habilitation</th>' +
+        roles.map(function (r) { return '<th style="text-align:center">' + esc(r.label) + '</th>'; }).join('') + '</tr>';
+      var body = perms.map(function (p) {
+        return '<tr><td>' + esc(p.label) + '</td>' +
+          roles.map(function (r) {
+            var ok = grid[r.key] && grid[r.key][p.key];
+            return '<td style="text-align:center">' + (ok
+              ? '<span class="tag tag--ok">✓</span>'
+              : '<span style="color:var(--muted)">—</span>') + '</td>';
+          }).join('') + '</tr>';
+      }).join('');
+      $('profiles-matrix').innerHTML =
+        '<p class="hint" style="margin-bottom:14px">✓ = habilitation accordée par défaut à ce profil, attachée automatiquement à chaque utilisateur IMF créé selon son rôle.</p>' +
+        '<div style="overflow-x:auto"><table class="tbl"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
+    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+
   function loadProfile() {
     var rows = [['Nom', me.user.full_name], ['E-mail', me.user.email], ['Rôle', 'Éditeur teebo (super-administrateur)'], ['Portée', 'Console d’approbation — hors IMF']];
     $('profile-info').innerHTML = rows.map(function (r) { return '<div style="display:flex;gap:10px"><dt style="min-width:130px;color:var(--muted)">' + esc(r[0]) + '</dt><dd style="margin:0">' + esc(r[1]) + '</dd></div>'; }).join('');
@@ -329,7 +334,6 @@
     if (d.user.role !== 'teebo_admin') { notify('Accès réservé à teebo.', 'err'); setTimeout(function () { window.location.assign('/app.html'); }, 1200); return; }
     $('u-name').textContent = d.user.full_name;
     $('u-email').textContent = d.user.email;
-    loadSubscriptions();
     return loadStats();
   }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
 })();

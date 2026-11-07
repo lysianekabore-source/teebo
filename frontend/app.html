@@ -21,6 +21,8 @@
     <button class="nav-item active" data-view="dash"><span class="ic">▤</span> Tableau de bord</button>
     <button class="nav-item" data-view="org"><span class="ic">⛬</span> Organisation</button>
     <button class="nav-item" data-view="users"><span class="ic">☺</span> Personnel</button>
+    <button class="nav-item" data-view="dispatches" id="nav-dispatches" hidden><span class="ic">✉</span> Suivi des envois</button>
+    <button class="nav-item" data-view="profiles" id="nav-profiles" hidden><span class="ic">▦</span> Habilitations</button>
     <button class="nav-item" data-view="settings" id="nav-settings" hidden><span class="ic">⚙</span> Paramètres IMF</button>
     <div class="side__label">Sécurité &amp; accès</div>
     <button class="nav-item" data-view="security"><span class="ic">⛨</span> Mon accès</button>
@@ -179,15 +181,23 @@
         </div>
         <div class="fld"><label for="s-bank_details">Coordonnées bancaires de règlement</label><textarea id="s-bank_details" rows="2" placeholder="Banque, IBAN / RIB, Mobile Money…"></textarea></div>
         <div class="fld"><label for="s-footer_note">Note de pied de document</label><input id="s-footer_note" type="text" placeholder="Ex : Merci de votre confiance"></div>
-        <h3 style="font-size:14px;margin:16px 0 4px">Envoi des codes d’accès à vos utilisateurs</h3>
-        <p class="hint" style="margin-bottom:8px">Coordonnées utilisées pour transmettre les codes d’accès et notifications à vos utilisateurs. Modifiables à tout moment.</p>
-        <div class="form-grid">
-          <div class="fld"><label for="s-notif_whatsapp">Numéro WhatsApp d’envoi</label><input id="s-notif_whatsapp" type="tel" placeholder="+226 00 00 00 00"></div>
-          <div class="fld"><label for="s-notif_email">E-mail d’envoi</label><input id="s-notif_email" type="email" placeholder="notifications@mon-imf.africa"></div>
-        </div>
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
           <button class="btn btn--primary" id="btn-settings-save" type="button">Enregistrer les paramètres</button>
           <a class="btn btn--ghost btn--sm" id="link-statement-demo" href="#" hidden>Aperçu d’un document</a>
+        </div>
+      </div>
+
+      <!-- Canaux d'envoi des codes d'accès -->
+      <div class="card" style="margin-top:16px">
+        <h2 style="font-size:16px;margin-bottom:6px">Envoi des codes d’accès</h2>
+        <p class="hint" style="margin-bottom:16px">Numéro WhatsApp et adresse e-mail « expéditeur » de votre IMF. Ils servent à transmettre les codes d’accès à votre personnel et signent les messages envoyés. À défaut, les coordonnées officielles de l’IMF sont utilisées.</p>
+        <div class="grid grid--2">
+          <div class="fld"><label for="s-notify_whatsapp">Numéro WhatsApp expéditeur</label><input id="s-notify_whatsapp" type="tel" placeholder="+226 00 00 00 00"></div>
+          <div class="fld"><label for="s-notify_email">E-mail expéditeur</label><input id="s-notify_email" type="email" placeholder="contact@votre-imf.africa"></div>
+        </div>
+        <p class="hint">À la création d’un utilisateur (ou via « Renvoyer le code » dans l’onglet Personnel), le code est transmis par WhatsApp et e-mail. Si aucune passerelle automatique n’est configurée, un lien « prêt à envoyer » s’ouvre depuis votre compte.</p>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
+          <button class="btn btn--primary" id="btn-notify-save" type="button">Enregistrer ces canaux</button>
         </div>
       </div>
 
@@ -206,6 +216,34 @@
         <div class="prev-frame">
           <iframe id="invoice-preview" title="Prévisualisation de la facture" loading="lazy" sandbox="allow-same-origin"></iframe>
         </div>
+      </div>
+    </section>
+
+    <!-- SUIVI DES ENVOIS DE CODES -->
+    <section class="view" id="view-dispatches" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Suivi des envois de codes</h1>
+          <p>Historique des codes d’accès transmis au personnel (création et renvois), avec le canal utilisé.</p>
+        </div>
+      </div>
+      <div class="grid grid--stats" id="dispatch-kpis"></div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Journal des envois</h2></div>
+        <div id="dispatches-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- MATRICE DES HABILITATIONS -->
+    <section class="view" id="view-profiles" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Profils &amp; habilitations</h1>
+          <p>Habilitations accordées par défaut à chaque profil. Elles sont attachées automatiquement à la création d’un utilisateur.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div id="profiles-matrix"><div class="empty">Chargement…</div></div>
       </div>
     </section>
   </main>

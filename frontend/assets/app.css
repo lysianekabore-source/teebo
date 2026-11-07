@@ -9,11 +9,6 @@ img{display:block}a{color:inherit;text-decoration:none}
 .btn--dark{background:var(--navy);color:#fff}.btn--dark:hover{background:var(--navy-2)}
 .btn--sm{padding:8px 13px;font-size:13px}
 .btn:disabled{opacity:.55;cursor:not-allowed}
-.send-actions{display:inline-flex;gap:8px;flex-wrap:wrap;white-space:nowrap}
-.send-btn{gap:6px}
-.send-btn .send-ic{font-size:14px;line-height:1;color:var(--neon-dark)}
-.send-btn:hover{border-color:var(--neon-dark);background:#fbffe6}
-.send-btn:hover .send-ic{color:var(--navy)}
 
 /* Layout */
 .shell{display:grid;grid-template-columns:258px 1fr;min-height:100vh}

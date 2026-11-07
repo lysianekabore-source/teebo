@@ -1,10 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import crypto from 'crypto';
 import { q, tx } from '../db.js';
 import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken } from '../auth.js';
-import { notifyWhatsApp, notifyEmail } from '../notify.js';
-import { msgResetCode } from '../messages.js';
 import { getStatus, is2faRequired, createChallenge, consumeChallenge, verifyForUser,
   verifyRecoveryCode, startEnrollment, confirmEnrollment, disable,
   createEnrollmentTicket, resolveEnrollmentTicket, consumeEnrollmentTicket } from '../twofa.js';
@@ -15,13 +12,8 @@ const COOKIE = {
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
   sameSite: 'lax',
-  path: '/'
-  // COOKIE DE SESSION (aucun maxAge / expires) : il est effacé dès que l'app
-  // installée (ou l'onglet) est fermée. Au clic suivant sur l'icône de l'app,
-  // l'utilisateur retombe donc TOUJOURS sur la page de connexion (une
-  // authentification par session). Pendant qu'il travaille, il n'est JAMAIS
-  // déconnecté : chaque requête renouvelle la session côté serveur (last_seen_at),
-  // la déconnexion n'intervenant qu'après 30 min d'INACTIVITÉ réelle.
+  path: '/',
+  maxAge: 30 * 60 * 1000  // cookie glissant aligné sur l'inactivité 30 min
 };
 
 // Politique de mot de passe : >= 10 car., maj/min/chiffre.
@@ -213,78 +205,6 @@ router.post('/2fa/disable', authenticate, async (req, res, next) => {
       return res.status(403).json({ error: 'twofa_required', message: 'La double authentification est obligatoire pour votre profil.' });
     await disable(req.user.id);
     res.json({ ok: true, enabled: false });
-  } catch (e) { next(e); }
-});
-
-// --- Mot de passe oublié : demande d'un code de réinitialisation -----------
-// Accessible SANS session, pour TOUS les comptes. On ne révèle jamais si
-// l'identifiant existe (réponse identique dans tous les cas). Un code à usage
-// unique de 6 chiffres, valable 15 minutes, est envoyé par WhatsApp + e-mail.
-const RESET_TTL_MIN = 15;
-router.post('/forgot-password', async (req, res, next) => {
-  try {
-    const { identifier } = req.body || {};
-    if (!identifier) return res.status(422).json({ error: 'missing_identifier' });
-    const u = (await q(
-      `SELECT au.id, au.email, au.phone, au.is_active, i.whatsapp AS imf_whatsapp, i.phone_main AS imf_phone
-         FROM app_user au JOIN imf i ON i.id = au.imf_id
-        WHERE (au.email = $1 OR au.code_user = $1) AND au.is_active = true
-        LIMIT 1`, [identifier])).rows[0];
-    if (u) {
-      const code = String(Math.floor(100000 + Math.random() * 900000));
-      const codeHash = await bcrypt.hash(code, 10);
-      await tx(async (c) => {
-        // On invalide les demandes précédentes encore ouvertes.
-        await c.query(`UPDATE password_reset SET used_at = now() WHERE user_id=$1 AND used_at IS NULL`, [u.id]);
-        await c.query(
-          `INSERT INTO password_reset(user_id, code_hash, expires_at)
-           VALUES ($1,$2, now() + ($3 || ' minutes')::interval)`,
-          [u.id, codeHash, RESET_TTL_MIN]);
-      });
-      const msg = msgResetCode({ code, minutes: RESET_TTL_MIN });
-      const phone = u.phone || u.imf_whatsapp || u.imf_phone;
-      if (phone) await notifyWhatsApp(phone, msg);
-      if (u.email) await notifyEmail(u.email, 'teebo — réinitialisation de votre mot de passe', msg);
-    }
-    // Réponse volontairement identique (anti-énumération).
-    res.json({ ok: true, message: 'Si un compte correspond, un code de réinitialisation a été envoyé par WhatsApp et e-mail.' });
-  } catch (e) { next(e); }
-});
-
-// --- Mot de passe oublié : validation du code + nouveau mot de passe -------
-router.post('/reset-password', async (req, res, next) => {
-  try {
-    const { identifier, code, new_password } = req.body || {};
-    if (!identifier || !code) return res.status(422).json({ error: 'missing_fields' });
-    if (weakPassword(new_password)) return res.status(422).json({ error: 'weak_password' });
-    const u = (await q(
-      `SELECT id FROM app_user WHERE (email = $1 OR code_user = $1) AND is_active = true LIMIT 1`,
-      [identifier])).rows[0];
-    if (!u) return res.status(400).json({ error: 'invalid_reset' });
-    const pr = (await q(
-      `SELECT id, code_hash, attempts FROM password_reset
-        WHERE user_id=$1 AND used_at IS NULL AND expires_at > now()
-        ORDER BY created_at DESC LIMIT 1`, [u.id])).rows[0];
-    if (!pr) return res.status(400).json({ error: 'invalid_reset', message: 'Code expiré ou introuvable. Recommencez la procédure.' });
-    if (pr.attempts >= 5) {
-      await q(`UPDATE password_reset SET used_at = now() WHERE id=$1`, [pr.id]);
-      return res.status(429).json({ error: 'too_many_attempts', message: 'Trop de tentatives. Recommencez la procédure.' });
-    }
-    const good = await bcrypt.compare(String(code), pr.code_hash);
-    if (!good) {
-      await q(`UPDATE password_reset SET attempts = attempts + 1 WHERE id=$1`, [pr.id]);
-      return res.status(401).json({ error: 'invalid_code', message: 'Code invalide. Réessayez.' });
-    }
-    const hash = await bcrypt.hash(new_password, 12);
-    await tx(async (c) => {
-      await c.query(
-        `UPDATE app_user SET password_hash=$1, password_set_at=now(), must_change_password=false WHERE id=$2`,
-        [hash, u.id]);
-      await c.query(`UPDATE password_reset SET used_at = now() WHERE id=$1`, [pr.id]);
-      // Révocation de toutes les sessions ouvertes du compte (sécurité).
-      await c.query(`UPDATE session SET revoked = true WHERE user_id=$1`, [u.id]);
-    });
-    res.json({ ok: true, message: 'Mot de passe réinitialisé. Connectez-vous avec votre nouveau mot de passe.' });
   } catch (e) { next(e); }
 });
 

@@ -63,6 +63,7 @@
     plans: [],
     imf: null,          // { request_id, imf_id, imf_code }
     selectedPlan: null,
+    billing: 'mensuel', // périodicité choisie : 'mensuel' | 'annuel'
     proforma: null
   };
 
@@ -89,14 +90,7 @@
       body: body ? JSON.stringify(body) : undefined
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (d) {
-        if (!r.ok) {
-          // On conserve le code technique dans le message ET le détail renvoyé
-          // par le serveur (d.message, d.field, statut HTTP) pour un affichage
-          // précis côté formulaire (ex. doublon 409).
-          var err = new Error(d.error || 'Erreur');
-          err.data = d; err.status = r.status;
-          throw err;
-        }
+        if (!r.ok) throw new Error(d.error || 'Erreur');
         return d;
       });
     });
@@ -273,53 +267,82 @@
         render();
       }).catch(function (e) {
         btn.disabled = false; btn.textContent = old;
-        errSlot.appendChild(alertBox('err', messageFr(e.message, e)));
+        errSlot.appendChild(alertBox('err', messageFr(e.message)));
       });
     });
 
     return panel;
   }
 
-  function messageFr(code, e) {
+  function messageFr(code) {
     var m = {
       missing_field: 'Un champ obligatoire est manquant.',
       country_not_uemoa: 'Sélectionnez un pays de l’UEMOA.',
       invalid_imf_type: 'Type d’IMF invalide (SA ou SCOOP).',
       invalid_email: 'Email invalide.',
-      duplicate_request: 'Une demande d’accès existe déjà pour cette IMF (numéro d’agrément BCEAO ou e-mail déjà enregistré). Contactez teeBo si vous pensez qu’il s’agit d’une erreur.',
-      request_not_found: 'Demande introuvable. Reprenez le formulaire depuis le début.',
       plan_not_found: 'Formule introuvable.',
       no_proforma: 'Aucune facture proforma à valider.',
       Erreur: 'Une erreur est survenue. Réessayez.'
     };
-    // 1) Code métier connu -> message dédié. 2) Sinon, message explicite
-    // renvoyé par le serveur (champ `message`). 3) En dernier recours, message
-    // générique. On évite ainsi de masquer la vraie cause (ex. doublon).
-    if (m[code]) return m[code];
-    if (e && e.data && e.data.message) return e.data.message;
-    if (code && /^[A-Z]/.test(code) === false && code.indexOf(' ') === -1) {
-      // code technique non mappé : on reste générique mais on garde la cause
-      return 'Une erreur est survenue. Réessayez.';
-    }
-    return code || 'Une erreur est survenue. Réessayez.';
+    return m[code] || 'Une erreur est survenue. Réessayez.';
   }
 
   // ================= ÉTAPE 2 : OFFRE + FORMULE =================
+  // Tarification : licence unique + abonnement au choix MENSUEL ou ANNUEL.
+  // Le cycle annuel (12 mois) bénéficie d'une remise de 15 % sur l'abonnement.
+  var LICENCE_CENTS = 25000000;      // 250 000 FCFA (frais unique d'activation)
+  var ANNUAL_DISCOUNT = 0.15;        // -15 % sur la part abonnement en annuel
+
+  // Prix de l'abonnement affiché selon le cycle choisi (hors licence).
+  function subFor(monthlyCents, cycle) {
+    if (cycle === 'annuel') return Math.round(monthlyCents * 12 * (1 - ANNUAL_DISCOUNT));
+    return Math.round(monthlyCents);
+  }
+  function cycleLabel(cycle) { return cycle === 'annuel' ? 'an' : 'mois'; }
+
   function renderPlans() {
+    if (!state.billing) state.billing = 'mensuel';
     var panel = el('div', 'panel');
     panel.appendChild(el('h3', null, 'Votre offre financière'));
-    panel.appendChild(el('p', 'panel__hint', 'Sélectionnez la formule qui correspond à votre institution. Vous pourrez en changer plus tard.'));
+    panel.appendChild(el('p', 'panel__hint', 'Choisissez d’abord la périodicité, puis la formule qui correspond à votre institution. Vous pourrez en changer plus tard.'));
     var errSlot = el('div'); panel.appendChild(errSlot);
+
+    // --- Sélecteur de périodicité : Mensuel / Annuel (-15 %) ---
+    var toggle = el('div', 'billing-toggle');
+    toggle.style.cssText = 'display:inline-flex;gap:6px;padding:5px;border:1px solid var(--line,#e3e5ee);border-radius:12px;margin:0 0 18px';
+    [['mensuel', 'Mensuel'], ['annuel', 'Annuel · −15 %']].forEach(function (opt) {
+      var active = state.billing === opt[0];
+      var b = el('button', 'btn btn--sm' + (active ? ' btn--primary' : ' btn--ghost'), opt[1]);
+      b.type = 'button';
+      if (!active) { b.style.color = 'var(--ink)'; b.style.borderColor = 'transparent'; }
+      b.addEventListener('click', function () {
+        if (state.billing === opt[0]) return;
+        state.billing = opt[0];
+        state.selectedPlan = null;   // on redéclenche le choix après changement de cycle
+        render();
+      });
+      toggle.appendChild(b);
+    });
+    panel.appendChild(toggle);
 
     var plans = el('div', 'plans');
     state.plans.forEach(function (p) {
       var card = el('button', 'plan'); card.type = 'button';
+      if (state.selectedPlan && state.selectedPlan.code === p.code) card.classList.add('chosen');
       var feats = (p.features || []);
       if (typeof feats === 'string') { try { feats = JSON.parse(feats); } catch (_) { feats = []; } }
+      var subCents = subFor(p.price_cents, state.billing);
+      var totalCents = LICENCE_CENTS + subCents;
+      var saveNote = state.billing === 'annuel'
+        ? '<div class="cycle" style="color:#1f9d55">Économie ' + money(Math.round(p.price_cents * 12 * ANNUAL_DISCOUNT)) + ' / an</div>'
+        : '';
       card.innerHTML =
         '<h4>' + esc(p.label) + '</h4>' +
-        '<div class="price">' + money(p.price_cents) + '</div>' +
-        '<div class="cycle">/ ' + esc(p.billing_cycle) + '</div>' +
+        '<div class="price">' + money(subCents) + '</div>' +
+        '<div class="cycle">/ ' + cycleLabel(state.billing) + '</div>' +
+        saveNote +
+        '<div class="cycle" style="margin-top:6px">+ licence unique ' + money(LICENCE_CENTS) + '</div>' +
+        '<div class="cycle" style="font-weight:700;color:var(--ink,#0b0c26)">Total 1<sup>er</sup> règlement : ' + money(totalCents) + '</div>' +
         '<ul>' + feats.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul>';
       card.addEventListener('click', function () {
         panel.querySelectorAll('.plan').forEach(function (x) { x.classList.remove('chosen'); });
@@ -335,13 +358,15 @@
     var back = el('button', 'btn btn--ghost', 'Retour'); back.type = 'button';
     back.style.color = 'var(--ink)'; back.style.borderColor = 'var(--line)';
     back.addEventListener('click', function () { state.step = 1; render(); });
-    var nextBtn = el('button', 'btn btn--primary', 'Choisir cette formule'); nextBtn.type = 'button'; nextBtn.disabled = true;
+    var nextBtn = el('button', 'btn btn--primary', 'Choisir cette formule'); nextBtn.type = 'button';
+    nextBtn.disabled = !state.selectedPlan;
     nextBtn.addEventListener('click', function () {
       if (!state.selectedPlan) return;
       nextBtn.disabled = true; var old = nextBtn.textContent; nextBtn.textContent = 'Génération…';
-      api('/api/v1/requests/' + state.imf.request_id + '/select-plan', 'POST', { plan_code: state.selectedPlan.code })
+      api('/api/v1/requests/' + state.imf.request_id + '/select-plan', 'POST',
+          { plan_code: state.selectedPlan.code, billing_cycle: state.billing })
         .then(function (d) { state.proforma = d.proforma; state.step = 3; render(); })
-        .catch(function (e) { nextBtn.disabled = false; nextBtn.textContent = old; errSlot.appendChild(alertBox('err', messageFr(e.message, e))); });
+        .catch(function (e) { nextBtn.disabled = false; nextBtn.textContent = old; errSlot.appendChild(alertBox('err', messageFr(e.message))); });
     });
     nav.appendChild(back); nav.appendChild(nextBtn);
     panel.appendChild(nav);
@@ -357,15 +382,22 @@
     var errSlot = el('div'); panel.appendChild(errSlot);
 
     var box = el('div', 'proforma');
-    box.innerHTML =
-      '<div class="proforma__head"><b>Facture proforma n° ' + esc(p.no) + '</b><small>teebo · hello@teebo.africa</small></div>' +
-      '<table>' +
+    var cyc = p.billing_cycle === 'annuel' ? 'Annuel (12 mois)' : 'Mensuel (1 mois)';
+    var rows = '' +
       '<tr><td>Institution</td><td>' + esc((state.imf && state.imf.imf_code) || '') + '</td></tr>' +
       '<tr><td>Formule</td><td>' + esc(p.plan) + '</td></tr>' +
-      '<tr><td>Abonnement</td><td>' + money(p.amount_cents) + ' / ' + esc(p.billing_cycle) + '</td></tr>' +
+      '<tr><td>Périodicité</td><td>' + esc(cyc) + '</td></tr>' +
+      '<tr><td>Licence teeBo (frais unique)</td><td>' + money(p.licence_cents) + '</td></tr>' +
+      '<tr><td>Abonnement ' + esc(p.period_label || '') + '</td><td>' + money(p.subscription_cents) + '</td></tr>';
+    if (p.discount_cents) rows +=
+      '<tr><td>Remise cycle annuel (−15 %)</td><td>−' + money(p.discount_cents) + '</td></tr>';
+    rows +=
+      '<tr><td>Montant de la facture (HT)</td><td>' + money(p.amount_cents) + '</td></tr>' +
       '<tr><td>Période d’essai</td><td>' + esc(p.trial_days) + ' jours calendaires — gratuit</td></tr>' +
-      '<tr class="total"><td>Total à payer pendant l’essai</td><td>0 FCFA</td></tr>' +
-      '</table>';
+      '<tr class="total"><td>Total à payer pendant l’essai</td><td>0 FCFA</td></tr>';
+    box.innerHTML =
+      '<div class="proforma__head"><b>Facture proforma n° ' + esc(p.no) + '</b><small>teebo · hello@teebo.africa</small></div>' +
+      '<table>' + rows + '</table>';
     panel.appendChild(box);
 
     // Lien vers la facture proforma imprimable (PDF via HTML) — ouverte dans
@@ -389,7 +421,7 @@
       ok.disabled = true; var old = ok.textContent; ok.textContent = 'Validation…';
       api('/api/v1/requests/' + state.imf.request_id + '/validate-proforma', 'POST', {})
         .then(function () { state.step = 4; render(); })
-        .catch(function (e) { ok.disabled = false; ok.textContent = old; errSlot.appendChild(alertBox('err', messageFr(e.message, e))); });
+        .catch(function (e) { ok.disabled = false; ok.textContent = old; errSlot.appendChild(alertBox('err', messageFr(e.message))); });
     });
     nav.appendChild(back); nav.appendChild(ok);
     panel.appendChild(nav);
@@ -446,21 +478,36 @@
     { code:'ML', name:'Mali', dial:'+223' }, { code:'NE', name:'Niger', dial:'+227' },
     { code:'SN', name:'Sénégal', dial:'+221' }, { code:'TG', name:'Togo', dial:'+228' }
   ];
-  var FALLBACK_PLANS = [];
+  // Repli des formules identique à la grille d'accueil : le sélecteur de prix
+  // de l'inscription ne doit JAMAIS être vide, même si l'API est injoignable
+  // ou lente (backend en veille) au chargement de la page.
+  var FALLBACK_PLANS = FALLBACK_TIERS;
 
-  // Chargement initial (pays + formules)
-  Promise.all([
+  // Normalise price_cents : l'API renvoie une chaîne ("4500000"), on force un
+  // nombre pour fiabiliser tous les calculs (abonnement, remise, total).
+  function normPlans(list) {
+    return (list || []).map(function (p) {
+      var c = {}; for (var k in p) { if (Object.prototype.hasOwnProperty.call(p, k)) c[k] = p[k]; }
+      c.price_cents = Number(p.price_cents) || 0;
+      return c;
+    });
+  }
+
+  // Chargement initial (pays + formules) — résilient : l'échec d'un appel
+  // n'affecte pas l'autre, et le sélecteur de formules garde toujours un repli.
+  Promise.allSettled([
     api('/api/v1/requests/uemoa-countries'),
     api('/api/v1/requests/plans')
   ]).then(function (res) {
-    state.countries = (res[0] && res[0].countries) || [];
-    state.plans = (res[1] && res[1].plans) || [];
+    var cRes = res[0], pRes = res[1];
+    state.countries = (cRes.status === 'fulfilled' && cRes.value && cRes.value.countries) || [];
     if (!state.countries.length) state.countries = FALLBACK_COUNTRIES;
-    if (state.plans.length) renderPricing(state.plans);
-    render();
-  }).catch(function () {
-    state.countries = FALLBACK_COUNTRIES;
-    state.plans = FALLBACK_PLANS;
+
+    var plans = (pRes.status === 'fulfilled' && pRes.value && pRes.value.plans)
+      ? normPlans(pRes.value.plans) : [];
+    state.plans = plans.length ? plans : normPlans(FALLBACK_PLANS);
+
+    renderPricing(state.plans);
     render();
   });
 })();

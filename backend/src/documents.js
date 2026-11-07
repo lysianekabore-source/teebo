@@ -96,7 +96,10 @@ export async function getBranding(imfId) {
     legal_address: b.legal_address || (imf ? [imf.city, imf.country_code].filter(Boolean).join(', ') : ''),
     bank_details: b.bank_details || '',
     footer_note: b.footer_note || '',
-    logo_data_url: b.logo_data_url || null
+    logo_data_url: b.logo_data_url || null,
+    // Canaux d'envoi des codes d'accès : branding prioritaire, repli sur la fiche imf.
+    notify_whatsapp: b.notify_whatsapp || (imf && imf.whatsapp) || '',
+    notify_email: b.notify_email || (imf && imf.email) || ''
   };
 }
 
@@ -139,30 +142,10 @@ function docStyles(embed = false) {
   .foot{margin-top:24px;padding-top:14px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
   .badge{display:inline-block;background:#eef7d6;color:#3d5c00;border:1px solid #d5e9a8;border-radius:999px;font-size:11px;font-weight:700;padding:3px 10px}
   .badge--warn{background:#fff7d6;color:#8a6d00;border-color:#f0e2a0}
-  /* ---- Refonte visuelle des factures (proforma + définitive) ---- */
-  .inv-banner{position:relative;margin:22px 0 0;padding:18px 22px;border-radius:14px;background:linear-gradient(110deg,var(--navy) 0%,#17193f 60%,#1d2050 100%);color:#fff;display:flex;justify-content:space-between;align-items:center;gap:20px;overflow:hidden}
-  .inv-banner::after{content:'';position:absolute;right:-40px;top:-60px;width:180px;height:180px;background:radial-gradient(circle,rgba(216,245,0,.22),transparent 70%)}
-  .inv-banner .bt{position:relative;z-index:1}
-  .inv-banner .bt h2{font-size:21px;letter-spacing:.3px;text-transform:uppercase;line-height:1.1}
-  .inv-banner .bt .kind{display:inline-block;margin-top:7px;font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;padding:3px 10px;border-radius:999px;background:var(--neon);color:var(--navy)}
-  .inv-banner .bt .kind--pro{background:rgba(255,255,255,.14);color:var(--neon);border:1px solid rgba(216,245,0,.5)}
-  .inv-banner .bn{position:relative;z-index:1;text-align:right;font-size:12.5px;line-height:1.7;color:rgba(255,255,255,.82)}
-  .inv-banner .bn .no{font-size:17px;font-weight:800;color:#fff;letter-spacing:.3px}
-  .inv-parties{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:18px 0}
-  .party{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:#fff}
-  .party--client{background:var(--soft)}
-  .party h5{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px}
-  .party .nm{font-size:14.5px;font-weight:700;line-height:1.25}
-  .party .dt{font-size:12px;color:#3c3f57;margin-top:4px;line-height:1.6}
-  .inv-hero{margin:4px 0 2px;margin-left:auto;width:min(340px,100%);background:var(--navy);color:#fff;border-radius:12px;padding:16px 20px;display:flex;justify-content:space-between;align-items:center}
-  .inv-hero span{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:rgba(255,255,255,.72)}
-  .inv-hero b{font-size:22px;font-weight:800;color:var(--neon)}
-  .inv-mark{position:absolute;top:46%;left:50%;transform:translate(-50%,-50%) rotate(-24deg);font-size:120px;font-weight:900;letter-spacing:8px;color:rgba(11,12,38,.045);text-transform:uppercase;pointer-events:none;z-index:0;white-space:nowrap}
-  .doc{position:relative}
+  .actions{max-width:820px;margin:0 auto 16px;display:flex;gap:10px;justify-content:flex-end}
   .actions button,.actions a{font-family:inherit;font-size:13.5px;font-weight:700;border-radius:10px;padding:11px 18px;cursor:pointer;border:none;text-decoration:none;display:inline-block}
   .actions .print{background:#0b0c26;color:#fff}
   .actions .close{background:#fff;color:#0b0c26;border:1px solid #d4d6e2}
-  .actions{max-width:820px;margin:0 auto 16px;display:flex;gap:10px;justify-content:flex-end}
   @media print{
     body{background:#fff;padding:0}
     .sheet{box-shadow:none;border-radius:0;max-width:none}
@@ -350,28 +333,16 @@ export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, 
 
   const body = `
   ${docHeadInvoice()}
-  <div class="inv-banner">
-    <div class="bt">
-      <h2>${title}</h2>
-      <span class="kind${isFinal ? '' : ' kind--pro'}">${isFinal ? 'Document comptable' : 'Proforma · non comptable'}</span>
-    </div>
-    <div class="bn">
-      <div class="no">N° ${esc(invoiceNo || '—')}</div>
-      Émise le ${esc(fmtDate(issuedAt))}${dueAt ? '<br>Échéance le ' + esc(fmtDate(dueAt)) : ''}${periodLabel ? '<br>Période : ' + esc(periodLabel) : ''}
-      ${statusBadge ? '<div style="margin-top:6px">' + statusBadge + '</div>' : ''}
-    </div>
+  <div class="title">${title} n° ${esc(invoiceNo || '—')} ${statusBadge}
+    <small>Émise le ${esc(fmtDate(issuedAt))}${dueAt ? ' · échéance le ' + esc(fmtDate(dueAt)) : ''}${periodLabel ? ' · période : ' + esc(periodLabel) : ''}</small>
   </div>
-  <div class="inv-parties">
-    <div class="party">
-      <h5>Émetteur (prestataire)</h5>
-      <div class="nm">${esc(TEEBO_SUPPLIER.name)}</div>
-      <div class="dt">${esc(TEEBO_SUPPLIER.address)}<br>${esc(TEEBO_SUPPLIER.address2)}<br>Tél. ${esc(TEEBO_SUPPLIER.tel)} · ${esc(TEEBO_SUPPLIER.email)}</div>
-    </div>
-    <div class="party party--client">
-      <h5>Client</h5>
-      <div class="nm">${esc(clientName || header.legal_name || header.imf.name || '')}</div>
-      <div class="dt">Code IMF : ${esc(header.imf.code_imf || '—')}<br>Contact : ${esc(clientCode || header.imf.email || '—')}<br>Devise : ${esc(cur)}</div>
-    </div>
+  <div class="docmeta">
+    <div><span>Prestataire</span><b>${esc(TEEBO_SUPPLIER.name)}</b></div>
+    <div><span>Client</span><b>${esc(clientName || header.legal_name || header.imf.name || '')}</b></div>
+    <div><span>Institution (code IMF)</span><b>${esc(header.imf.code_imf || '')}</b></div>
+    <div><span>Contact client</span><b>${esc(clientCode || header.imf.email || '')}</b></div>
+    <div><span>Devise</span><b>${esc(cur)}</b></div>
+    <div><span>Mode de facturation</span><b>${isFinal ? 'Définitive' : 'Proforma (non comptable)'}</b></div>
   </div>
   <table>
     <thead><tr><th>Désignation</th><th class="r">Montant HT</th></tr></thead>
@@ -383,9 +354,9 @@ export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, 
     <div><span>Sous-total HT</span><b>${esc(moneyFcfa(subtotalCents, cur))}</b></div>
     ${discountLine}
     ${vatLine}
+    <div class="gt"><span>Total à payer</span><b>${esc(moneyFcfa(totalCents, cur))}</b></div>
     ${paidLine}
   </div>
-  <div class="inv-hero"><span>${isFinal && amountPaidCents ? 'Reste à payer' : 'Total à payer'}</span><b>${esc(moneyFcfa(isFinal && amountPaidCents ? Math.max(0, Number(totalCents || 0) - Number(amountPaidCents || 0)) : totalCents, cur))}</b></div>
   ${notes ? `<div class="legal"><h4>Observations</h4>${esc(notes)}</div>` : ''}
   ${docLegalTeebo()}
   <div class="sign">
@@ -393,8 +364,7 @@ export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, 
       ? `Facture émise par ${esc(TEEBO_SUPPLIER.name)} (prestataire de la solution teebo). Règlement par virement ou Mobile Money selon les coordonnées ci-dessus.`
       : `Document proforma non comptable, valable 30 jours à compter de sa date d\'émission. La facture définitive sera émise après approbation et règlement.`}
   </div>
-  ${docFoot(header, (isFinal ? 'Facture définitive' : 'Facture proforma') + ' — teebo')}
-  ${isFinal ? '' : '<div class="inv-mark">Proforma</div>'}`;
+  ${docFoot(header, (isFinal ? 'Facture définitive' : 'Facture proforma') + ' — teebo')}`;
 
   return embed ? wrapEmbed(title + ' n° ' + (invoiceNo || ''), body) : wrap(title + ' n° ' + (invoiceNo || ''), body);
 }

@@ -23,6 +23,7 @@
     <button class="nav-item" data-view="requests"><span class="ic">▤</span> Demandes</button>
     <button class="nav-item" data-view="imfs"><span class="ic">⌂</span> Institutions</button>
     <button class="nav-item" data-view="admins"><span class="ic">☺</span> Administrateurs IMF</button>
+    <button class="nav-item" data-view="profiles"><span class="ic">▦</span> Habilitations</button>
     <button class="nav-item" data-view="profile"><span class="ic">⛨</span> Mon profil</button>
     <div class="side__spacer"></div>
     <div class="side__user">
@@ -39,12 +40,6 @@
     <section class="view" id="view-dashboard">
       <div class="topbar"><div><h1>Tableau de bord</h1><p>Vue d’ensemble de la plateforme teebo : institutions, essais, abonnements actifs et demandes à traiter.</p></div></div>
       <div id="stats-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px"><div class="empty">Chargement…</div></div>
-      <div style="margin-top:28px">
-        <h2 style="font-size:18px;margin:0 0 4px">Échéances d’abonnement</h2>
-        <p style="margin:0 0 14px;color:var(--muted,#61647c);font-size:13px">Suivi des abonnements annuels et mensuels des institutions, avec la prochaine échéance de paiement.</p>
-        <div id="subs-chips" style="margin-bottom:12px"></div>
-        <div id="subs-table"><div class="empty">Chargement…</div></div>
-      </div>
     </section>
 
     <!-- Vue : Demandes -->
@@ -66,6 +61,12 @@
     <section class="view" id="view-admins" hidden>
       <div class="topbar"><div><h1>Administrateurs IMF</h1><p>Comptes d’accès créés pour chaque institution (code d’accès, e-mail, statut).</p></div></div>
       <div id="admins-table"><div class="empty">Chargement…</div></div>
+    </section>
+
+    <!-- Vue : Habilitations -->
+    <section class="view" id="view-profiles" hidden>
+      <div class="topbar"><div><h1>Profils &amp; habilitations</h1><p>Référentiel appliqué à la création des utilisateurs de chaque IMF : habilitations accordées par défaut selon le profil.</p></div></div>
+      <div class="card"><div id="profiles-matrix"><div class="empty">Chargement…</div></div></div>
     </section>
 
     <!-- Vue : Mon profil -->

@@ -19,6 +19,15 @@ export const ANNUAL_DISCOUNT_BP = Number(process.env.TEEBO_ANNUAL_DISCOUNT_BP ||
 
 export const BILLING_CYCLES = ['mensuel', 'annuel'];
 
+// Mention portée sur la proforma et la facture définitive : l'essai gratuit
+// de 30 jours fait partie de la période facturée (l'abonnement court à compter
+// de l'activation / début d'essai) ; les 30 jours ne sont pas facturés en sus.
+export const TRIAL_DAYS_INCLUDED = Number(process.env.TEEBO_TRIAL_DAYS || 30);
+export const TRIAL_BILLING_NOTE =
+  'Essai gratuit de ' + TRIAL_DAYS_INCLUDED + ' jours inclus dans la période d\'abonnement. ' +
+  'La facturation de l\'abonnement court à compter de l\'activation de l\'accès (début de l\'essai) : ' +
+  'les ' + TRIAL_DAYS_INCLUDED + ' jours d\'essai font partie de la période facturée et ne donnent lieu à aucun paiement supplémentaire.';
+
 /**
  * Calcule le détail tarifaire d'une demande.
  * @param {number} monthlyCents  prix mensuel de la formule (plan.price_cents)

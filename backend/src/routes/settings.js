@@ -2,6 +2,7 @@ import express from 'express';
 import { q, tx } from '../db.js';
 import { authenticate, requireFreshPassword, requireRole } from '../auth.js';
 import { getBranding, TEEBO_SUPPLIER, renderInvoice, setDocumentCsp } from '../documents.js';
+import { TRIAL_BILLING_NOTE } from '../pricing.js';
 
 const router = express.Router();
 router.use(authenticate, requireFreshPassword);
@@ -27,7 +28,6 @@ router.use((req, res, next) => {
 router.get('/org-settings', async (req, res, next) => {
   try {
     const b = await getBranding(req.user.imf_id);
-    const notif = await currentNotif(req.user.imf_id);
     res.json({
       settings: {
         logo_data_url: b.logo_data_url,
@@ -40,7 +40,9 @@ router.get('/org-settings', async (req, res, next) => {
         share_capital_cents: b.share_capital_cents,
         legal_address: b.legal_address,
         bank_details: b.bank_details,
-        footer_note: b.footer_note
+        footer_note: b.footer_note,
+        notify_whatsapp: b.notify_whatsapp,
+        notify_email: b.notify_email
       },
       imf: {
         code_imf: b.imf.code_imf, name: b.imf.name, type: b.imf.type,
@@ -48,9 +50,6 @@ router.get('/org-settings', async (req, res, next) => {
         phone_main: b.imf.phone_main, email: b.imf.email, whatsapp: b.imf.whatsapp
       },
       vat_rate_bp: await currentVatBp(req.user.imf_id),
-      // Coordonnées d'envoi des codes/notifications aux utilisateurs de l'IMF.
-      notif_whatsapp: notif.notif_whatsapp,
-      notif_email: notif.notif_email,
       supplier: TEEBO_SUPPLIER,
       can_edit: canEdit(req.user.role)
     });
@@ -103,12 +102,15 @@ router.post('/org-settings', requireRole('admin_imf', 'direction'), async (req, 
             legal_address      = COALESCE($14, legal_address),
             bank_details       = COALESCE($15, bank_details),
             footer_note        = COALESCE($16, footer_note),
+            notify_whatsapp    = COALESCE($17, notify_whatsapp),
+            notify_email       = COALESCE($18, notify_email),
             updated_at         = now()
           WHERE imf_id = $1`,
         [req.user.imf_id, hasLogo, logo, mime, bytes, req.user.id,
          strOrNull(b.legal_name), strOrNull(b.legal_form), strOrNull(b.trade_register_no),
          strOrNull(b.tax_id), strOrNull(b.vat_number), strOrNull(b.bceao_agreement_no),
-         cap, strOrNull(b.legal_address), strOrNull(b.bank_details), strOrNull(b.footer_note)]);
+         cap, strOrNull(b.legal_address), strOrNull(b.bank_details), strOrNull(b.footer_note),
+         strOrNull(b.notify_whatsapp), strOrNull(b.notify_email)]);
 
       // Taux de TVA : CONFIGURABLE par tenant (aucun taux par défaut imposé).
       if (b.vat_rate_bp !== undefined) {
@@ -118,23 +120,21 @@ router.post('/org-settings', requireRole('admin_imf', 'direction'), async (req, 
            ON CONFLICT (imf_id) DO UPDATE SET vat_rate_bp=EXCLUDED.vat_rate_bp, updated_at=now()`,
           [req.user.imf_id, bp]);
       }
-      // Coordonnées de notification (WhatsApp / e-mail) pour l'envoi des codes
-      // d'accès aux utilisateurs de l'IMF. Configurables à tout moment.
-      if (b.notif_whatsapp !== undefined || b.notif_email !== undefined) {
-        await c.query(
-          `INSERT INTO imf_document_settings(imf_id, notif_whatsapp, notif_email) VALUES ($1,$2,$3)
-           ON CONFLICT (imf_id) DO UPDATE SET
-             notif_whatsapp = CASE WHEN $4::boolean THEN EXCLUDED.notif_whatsapp ELSE imf_document_settings.notif_whatsapp END,
-             notif_email    = CASE WHEN $5::boolean THEN EXCLUDED.notif_email ELSE imf_document_settings.notif_email END,
-             updated_at = now()`,
-          [req.user.imf_id, strOrNull(b.notif_whatsapp), strOrNull(b.notif_email),
-           b.notif_whatsapp !== undefined, b.notif_email !== undefined]);
-      }
       // Répercussion des mentions légales sur la fiche imf (cohérence).
       if (b.legal_name || b.legal_address) {
         await c.query(
           `UPDATE imf SET name = COALESCE($2, name), updated_at = now() WHERE id=$1`,
           [req.user.imf_id, strOrNull(b.legal_name)]);
+      }
+      // Répercussion des canaux d'envoi sur la fiche imf (contacts officiels).
+      if (b.notify_whatsapp !== undefined || b.notify_email !== undefined) {
+        await c.query(
+          `UPDATE imf SET
+              whatsapp = COALESCE($2, whatsapp),
+              email    = COALESCE($3, email),
+              updated_at = now()
+            WHERE id=$1`,
+          [req.user.imf_id, strOrNull(b.notify_whatsapp), strOrNull(b.notify_email)]);
       }
     });
 
@@ -183,7 +183,7 @@ router.get('/org-settings/preview', async (req, res, next) => {
       currency: 'XOF',
       clientName: header.legal_name || header.imf.name || '',
       clientCode: header.imf.email || '',
-      notes: 'Aperçu généré automatiquement à partir de vos paramètres actuels.',
+      notes: 'Aperçu généré automatiquement à partir de vos paramètres actuels. ' + TRIAL_BILLING_NOTE,
       embed: true
     });
     setDocumentCsp(res, { allowFrame: true });
@@ -198,11 +198,6 @@ function canEdit(role) { return ['admin_imf', 'direction'].includes(role); }
 async function currentVatBp(imfId) {
   const r = (await q('SELECT vat_rate_bp FROM imf_document_settings WHERE imf_id=$1', [imfId])).rows[0];
   return r ? r.vat_rate_bp : null;
-}
-
-async function currentNotif(imfId) {
-  const r = (await q('SELECT notif_whatsapp, notif_email FROM imf_document_settings WHERE imf_id=$1', [imfId])).rows[0];
-  return { notif_whatsapp: r ? r.notif_whatsapp : null, notif_email: r ? r.notif_email : null };
 }
 
 export default router;

@@ -5,20 +5,6 @@
   var API = ''; // même origine
   var $ = function (id) { return document.getElementById(id); };
 
-  // PWA : lorsque l'application installée est ouverte depuis son icône
-  // (mode autonome), on révoque toute session résiduelle afin d'imposer
-  // une authentification à chaque lancement. L'écran de connexion reste
-  // ainsi systématiquement le point d'entrée.
-  (function forceReauthOnLaunch() {
-    var standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
-      || window.navigator.standalone === true;
-    if (!standalone) return;
-    try {
-      fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' }, keepalive: true }).catch(function () {});
-    } catch (e) { /* silencieux */ }
-  })();
-
   function show(msg, ok) {
     var a = $('alert');
     a.textContent = msg;
@@ -29,22 +15,7 @@
   function post(path, body) {
     return fetch(API + path, { method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) })
-      .then(function (r) { return r.json().catch(function(){return{};}).then(function (d) {
-        if (!r.ok) {
-          // On conserve le corps de la réponse sur l'objet d'erreur : après un
-          // code 2FA erroné, le serveur renvoie un NOUVEAU « challenge » qu'il
-          // faut réutiliser pour la tentative suivante (sinon le défi déjà
-          // consommé fait échouer toutes les reprises).
-          var err = new Error(d.error || 'error');
-          err.data = d;
-          err.status = r.status;
-          if (d.challenge) err.challenge = d.challenge;
-          if (d.attempts_left != null) err.attempts_left = d.attempts_left;
-          if (d.locked_until) err.locked_until = d.locked_until;
-          throw err;
-        }
-        return d;
-      }); });
+      .then(function (r) { return r.json().catch(function(){return{};}).then(function (d) { if (!r.ok) throw new Error(d.error || 'error'); return d; }); });
   }
   function msgFr(code) {
     var m = {
@@ -58,20 +29,14 @@
       twofa_required: 'Double authentification obligatoire : activez-la dans votre espace. Contactez votre administrateur si besoin.',
       session_expired: 'Votre session a expiré. Reconnectez-vous.',
       password_change_required: 'Vous devez changer votre mot de passe.',
-      invalid_code: 'Code invalide. Vérifiez que l’heure de votre téléphone est bien automatique, puis réessayez.',
-      replay: 'Ce code a déjà été utilisé. Attendez le code suivant dans votre application, puis réessayez.',
-      not_enabled: 'La double authentification n’est pas activée sur ce compte. Reconnectez-vous.',
+      invalid_code: 'Code invalide. Réessayez.',
       invalid_challenge: 'Session de vérification expirée. Reconnectez-vous.',
-      challenge_used: 'Session de vérification déjà utilisée. Reconnectez-vous.',
       challenge_expired: 'Le délai de saisie du code a expiré. Reconnectez-vous.',
       missing_challenge: 'Vérification impossible. Reconnectez-vous.',
       locked: 'Trop de tentatives. Réessayez dans quelques minutes.',
       user_disabled: 'Ce compte est désactivé.',
       email_not_registered: 'Cet e-mail n’est pas enregistré. Contactez votre administrateur.',
-      forbidden: 'Accès non autorisé.',
-      missing_identifier: 'Veuillez saisir votre identifiant ou e-mail.',
-      invalid_reset: 'Code expiré ou introuvable. Recommencez la procédure.',
-      too_many_attempts: 'Trop de tentatives. Recommencez la procédure.'
+      forbidden: 'Accès non autorisé.'
     };
     return m[code] || 'Une erreur est survenue. Réessayez.';
   }
@@ -86,7 +51,7 @@
     t.addEventListener('click', function () {
       document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
       t.classList.add('active'); hide();
-      ['form-login','form-activate','form-change','form-2fa','form-forgot','form-reset'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
+      ['form-login','form-activate','form-change','form-2fa'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
       var map = { login: 'form-login', activate: 'form-activate', 'change': 'form-change' };
       var target = $(map[t.dataset.tab]);
       if (target) target.hidden = false;
@@ -124,23 +89,9 @@
     post('/api/v1/auth/2fa/verify', body)
       .then(function () { return routeAfterLogin(); })
       .catch(function (err) {
-        btn.disabled = false; btn.textContent = oldLabel;
-        var code = err && err.message;
-        // Le défi est perdu/expiré/déjà consommé côté serveur et ne peut pas
-        // être rejoué : on renvoie l'utilisateur sur l'écran de connexion pour
-        // qu'il ré obtienne un défi frais via son mot de passe.
-        if (code === 'invalid_challenge' || code === 'challenge_used' ||
-            code === 'challenge_expired' || code === 'missing_challenge') {
-          CHALLENGE = null;
-          backToLogin();
-          show(msgFr(code), false);
-          return;
-        }
-        // Code erroné (ou rejeu) : le serveur a émis un NOUVEAU défi, on le
-        // mémorise pour permettre une nouvelle tentative sans tout recommencer.
         if (err && err.challenge) CHALLENGE = err.challenge;
-        try { $('otp').value = ''; $('otp').focus(); } catch (e) {}
-        show(msgFr(code), false);
+        btn.disabled = false; btn.textContent = oldLabel;
+        show(msgFr(err.message) , false);
       });
   }
 
@@ -287,61 +238,5 @@
   if ($('btn-enroll-done')) {
     $('btn-enroll-done').addEventListener('click', function () { routeAfterLogin(); });
   }
-
-  // --- Mot de passe oublié : demande du code puis réinitialisation --------
-  function showForgotPane() {
-    document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
-    ['form-login','form-activate','form-change','form-2fa','form-reset'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
-    if ($('form-forgot')) $('form-forgot').hidden = false;
-    hide();
-    try { $('fp-id').focus(); } catch (e) {}
-  }
-  function showResetPane() {
-    document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
-    ['form-login','form-activate','form-change','form-2fa','form-forgot'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
-    if ($('form-reset')) $('form-reset').hidden = false;
-    try { $('rp-code').focus(); } catch (e) {}
-  }
-  function backToLogin() {
-    document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
-    var lt = document.querySelector('.tab[data-tab=login]'); if (lt) lt.classList.add('active');
-    ['form-activate','form-change','form-2fa','form-forgot','form-reset'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
-    if ($('form-login')) $('form-login').hidden = false;
-    hide();
-  }
-
-  var RESET_ID = '';
-  if ($('link-forgot')) $('link-forgot').addEventListener('click', showForgotPane);
-  if ($('fp-back')) $('fp-back').addEventListener('click', backToLogin);
-  if ($('rp-back')) $('rp-back').addEventListener('click', backToLogin);
-
-  if ($('form-forgot')) $('form-forgot').addEventListener('submit', function (e) {
-    e.preventDefault(); hide();
-    var id = $('fp-id').value.trim();
-    if (!id) { show(msgFr('missing_identifier'), false); return; }
-    RESET_ID = id;
-    var b = e.target.querySelector('button[type=submit]'); b.disabled = true; var old = b.textContent; b.textContent = 'Envoi…';
-    post('/api/v1/auth/forgot-password', { identifier: id })
-      .then(function (d) {
-        b.disabled = false; b.textContent = old;
-        showResetPane();
-        show((d && d.message) || 'Si un compte correspond, un code vous a été envoyé par WhatsApp et e-mail.', true);
-      })
-      .catch(function (err) { b.disabled = false; b.textContent = old; show(msgFr(err.message), false); });
-  });
-
-  if ($('form-reset')) $('form-reset').addEventListener('submit', function (e) {
-    e.preventDefault(); hide();
-    var code = ($('rp-code').value || '').replace(/\D/g, '');
-    if (code.length !== 6) { show('Le code doit comporter 6 chiffres.', false); return; }
-    if ($('rp-new').value !== $('rp-confirm').value) { show('Les mots de passe ne correspondent pas.', false); return; }
-    var b = e.target.querySelector('button[type=submit]'); b.disabled = true; var old = b.textContent; b.textContent = 'Réinitialisation…';
-    post('/api/v1/auth/reset-password', { identifier: RESET_ID, code: code, new_password: $('rp-new').value })
-      .then(function () {
-        backToLogin();
-        show('Mot de passe réinitialisé. Connectez-vous avec votre nouveau mot de passe.', true);
-      })
-      .catch(function (err) { b.disabled = false; b.textContent = old; show(msgFr(err.message), false); });
-  });
 
 })();

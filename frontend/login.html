@@ -35,39 +35,6 @@
           <button type="button" class="toggle" data-toggle="password" aria-label="Afficher">Afficher</button></div>
       </div>
       <button type="submit" class="btn btn--primary btn--block">Se connecter</button>
-      <button type="button" class="btn btn--ghost btn--block" id="link-forgot" style="margin-top:8px">Mot de passe oublié ?</button>
-    </form>
-
-    <!-- Mot de passe oublié : étape 1 (demande du code) -->
-    <form id="form-forgot" class="pane" hidden novalidate>
-      <p class="hint">Saisissez votre identifiant ou e-mail. Un <b>code de réinitialisation</b> vous sera envoyé par WhatsApp et e-mail.</p>
-      <div class="field">
-        <label for="fp-id">Identifiant ou e-mail</label>
-        <input id="fp-id" type="text" autocapitalize="none" required>
-      </div>
-      <button type="submit" class="btn btn--primary btn--block">Envoyer le code</button>
-      <button type="button" class="btn btn--ghost btn--block" id="fp-back" style="margin-top:8px">Retour à la connexion</button>
-    </form>
-
-    <!-- Mot de passe oublié : étape 2 (code + nouveau mot de passe) -->
-    <form id="form-reset" class="pane" hidden novalidate>
-      <p class="hint">Saisissez le <b>code à 6 chiffres</b> reçu, puis créez votre nouveau mot de passe.</p>
-      <div class="field">
-        <label for="rp-code">Code de réinitialisation</label>
-        <input id="rp-code" class="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" required placeholder="••••••">
-      </div>
-      <div class="field">
-        <label for="rp-new">Nouveau mot de passe</label>
-        <div class="pwd"><input id="rp-new" type="password" autocomplete="new-password" required>
-          <button type="button" class="toggle" data-toggle="rp-new" aria-label="Afficher">Afficher</button></div>
-        <p class="req">Au moins 10 caractères, avec majuscule, minuscule et chiffre.</p>
-      </div>
-      <div class="field">
-        <label for="rp-confirm">Confirmer le mot de passe</label>
-        <input id="rp-confirm" type="password" autocomplete="new-password" required>
-      </div>
-      <button type="submit" class="btn btn--primary btn--block">Réinitialiser mon mot de passe</button>
-      <button type="button" class="btn btn--ghost btn--block" id="rp-back" style="margin-top:8px">Retour à la connexion</button>
     </form>
 
     <!-- Premier accès / activation -->

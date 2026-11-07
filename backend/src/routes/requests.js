@@ -1,8 +1,8 @@
 import express from 'express';
 import { q, tx } from '../db.js';
-import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL } from '../notify.js';
+import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL, verifyDocToken } from '../notify.js';
 import { getBranding, renderInvoice, moneyFcfa, setDocumentCsp } from '../documents.js';
-import { computePricing, buildInvoiceLines, BILLING_CYCLES, LICENCE_CENTS } from '../pricing.js';
+import { computePricing, buildInvoiceLines, BILLING_CYCLES, LICENCE_CENTS, TRIAL_BILLING_NOTE } from '../pricing.js';
 
 const router = express.Router();
 
@@ -145,19 +145,13 @@ router.get('/:id/proforma.pdf', async (req, res, next) => {
     const header = await getBranding(r.imf_id);
     const plan = (await q('SELECT * FROM plan WHERE code=$1', [r.plan_code])).rows[0];
     // Reconstitution du détail : licence + abonnement (+ remise si cycle annuel).
-    // IMPORTANT : le driver PostgreSQL renvoie les colonnes bigint sous forme de
-    // CHAÎNES. Sans conversion explicite, « a + b » concatènerait les montants
-    // (ex. « 25000000 » + « 4500000 » = « 250000004500000 »). On force donc
-    // Number() sur TOUS les montants en centimes avant toute arithmétique.
-    const licenceCents = r.licence_cents != null ? Number(r.licence_cents) : LICENCE_CENTS;
+    const licenceCents = r.licence_cents != null ? r.licence_cents : LICENCE_CENTS;
     const subscriptionCents = r.subscription_cents != null
-      ? Number(r.subscription_cents) : (plan ? Number(plan.price_cents) : 0);
-    const discountCents = Number(r.discount_cents || 0);
+      ? r.subscription_cents : (plan ? plan.price_cents : 0);
+    const discountCents = r.discount_cents || 0;
     const subtotalCents = licenceCents + subscriptionCents;
-    // Le sous-total HT (licence + abonnement) moins la remise constitue le total
-    // à payer. On recalcule systématiquement pour garantir la cohérence du
-    // document, même si le montant stocké est absent ou obsolète.
-    const totalCents = subtotalCents - discountCents;
+    const totalCents = r.proforma_amount_cents != null
+      ? r.proforma_amount_cents : (subtotalCents - discountCents);
     const lines = buildInvoiceLines({
       planLabel: plan ? plan.label : (r.plan_code || ''),
       billing: r.billing_cycle, licenceCents, subscriptionCents });
@@ -174,19 +168,22 @@ router.get('/:id/proforma.pdf', async (req, res, next) => {
       currency: 'XOF',
       status: r.proforma_validated ? 'emise' : null,
       clientName: imf ? imf.name : (header.legal_name || 'IMF'),
-      clientCode: header.imf.email || ''
+      clientCode: header.imf.email || '',
+      notes: TRIAL_BILLING_NOTE
     });
     setDocumentCsp(res);
     res.type('html').send(html);
   } catch (e) { next(e); }
 });
 
-// --- Facture DÉFINITIVE imprimable, accessible au CLIENT (PDF via HTML) ----
-// La facture définitive est émise par teebo mais doit rester consultable par
-// l'IMF via un lien direct (envoyé par e-mail / WhatsApp). On l'identifie par
-// son UUID (non devinable), comme la proforma ci-dessus. Lecture seule.
-router.get('/invoice/:id.pdf', async (req, res, next) => {
+// --- Facture DÉFINITIVE publique (tokenisée) -------------------------------
+// Permet à l'IMF d'ouvrir le lien de facture reçu par WhatsApp / e-mail, sans
+// être connecté à la console teebo. L'accès est protégé par un jeton HMAC
+// (?t=...) : seul le détenteur du lien transmis par teebo peut l'ouvrir.
+router.get('/invoices/:id.pdf', async (req, res, next) => {
   try {
+    if (!verifyDocToken(req.params.id, req.query.t))
+      return res.status(403).json({ error: 'invalid_token' });
     const inv = (await q('SELECT * FROM invoice WHERE id=$1', [req.params.id])).rows[0];
     if (!inv) return res.status(404).json({ error: 'invoice_not_found' });
     const header = await getBranding(inv.imf_id);
@@ -203,16 +200,13 @@ router.get('/invoice/:id.pdf', async (req, res, next) => {
       header, kind: 'definitive', invoiceNo: inv.invoice_no,
       issuedAt: inv.issued_at, dueAt: inv.due_at,
       periodLabel: inv.period_label || (ar && ar.billing_cycle === 'annuel' ? '12 mois (annuel)' : (ar ? '1 mois (mensuel)' : null)),
-      plan: inv.plan_label || inv.plan_code,
-      lines,
-      subtotalCents: Number(inv.subtotal_cents),
-      discountCents: Number(inv.discount_cents || 0),
-      vatRateBp: inv.vat_rate_bp,
-      vatCents: Number(inv.vat_cents || 0),
-      totalCents: Number(inv.total_cents),
-      currency: inv.currency, status: inv.status,
-      amountPaidCents: Number(inv.amount_paid_cents || 0),
-      clientName: imf.name || header.legal_name, clientCode: imf.email || '', notes: inv.notes
+      plan: inv.plan_label || inv.plan_code, lines,
+      subtotalCents: inv.subtotal_cents, discountCents: inv.discount_cents,
+      vatRateBp: inv.vat_rate_bp, vatCents: inv.vat_cents,
+      totalCents: inv.total_cents, currency: inv.currency,
+      status: inv.status, amountPaidCents: inv.amount_paid_cents,
+      clientName: imf.name || header.legal_name, clientCode: imf.email || '',
+      notes: inv.notes
     });
     setDocumentCsp(res);
     res.type('html').send(html);

@@ -40,7 +40,7 @@
   }
 
   // ----- Navigation -----
-  var VIEWS = ['dash', 'org', 'users', 'settings', 'security'];
+  var VIEWS = ['dash', 'org', 'users', 'dispatches', 'profiles', 'settings', 'security'];
   document.querySelectorAll('.nav-item').forEach(function (b) {
     b.addEventListener('click', function () { switchView(b.dataset.view); });
   });
@@ -49,6 +49,8 @@
     document.querySelectorAll('.nav-item').forEach(function (b) { b.classList.toggle('active', b.dataset.view === v); });
     if (v === 'org') loadUnits();
     if (v === 'users') loadUsers();
+    if (v === 'dispatches') loadDispatches();
+    if (v === 'profiles') loadProfilesMatrix();
     if (v === 'settings') loadSettings();
     if (v === 'security') renderSession();
   }
@@ -161,42 +163,16 @@
   function renderUsers() {
     var box = $('users-table');
     if (!users.length) { box.innerHTML = '<div class="empty">Aucun utilisateur. Créez le premier accès.</div>'; return; }
-    var canManage = ['admin_imf', 'direction'].indexOf(me.user.role) >= 0;
-    box.innerHTML = '<table class="tbl"><thead><tr><th>Nom</th><th>Code d’accès</th><th>Rôle</th><th>Unité</th><th>Contact</th><th>Mot de passe</th>' + (canManage ? '<th>Envoi du code</th>' : '') + '</tr></thead><tbody>' +
+    box.innerHTML = '<table class="tbl"><thead><tr><th>Nom</th><th>Code d’accès</th><th>Rôle</th><th>Unité</th><th>Contact</th><th>Mot de passe</th><th>Actions</th></tr></thead><tbody>' +
       users.map(function (u) {
-        var acts = '';
-        if (canManage && u.role !== 'admin_imf') {
-          acts = '<td><div class="send-actions">' +
-            '<button class="btn btn--ghost btn--sm send-btn" data-uresend="' + esc(u.id) + '" title="Renvoyer le code par WhatsApp et e-mail"><span class="send-ic" aria-hidden="true">✉</span> Renvoyer</button>' +
-            '<button class="btn btn--ghost btn--sm send-btn" data-uregen="' + esc(u.id) + '" title="Générer un nouveau code et l\'envoyer"><span class="send-ic" aria-hidden="true">↻</span> Régénérer</button>' +
-            '</div></td>';
-        } else if (canManage) { acts = '<td><small style="color:var(--muted)">—</small></td>'; }
         return '<tr><td><b>' + esc(u.full_name) + '</b>' + (u.position ? '<br><small style="color:var(--muted)">' + esc(u.position) + '</small>' : '') + '</td>' +
           '<td><code>' + esc(u.code_user) + '</code></td><td>' + esc(ROLE_LABEL[u.role] || u.role) + '</td>' +
           '<td>' + esc(u.unit_name || '—') + '</td><td>' + esc(u.email) + (u.phone ? '<br><small style="color:var(--muted)">' + esc(u.phone) + '</small>' : '') + '</td>' +
-          '<td>' + (u.must_change_password ? '<span class="tag tag--warn">À créer</span>' : '<span class="tag tag--ok">Actif</span>') + '</td>' + acts + '</tr>';
+          '<td>' + (u.must_change_password ? '<span class="tag tag--warn">À créer</span>' : '<span class="tag tag--ok">Actif</span>') + '</td>' +
+          '<td><button class="btn btn--ghost btn--sm" data-resend="' + u.id + '">Renvoyer le code</button></td></tr>';
       }).join('') + '</tbody></table>';
-    if (canManage) {
-      box.querySelectorAll('[data-uresend]').forEach(function (b) { b.addEventListener('click', function () { userResend(b.dataset.uresend); }); });
-      box.querySelectorAll('[data-uregen]').forEach(function (b) { b.addEventListener('click', function () { userRegen(b.dataset.uregen); }); });
-    }
-  }
-
-  // ----- Renvoi / régénération du code d'accès d'un utilisateur de l'IMF -----
-  function userResend(id) {
-    api('/api/v1/users/' + id + '/resend-code', 'POST')
-      .then(function (d) { notify('Code d’accès renvoyé : ' + d.code_user + ' → ' + d.sent_to, 'ok'); })
-      .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
-  }
-  function userRegen(id) {
-    openModal('<h3>Régénérer le code d’accès</h3><p class="sub">Un NOUVEAU code sera généré et l’ancien mot de passe effacé : l’utilisateur devra créer son mot de passe après sa 1re connexion. Le code est envoyé par WhatsApp et e-mail.</p>' +
-      '<div class="modal__nav"><button class="btn btn--ghost" id="ug-cancel">Annuler</button><button class="btn btn--primary" id="ug-ok">Régénérer et envoyer</button></div>');
-    $('ug-cancel').addEventListener('click', closeModal);
-    $('ug-ok').addEventListener('click', function () {
-      var self = this; self.disabled = true;
-      api('/api/v1/users/' + id + '/regenerate-code', 'POST').then(function (d) {
-        closeModal(); notify('Nouveau code généré : ' + d.code_user + ' → ' + d.sent_to, 'ok'); return loadUsers();
-      }).catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    box.querySelectorAll('button[data-resend]').forEach(function (b) {
+      b.addEventListener('click', function () { var u = users.find(function (x) { return x.id === b.dataset.resend; }); if (u) resendCode(u); });
     });
   }
   function userModal() {
@@ -218,7 +194,7 @@
         org_unit_id: $('u-unit').value || null, email: $('u-email').value.trim(), phone: $('u-phone').value.trim() };
       if (!body.full_name || !body.email || !body.role) { notify('Nom, e-mail et rôle sont requis.', 'err'); return; }
       var self = this; self.disabled = true;
-      api('/api/v1/users', 'POST', body).then(function (d) { closeModal(); notify('Utilisateur créé — code ' + d.code_user + ' envoyé par e-mail et WhatsApp.', 'ok'); return loadUsers(); })
+      api('/api/v1/users', 'POST', body).then(function (d) { closeModal(); return loadUsers().then(function () { notify('Utilisateur créé — code ' + d.code_user + '.', 'ok'); showSendCodeModal(d, body.full_name); }); })
         .catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
     });
   }
@@ -332,8 +308,7 @@
       set('s-vat_number', s.vat_number); set('s-bceao_agreement_no', s.bceao_agreement_no);
       set('s-legal_address', s.legal_address); set('s-bank_details', s.bank_details);
       set('s-footer_note', s.footer_note);
-      // Coordonnées d'envoi des codes/notifications aux utilisateurs de l'IMF.
-      set('s-notif_whatsapp', d.notif_whatsapp); set('s-notif_email', d.notif_email);
+      set('s-notify_whatsapp', s.notify_whatsapp); set('s-notify_email', s.notify_email);
       $('s-share_capital').value = s.share_capital_cents != null ? fmtAmount(s.share_capital_cents / 100) : '';
       // TVA : points de base -> pourcentage lisible (vide = non applicable)
       $('s-vat').value = d.vat_rate_bp != null ? String(d.vat_rate_bp / 100).replace('.', ',') : '';
@@ -353,7 +328,7 @@
       $('settings-readonly').hidden = settingsCanEdit;
       ['s-legal_name','s-legal_form','s-trade_register_no','s-tax_id','s-vat_number','s-bceao_agreement_no',
        's-share_capital','s-legal_address','s-bank_details','s-footer_note','s-vat',
-       's-notif_whatsapp','s-notif_email',
+       's-notify_whatsapp','s-notify_email','btn-notify-save',
        'btn-logo-pick','btn-settings-save'].forEach(function (id) {
         var e = $(id); if (e) e.disabled = !settingsCanEdit;
       });
@@ -413,8 +388,8 @@
       vat_number: $('s-vat_number').value.trim(), bceao_agreement_no: $('s-bceao_agreement_no').value.trim(),
       legal_address: $('s-legal_address').value.trim(), bank_details: $('s-bank_details').value.trim(),
       footer_note: $('s-footer_note').value.trim(),
-      notif_whatsapp: $('s-notif_whatsapp') ? $('s-notif_whatsapp').value.trim() : undefined,
-      notif_email: $('s-notif_email') ? $('s-notif_email').value.trim() : undefined,
+      notify_whatsapp: $('s-notify_whatsapp').value.trim(),
+      notify_email: $('s-notify_email').value.trim(),
       share_capital_cents: capRaw ? Number(capRaw) * 100 : null,
       vat_rate_bp: vatBp
     };
@@ -428,6 +403,58 @@
       btn.disabled = false; btn.textContent = old;
       notify(e.message === 'logo_too_large' ? 'Le logo dépasse 400 Ko.' : fr(e), 'err');
     });
+  }
+
+  function saveNotify() {
+    if (!settingsCanEdit) return;
+    var body = {
+      notify_whatsapp: $('s-notify_whatsapp').value.trim(),
+      notify_email: $('s-notify_email').value.trim()
+    };
+    if (body.notify_email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.notify_email)) {
+      notify('Adresse e-mail expéditeur invalide.', 'err'); return;
+    }
+    var btn = $('btn-notify-save'); btn.disabled = true; var old = btn.textContent; btn.textContent = 'Enregistrement…';
+    api('/api/v1/org-settings', 'POST', body).then(function () {
+      btn.disabled = false; btn.textContent = old;
+      notify('Canaux d’envoi enregistrés. Les codes d’accès seront transmis depuis ces coordonnées.', 'ok');
+      loadSettings();
+    }).catch(function (e) {
+      btn.disabled = false; btn.textContent = old;
+      if (!guard(e)) notify(fr(e), 'err');
+    });
+  }
+
+  // Affiche le code d'accès créé + les liens d'envoi « prêts à cliquer ».
+  function showSendCodeModal(d, name) {
+    var s = d.send || {};
+    var who = name ? esc(name) : 'l’utilisateur';
+    var waBtn = s.wa_link
+      ? '<a class="btn btn--primary" href="' + esc(s.wa_link) + '" target="_blank" rel="noopener">Envoyer par WhatsApp</a>'
+      : '<span class="hint">Aucun numéro WhatsApp renseigné pour cet utilisateur.</span>';
+    var mailBtn = s.mailto_link
+      ? '<a class="btn btn--dark" href="' + esc(s.mailto_link) + '">Envoyer par e-mail</a>'
+      : '';
+    var channels = [];
+    if (s.sender_whatsapp) channels.push('WhatsApp : ' + esc(s.sender_whatsapp));
+    if (s.sender_email) channels.push('e-mail : ' + esc(s.sender_email));
+    openModal(
+      '<h3>Code d’accès prêt à envoyer</h3>' +
+      '<p class="sub">Transmettez ce code à ' + who + '. Il devra créer son mot de passe à la première connexion.</p>' +
+      '<div class="fld" style="text-align:center"><label>Code d’accès</label>' +
+        '<div style="font-size:26px;font-weight:800;letter-spacing:3px"><code>' + esc(d.code_user || '') + '</code></div></div>' +
+      (channels.length ? '<p class="hint">Expéditeur : ' + channels.join(' · ') + '.</p>' : '') +
+      '<p class="hint">Cliquez sur un bouton pour ouvrir le message pré-rempli (WhatsApp ou votre messagerie), puis envoyez-le.</p>' +
+      '<div class="modal__nav" style="flex-wrap:wrap;gap:10px">' + waBtn + mailBtn +
+        '<button class="btn btn--ghost" id="sc-close">Fermer</button></div>'
+    );
+    var c = $('sc-close'); if (c) c.addEventListener('click', closeModal);
+  }
+
+  function resendCode(u) {
+    api('/api/v1/users/' + u.id + '/resend-code', 'POST', {}).then(function (d) {
+      showSendCodeModal(d, u.full_name);
+    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
   }
 
   function removeLogo() {
@@ -445,6 +472,7 @@
     file.addEventListener('change', function () { readLogoFile(file.files && file.files[0]); file.value = ''; });
     $('btn-logo-remove').addEventListener('click', removeLogo);
     $('btn-settings-save').addEventListener('click', saveSettings);
+    var bn = $('btn-notify-save'); if (bn) bn.addEventListener('click', saveNotify);
     var ln = $('s-legal_name'); if (ln) ln.addEventListener('input', function () { if (!logoDraft) renderLogo(null); });
     // Prévisualisation : boutons pilotés par addEventListener (aucun on* inline).
     var ref = $('btn-preview-refresh'); if (ref) ref.addEventListener('click', function () { loadInvoicePreview(true); });
@@ -469,6 +497,65 @@
     if (!w) notify('Autorisez les fenêtres surgissantes pour ouvrir la facture.', 'err');
   }
 
+  // ----- Suivi des envois de codes -----
+  function modeBadge(m) {
+    var map = { sent: ['Envoyé', 'tag--ok'], manual: ['Lien manuel', 'tag--warn'],
+      failed: ['Échec', 'tag--err'], skipped: ['Non tenté', 'tag--muted'] };
+    var v = map[m] || [m || '—', 'tag--muted'];
+    return '<span class="tag ' + v[1] + '">' + esc(v[0]) + '</span>';
+  }
+  function fmtWhen(s) {
+    if (!s) return '—';
+    try { return new Date(s).toLocaleString('fr-FR'); } catch (e) { return esc(s); }
+  }
+  function loadDispatches() {
+    return api('/api/v1/code-dispatches').then(function (d) {
+      var s = d.stats || {};
+      $('dispatch-kpis').innerHTML =
+        kpi(s.total || 0, 'Envois au total', true) +
+        kpi(s.creation || 0, 'À la création') +
+        kpi(s.resend || 0, 'Renvois') +
+        kpi(s.whatsapp_sent || 0, 'WhatsApp envoyés') +
+        kpi(s.email_sent || 0, 'E-mails envoyés');
+      var rows = d.dispatches || [];
+      if (!rows.length) { $('dispatches-table').innerHTML = '<div class="empty">Aucun code envoyé pour le moment.</div>'; return; }
+      $('dispatches-table').innerHTML =
+        '<table class="tbl"><thead><tr><th>Date</th><th>Destinataire</th><th>Code</th><th>Type</th><th>WhatsApp</th><th>E-mail</th><th>Émetteur</th></tr></thead><tbody>' +
+        rows.map(function (r) {
+          return '<tr><td>' + fmtWhen(r.created_at) + '</td>' +
+            '<td><b>' + esc(r.recipient_name || '—') + '</b><br><small style="color:var(--muted)">' +
+              esc(r.to_phone || '') + (r.to_phone && r.to_email ? ' · ' : '') + esc(r.to_email || '') + '</small></td>' +
+            '<td><code>' + esc(r.code_user || '—') + '</code></td>' +
+            '<td>' + (r.channel === 'resend' ? 'Renvoi' : 'Création') + '</td>' +
+            '<td>' + modeBadge(r.whatsapp_mode) + '</td>' +
+            '<td>' + modeBadge(r.email_mode) + '</td>' +
+            '<td>' + esc(r.dispatched_by_name || '—') + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+
+  // ----- Matrice des profils & habilitations -----
+  function loadProfilesMatrix() {
+    return api('/api/v1/profiles-matrix').then(function (m) {
+      var roles = m.roles || [], perms = m.permissions || [], grid = m.grid || {};
+      var head = '<tr><th style="min-width:220px">Habilitation</th>' +
+        roles.map(function (r) { return '<th style="text-align:center">' + esc(r.label) + '</th>'; }).join('') + '</tr>';
+      var body = perms.map(function (p) {
+        return '<tr><td>' + esc(p.label) + '</td>' +
+          roles.map(function (r) {
+            var ok = grid[r.key] && grid[r.key][p.key];
+            return '<td style="text-align:center">' + (ok
+              ? '<span class="tag tag--ok">✓</span>'
+              : '<span style="color:var(--muted)">—</span>') + '</td>';
+          }).join('') + '</tr>';
+      }).join('');
+      $('profiles-matrix').innerHTML =
+        '<p class="hint" style="margin-bottom:14px">✓ = habilitation accordée par défaut à ce profil. ' +
+        'Ces droits sont attachés automatiquement à chaque nouvel utilisateur selon son rôle.</p>' +
+        '<div style="overflow-x:auto"><table class="tbl"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
+    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+
   // ----- Démarrage -----
   api('/api/v1/auth/me').then(function (d) {
     me = d;
@@ -478,6 +565,8 @@
     // Paramètres IMF : accessible à l'admin et à la direction.
     var canSee = ['admin_imf', 'direction'].indexOf(d.user.role) >= 0;
     var navS = $('nav-settings'); if (navS) navS.hidden = !canSee;
+    var navD = $('nav-dispatches'); if (navD) navD.hidden = !canSee;
+    var navP = $('nav-profiles'); if (navP) navP.hidden = !canSee;
     initSettingsHandlers();
     return Promise.all([loadUnits(), loadUsers(), loadTrial()]);
   }).then(function () {

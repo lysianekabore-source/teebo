@@ -50,6 +50,12 @@ services:
         value: "+22650321432"
       - key: TEEBO_EMAIL
         value: hello@teebo.africa
+      - key: PUBLIC_API_URL
+        value: https://teebo-api-p825.onrender.com
+      - key: PUBLIC_SITE_URL
+        value: https://www.teebo.africa
+      - key: DOC_LINK_SECRET
+        sync: false        # secret de signature des liens de facture publics
       - key: GOOGLE_CLIENT_ID
         sync: false        # optionnel
       - key: WHATSAPP_TOKEN

@@ -2,14 +2,24 @@ import express from 'express';
 import crypto from 'crypto';
 import { q, tx } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
-import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL } from '../notify.js';
+import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL,
+  waLink, mailtoLink, invoicePublicUrl, PUBLIC_SITE_URL } from '../notify.js';
 import { getBranding, renderInvoice, setDocumentCsp, moneyFcfa } from '../documents.js';
 import { buildInvoiceLines, LICENCE_CENTS } from '../pricing.js';
-import { msgAdminAccessCode, msgResendCode, msgRegeneratedCode, msgInvoice, APP_URL } from '../messages.js';
+import { buildProfilesMatrix } from '../permissions.js';
+import { TRIAL_BILLING_NOTE } from '../pricing.js';
+import { defaultPermissionKeysForRole } from '../permissions.js';
 
 const router = express.Router();
 
 router.use(authenticate, requireRole('teebo_admin'));
+
+// --- Matrice des profils & habilitations par défaut (référentiel partagé) ---
+// Même matrice que celle de l'espace IMF : l'administrateur teebo la consulte
+// comme standard appliqué à la création des utilisateurs de chaque IMF.
+router.get('/profiles-matrix', (_req, res) => {
+  res.json(buildProfilesMatrix());
+});
 
 // --- Profil de l'administrateur teebo --------------------------------------
 router.get('/me', async (req, res) => {
@@ -66,10 +76,10 @@ router.post('/requests/:id/approve', async (req, res, next) => {
       // et enregistrement de la facture émise au nom de l'IMF. On reprend le
       // détail tarifaire de la demande : licence (frais unique) + abonnement,
       // la remise éventuelle du cycle annuel, puis la TVA du tenant.
-      const licenceCents = r.licence_cents != null ? Number(r.licence_cents) : LICENCE_CENTS;
+      const licenceCents = r.licence_cents != null ? r.licence_cents : LICENCE_CENTS;
       const subscriptionCents = r.subscription_cents != null
-        ? Number(r.subscription_cents) : Number(r.proforma_amount_cents || 0);
-      const discountCents = Number(r.discount_cents || 0);
+        ? r.subscription_cents : (r.proforma_amount_cents || 0);
+      const discountCents = r.discount_cents || 0;
       const subtotalCents = licenceCents + subscriptionCents;       // HT avant remise
       const netCents = Math.max(0, subtotalCents - discountCents);  // HT après remise
       const setRow = (await c.query(
@@ -82,12 +92,13 @@ router.post('/requests/:id/approve', async (req, res, next) => {
       const inv = (await c.query(
         `INSERT INTO invoice(imf_id, invoice_no, kind, request_id, plan_code, plan_label,
              subtotal_cents, discount_cents, vat_rate_bp, vat_cents, total_cents, currency,
-             status, issued_at, proforma_no, created_by)
-         VALUES ($1,$2,'definitive',$3,$4,$5,$6,$7,$8,$9,$10,'XOF','emise',now(),$11,$12)
+             status, issued_at, proforma_no, notes, created_by)
+         VALUES ($1,$2,'definitive',$3,$4,$5,$6,$7,$8,$9,$10,'XOF','emise',now(),$11,$12,$13)
          RETURNING id, invoice_no`,
         [r.imf_id, invoiceNo, r.id, r.plan_code,
          'Abonnement teeBo — ' + (planRow ? planRow.label : (r.plan_code || '')),
-         subtotalCents, discountCents, vatBp, vatCents, totalCents, r.proforma_no, req.user.id]
+         subtotalCents, discountCents, vatBp, vatCents, totalCents, r.proforma_no,
+         TRIAL_BILLING_NOTE, req.user.id]
       )).rows[0];
 
       // Création de l'accès admin IMF avec un code d'accès (mot de passe à créer)
@@ -100,18 +111,46 @@ router.post('/requests/:id/approve', async (req, res, next) => {
          ON CONFLICT (imf_id,email) DO UPDATE SET code_user=EXCLUDED.code_user
          RETURNING id, code_user`, [r.imf_id, code, r.admin_name, r.requester_position, imf.email]
       )).rows[0];
-      return { code: user.code_user, imfCode: imf.code_imf, whatsapp: imf.whatsapp, email: imf.email,
+      // Habilitations par défaut de l'administrateur IMF (profil admin_imf).
+      for (const key of defaultPermissionKeysForRole('admin_imf')) {
+        await c.query(
+          `INSERT INTO user_permission(imf_id, user_id, permission_key, allowed, source)
+           VALUES ($1,$2,$3,true,'default')
+           ON CONFLICT (user_id, permission_key) DO NOTHING`,
+          [r.imf_id, user.id, key]);
+      }
+      return { code: user.code_user, imfCode: imf.code_imf, whatsapp: imf.whatsapp,
+               phone_main: imf.phone_main, email: imf.email,
                invoiceId: inv.id, invoiceNo: inv.invoice_no, totalCents };
     });
 
     // Notification WhatsApp + e-mail à l'IMF (code d'accès + essai 30 jours)
-    const msg = msgAdminAccessCode({ imfCode: out.imfCode, code: out.code, invoiceNo: out.invoiceNo });
-    await notifyWhatsApp(out.whatsapp, msg);
-    await notifyEmail(out.email, 'Votre accès teebo est approuvé (essai 30 jours)', msg);
+    const invoiceUrl = invoicePublicUrl(out.invoiceId);
+    const subject = 'Votre accès teebo est approuvé (essai 30 jours)';
+    const msg = `teebo: votre accès à l'essai gratuit de 30 jours est approuvé. ` +
+      `Code d'accès admin (IMF ${out.imfCode}) : ${out.code}. ` +
+      `Facture définitive ${out.invoiceNo} : ${invoiceUrl} . ` +
+      `Connectez-vous sur ${PUBLIC_SITE_URL} et créez immédiatement votre mot de passe.`;
+    const waTo = out.whatsapp || out.phone_main;
+    const resWa = await notifyWhatsApp(waTo, msg);
+    const resMail = await notifyEmail(out.email, subject, msg);
     await notifyWhatsApp(TEEBO_WHATSAPP, `Demande ${req.params.id} approuvée. Code admin: ${out.code}`);
 
     res.json({ ok: true, code_user: out.code, imf_code: out.imfCode,
-      invoice_no: out.invoiceNo, invoice_url: `/api/v1/teebo/invoices/${out.invoiceId}.pdf` });
+      invoice_no: out.invoiceNo, invoice_url: `/api/v1/teebo/invoices/${out.invoiceId}.pdf`,
+      // Destinataire + liens d'envoi manuel (WhatsApp « click-to-chat » / mailto)
+      // garantis même sans API Cloud ni SMTP, pour que l'admin puisse TOUJOURS
+      // transmettre le code et la facture.
+      send: {
+        whatsapp: waTo || null,
+        email: out.email || null,
+        message: msg,
+        invoice_public_url: invoiceUrl,
+        wa_link: waTo ? waLink(waTo, msg) : null,
+        mailto_link: out.email ? mailtoLink(out.email, subject, msg) : null,
+        auto_sent: resWa.mode !== 'dev' || resMail.mode !== 'dev'
+      }
+    });
   } catch (e) { next(e); }
 });
 
@@ -154,38 +193,6 @@ router.get('/invoices/:id.pdf', async (req, res, next) => {
     });
     setDocumentCsp(res);
     res.type('html').send(html);
-  } catch (e) { next(e); }
-});
-
-// --- Envoi de la facture PROFORMA au client (WhatsApp + e-mail) ------------
-router.post('/requests/:id/send-proforma', async (req, res, next) => {
-  try {
-    const r = (await q('SELECT * FROM access_request WHERE id=$1', [req.params.id])).rows[0];
-    if (!r || !r.proforma_no) return res.status(404).json({ error: 'proforma_not_found' });
-    const imf = (await q('SELECT name, whatsapp, phone_main, email FROM imf WHERE id=$1', [r.imf_id])).rows[0] || {};
-    const url = `${APP_URL}/api/v1/requests/${r.id}/proforma.pdf`;
-    const msg = msgInvoice({ kind: 'proforma', invoiceNo: r.proforma_no, imfName: imf.name, url });
-    await notifyWhatsApp(imf.whatsapp || imf.phone_main, msg);
-    await notifyEmail(imf.email, `teebo — facture proforma ${r.proforma_no}`, msg);
-    res.json({ ok: true, proforma_no: r.proforma_no, sent_to: imf.email, url });
-  } catch (e) { next(e); }
-});
-
-// --- Envoi de la facture DÉFINITIVE au client (WhatsApp + e-mail) -----------
-router.post('/requests/:id/send-invoice', async (req, res, next) => {
-  try {
-    const r = (await q('SELECT * FROM access_request WHERE id=$1', [req.params.id])).rows[0];
-    if (!r) return res.status(404).json({ error: 'not_found' });
-    const inv = (await q(
-      `SELECT * FROM invoice WHERE request_id=$1 AND kind='definitive' ORDER BY created_at DESC LIMIT 1`,
-      [r.id])).rows[0];
-    if (!inv) return res.status(409).json({ error: 'no_invoice', message: 'Aucune facture définitive : approuvez d’abord la demande.' });
-    const imf = (await q('SELECT name, whatsapp, phone_main, email FROM imf WHERE id=$1', [r.imf_id])).rows[0] || {};
-    const url = `${APP_URL}/api/v1/requests/invoice/${inv.id}.pdf`;
-    const msg = msgInvoice({ kind: 'definitive', invoiceNo: inv.invoice_no, imfName: imf.name, url });
-    await notifyWhatsApp(imf.whatsapp || imf.phone_main, msg);
-    await notifyEmail(imf.email, `teebo — facture ${inv.invoice_no}`, msg);
-    res.json({ ok: true, invoice_no: inv.invoice_no, sent_to: imf.email, url });
   } catch (e) { next(e); }
 });
 
@@ -274,10 +281,22 @@ router.post('/imfs/:id/regenerate-code', async (req, res, next) => {
       return { code, email: admin.email, imfCode: imf.code_imf,
         whatsapp: imf.whatsapp, phone: imf.phone_main };
     });
-    const msg = msgRegeneratedCode({ imfCode: out.imfCode, code: out.code });
-    await notifyWhatsApp(out.whatsapp || out.phone, msg);
-    await notifyEmail(out.email, 'Votre nouveau code d\'accès teebo', msg);
-    res.json({ ok: true, code_user: out.code, sent_to: out.email });
+    const msg = `teebo: votre nouveau code d'accès administrateur (IMF ${out.imfCode}) : ${out.code}. ` +
+      `Connectez-vous sur ${PUBLIC_SITE_URL} et créez votre mot de passe via « Premier accès ».`;
+    const subject = 'Votre nouveau code d\'accès teebo';
+    const waTo = out.whatsapp || out.phone;
+    const resWa = await notifyWhatsApp(waTo, msg);
+    const resMail = await notifyEmail(out.email, subject, msg);
+    res.json({ ok: true, code_user: out.code, sent_to: out.email,
+      send: {
+        whatsapp: waTo || null,
+        email: out.email || null,
+        message: msg,
+        wa_link: waTo ? waLink(waTo, msg) : null,
+        mailto_link: out.email ? mailtoLink(out.email, subject, msg) : null,
+        auto_sent: resWa.mode !== 'dev' || resMail.mode !== 'dev'
+      }
+    });
   } catch (e) { next(e); }
 });
 
@@ -290,10 +309,22 @@ router.post('/imfs/:id/resend-code', async (req, res, next) => {
       `SELECT id, code_user, email FROM app_user WHERE imf_id=$1 AND role='admin_imf' ORDER BY created_at ASC LIMIT 1`,
       [imf.id])).rows[0];
     if (!admin || !admin.code_user) return res.status(409).json({ error: 'no_code' });
-    const msg = msgResendCode({ imfCode: imf.code_imf, code: admin.code_user });
-    await notifyWhatsApp(imf.whatsapp || imf.phone_main, msg);
-    await notifyEmail(admin.email, 'Rappel : votre code d\'accès teebo', msg);
-    res.json({ ok: true, code_user: admin.code_user, sent_to: admin.email });
+    const msg = `teebo: rappel de votre code d'accès administrateur (IMF ${imf.code_imf}) : ${admin.code_user}. ` +
+      `Connectez-vous sur ${PUBLIC_SITE_URL} et créez votre mot de passe.`;
+    const subject = 'Rappel : votre code d\'accès teebo';
+    const waTo = imf.whatsapp || imf.phone_main;
+    const resWa = await notifyWhatsApp(waTo, msg);
+    const resMail = await notifyEmail(admin.email, subject, msg);
+    res.json({ ok: true, code_user: admin.code_user, sent_to: admin.email,
+      send: {
+        whatsapp: waTo || null,
+        email: admin.email || null,
+        message: msg,
+        wa_link: waTo ? waLink(waTo, msg) : null,
+        mailto_link: admin.email ? mailtoLink(admin.email, subject, msg) : null,
+        auto_sent: resWa.mode !== 'dev' || resMail.mode !== 'dev'
+      }
+    });
   } catch (e) { next(e); }
 });
 
@@ -354,79 +385,6 @@ router.get('/audit', async (_req, res, next) => {
         ORDER BY ar.decided_at DESC LIMIT 100`
     );
     res.json({ audit: rows });
-  } catch (e) { next(e); }
-});
-
-// --- Suivi des échéances d'abonnement (annuel / mensuel) -------------------
-// Vue dédiée au tableau de bord teebo : pour chaque IMF, cycle de facturation,
-// montant d'abonnement, début (1re facture définitive ou fin d'essai) et
-// PROCHAINE ÉCHÉANCE calculée selon le cycle. Pendant l'essai, l'échéance est la
-// fin d'essai ; ensuite elle avance de 1 mois (mensuel) ou 12 mois (annuel).
-router.get('/subscriptions', async (_req, res, next) => {
-  try {
-    const { rows } = await q(
-      `SELECT i.id, i.code_imf, i.name, i.status, i.trial_ends_at, i.created_at,
-              ar.billing_cycle, ar.subscription_cents, ar.discount_cents, ar.plan_code,
-              inv.issued_at AS invoice_issued_at, inv.total_cents, inv.invoice_no,
-              inv.id AS invoice_id
-         FROM imf i
-         LEFT JOIN LATERAL (
-              SELECT billing_cycle, subscription_cents, discount_cents, plan_code
-                FROM access_request a
-               WHERE a.imf_id = i.id AND a.billing_cycle IS NOT NULL
-               ORDER BY a.created_at DESC LIMIT 1) ar ON true
-         LEFT JOIN LATERAL (
-              SELECT id, issued_at, total_cents, invoice_no
-                FROM invoice v
-               WHERE v.imf_id = i.id AND v.kind = 'definitive'
-               ORDER BY v.created_at DESC LIMIT 1) inv ON true
-        WHERE i.code_imf <> 'TBO-SYS-000000'
-        ORDER BY i.created_at DESC`
-    );
-    const now = Date.now();
-    const DAY = 86400000;
-    const subs = rows.map((r) => {
-      const cycle = r.billing_cycle || 'mensuel';
-      const months = cycle === 'annuel' ? 12 : 1;
-      // Base de départ : date de la 1re facture définitive, sinon fin d'essai.
-      const start = r.invoice_issued_at ? new Date(r.invoice_issued_at)
-        : (r.trial_ends_at ? new Date(r.trial_ends_at) : new Date(r.created_at));
-      let nextDue;
-      if (r.status === 'trial' && r.trial_ends_at) {
-        nextDue = new Date(r.trial_ends_at);
-      } else {
-        nextDue = new Date(start.getTime());
-        // On avance par pas de `months` jusqu'à dépasser aujourd'hui.
-        let guard = 0;
-        while (nextDue.getTime() <= now && guard < 600) { nextDue.setMonth(nextDue.getMonth() + months); guard++; }
-      }
-      const daysLeft = nextDue ? Math.ceil((nextDue.getTime() - now) / DAY) : null;
-      return {
-        id: r.id, code_imf: r.code_imf, name: r.name, status: r.status,
-        billing_cycle: cycle, plan_code: r.plan_code,
-        subscription_cents: r.subscription_cents != null ? Number(r.subscription_cents) : null,
-        discount_cents: r.discount_cents != null ? Number(r.discount_cents) : 0,
-        total_cents: r.total_cents != null ? Number(r.total_cents) : null,
-        invoice_no: r.invoice_no || null,
-        invoice_id: r.invoice_id || null,
-        trial_ends_at: r.trial_ends_at,
-        next_due_at: nextDue ? nextDue.toISOString() : null,
-        days_left: daysLeft,
-        overdue: daysLeft != null && daysLeft < 0
-      };
-    });
-    // Récapitulatif par cycle (pour les cartes de stats).
-    const recap = {
-      annuel: subs.filter((s) => s.billing_cycle === 'annuel').length,
-      mensuel: subs.filter((s) => s.billing_cycle === 'mensuel').length,
-      due_30d: subs.filter((s) => s.days_left != null && s.days_left >= 0 && s.days_left <= 30).length,
-      overdue: subs.filter((s) => s.overdue).length,
-      mrr_cents: subs.filter((s) => s.status === 'active' && s.subscription_cents)
-        .reduce((acc, s) => acc + (s.billing_cycle === 'annuel'
-          ? Math.round((s.subscription_cents - (s.discount_cents || 0)) / 12)
-          : s.subscription_cents), 0)
-    };
-    res.json({ subscriptions: subs, recap });
   } catch (e) { next(e); }
 });
 

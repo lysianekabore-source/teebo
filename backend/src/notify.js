@@ -1,4 +1,5 @@
 import https from 'https';
+import crypto from 'crypto';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -15,6 +16,48 @@ const require = createRequire(import.meta.url);
 
 export const TEEBO_WHATSAPP = process.env.TEEBO_WHATSAPP || '+22650321432';
 export const TEEBO_EMAIL = process.env.TEEBO_EMAIL || 'hello@teebo.africa';
+
+// URL publique de l'API (backend Render) : sert à construire des liens
+// ABSOLUS (facture...) utilisables depuis WhatsApp ou un e-mail.
+export const PUBLIC_API_URL = (process.env.PUBLIC_API_URL || process.env.PUBLIC_BASE_URL ||
+  'https://teebo-api-p825.onrender.com').replace(/\/+$/, '');
+// Site public teebo (page de connexion de l'IMF).
+export const PUBLIC_SITE_URL = (process.env.PUBLIC_SITE_URL || 'https://www.teebo.africa').replace(/\/+$/, '');
+
+/**
+ * Lien « click-to-chat » WhatsApp (https://wa.me/<numero>?text=...).
+ * Fonctionne SANS compte WhatsApp Business / API Cloud : il ouvre
+ * directement WhatsApp (appli ou web) avec le message pré-rempli, prêt
+ * à envoyer. C'est le moyen de secours garanti pour l'administrateur teebo.
+ */
+export function waLink(toPhone, message) {
+  const digits = String(toPhone || '').replace(/[^0-9]/g, '');
+  return `https://wa.me/${digits}?text=${encodeURIComponent(message || '')}`;
+}
+
+/** Lien mailto: pré-rempli (fonctionne sans SMTP, via le client mail de l'admin). */
+export function mailtoLink(toEmail, subject, body) {
+  return `mailto:${encodeURIComponent(toEmail || '')}` +
+    `?subject=${encodeURIComponent(subject || '')}&body=${encodeURIComponent(body || '')}`;
+}
+
+/** Jeton HMAC court pour sécuriser un lien de document public (facture). */
+function docSecret() {
+  return process.env.DOC_LINK_SECRET || process.env.TEEBO_ADMIN_PASSWORD || 'teebo-doc-link-secret';
+}
+export function signDocToken(id) {
+  return crypto.createHmac('sha256', docSecret()).update(String(id)).digest('hex').slice(0, 24);
+}
+export function verifyDocToken(id, token) {
+  const expected = signDocToken(id);
+  const a = Buffer.from(String(token || ''));
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+/** Lien ABSOLU et PUBLIC (tokenisé) vers la facture définitive, ouvrable par l'IMF. */
+export function invoicePublicUrl(invoiceId) {
+  return `${PUBLIC_API_URL}/api/v1/requests/invoices/${invoiceId}.pdf?t=${signDocToken(invoiceId)}`;
+}
 
 let transporter = null;
 function getTransporter() {
@@ -41,7 +84,9 @@ export async function notifyWhatsApp(toPhone, message) {
   const phoneId = process.env.WHATSAPP_PHONE_ID;
   if (!token || !phoneId) {
     console.log(`[whatsapp:DEV] -> ${toPhone}: ${message}`);
-    return { ok: true, mode: 'dev' };
+    // Mode dégradé (API Cloud non configurée) : on renvoie un lien
+    // « click-to-chat » pour permettre un envoi manuel immédiat.
+    return { ok: true, mode: 'dev', link: waLink(toPhone, message) };
   }
   const body = JSON.stringify({
     messaging_product: 'whatsapp',
@@ -57,7 +102,8 @@ export async function notifyEmail(toEmail, subject, text) {
   const t = getTransporter();
   if (!t) {
     console.log(`[email:DEV] -> ${toEmail} | ${subject}\n${text}`);
-    return { ok: true, mode: 'dev' };
+    // Mode dégradé (SMTP non configuré) : lien mailto pour envoi manuel.
+    return { ok: true, mode: 'dev', link: mailtoLink(toEmail, subject, text) };
   }
   const from = process.env.SMTP_FROM || 'teebo <no-reply@teebo.africa>';
   try {
