@@ -153,7 +153,7 @@ async function buildAccessCodeSend(imfId, user, ctx = {}) {
     '',
     `Votre accès à l'application ${imfName} (via teebo) est créé.`,
     `Code d'accès : ${user.code_user}`,
-    `Connexion : ${PUBLIC_SITE_URL}`,
+    `Connexion : https://teebo-imf.netlify.app/login`,
     `Dès votre première connexion, créez immédiatement votre mot de passe.`,
     '',
     `-- ${imfName}`,

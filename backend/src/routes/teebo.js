@@ -281,7 +281,7 @@ router.post('/imfs/:id/regenerate-code', async (req, res, next) => {
         whatsapp: imf.whatsapp, phone: imf.phone_main };
     });
     const msg = `teebo: votre nouveau code d'accès administrateur (IMF ${out.imfCode}) : ${out.code}. ` +
-      `Connectez-vous sur ${PUBLIC_SITE_URL} et créez votre mot de passe via « Premier accès ».`;
+      `Connectez-vous sur https://teebo-imf.netlify.app/login et créez votre mot de passe via « Premier accès ».`;
     const subject = 'Votre nouveau code d\'accès teebo';
     const waTo = out.whatsapp || out.phone;
     const resWa = await notifyWhatsApp(waTo, msg);
@@ -309,7 +309,7 @@ router.post('/imfs/:id/resend-code', async (req, res, next) => {
       [imf.id])).rows[0];
     if (!admin || !admin.code_user) return res.status(409).json({ error: 'no_code' });
     const msg = `teebo: rappel de votre code d'accès administrateur (IMF ${imf.code_imf}) : ${admin.code_user}. ` +
-      `Connectez-vous sur ${PUBLIC_SITE_URL} et créez votre mot de passe.`;
+      `Connectez-vous sur https://teebo-imf.netlify.app/login et créez votre mot de passe.`;
     const subject = 'Rappel : votre code d\'accès teebo';
     const waTo = imf.whatsapp || imf.phone_main;
     const resWa = await notifyWhatsApp(waTo, msg);
