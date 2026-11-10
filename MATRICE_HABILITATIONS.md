@@ -104,3 +104,32 @@ Légende : **L** = lecture · **E** = écriture/création · **V** = validation 
 Le groupe de droits appliqué à chaque route est directement lisible dans
 `backend/src/habilitations.js` (constantes `ADMIN`, `SUPERVISION`, `READ`,
 `OBJ_MANAGERS`, `OBJ_READERS`, `OBJ_BRANCH`, etc.).
+
+## Vague 17 — Séparation des tâches (anti-fraude) & couverture totale
+
+**Accès complet de la Direction Générale corrigé.** Le rôle `superadmin`
+(Directeur Général, DGA) est désormais court-circuité comme `admin_imf` /
+`direction` : plus aucun module protégé par `requirePermission` ne bloque la
+DG (cause racine : l'ancien test comparait des littéraux et ignorait les
+rôles-postes).
+
+**Séparation coffre / comptabilité.** Nouvelle habilitation `vault.manage`
+(mouvements de caisse & coffre physique), distincte de `accounts.manage`
+(écritures comptables) :
+
+- `vault.manage` : Chef de caisse, Chef d'agence, Trésorier, CFO, Directeur
+  des Opérations. Les routes `/vault/movements` l'exigent désormais.
+- `accounts.manage` : réservée à la comptabilité (Comptable, Chef Comptable,
+  CFO). Le Chef de caisse et le Chef d'agence ne passent plus d'écritures
+  comptables.
+
+**Fin de l'auto-approbation en caisse.** Le Caissier perd `cash.approve` :
+l'approbation des versements/retraits et les arrêtés de caisse relèvent d'un
+supérieur (Chef de caisse, Chef d'agence, Directeur des Opérations). Un même
+agent ne peut plus saisir ET approuver le même flux.
+
+**Couverture de TOUS les postes.** Chaque poste du catalogue (42 postes)
+dispose de ses habilitations par défaut (principe du moindre privilège) :
+auditeurs/contrôleurs en lecture seule, conformité, SI & sécurité, crédit,
+opérations, finance/trésorerie, RH & logistique. Voir `db/schema_v16.sql`
+et `db/schema_v17.sql`.
