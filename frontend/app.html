@@ -23,6 +23,13 @@
     <button class="nav-item" data-view="users"><span class="ic">☺</span> Personnel</button>
     <button class="nav-item" data-view="dispatches" id="nav-dispatches" hidden><span class="ic">✉</span> Suivi des envois</button>
     <button class="nav-item" data-view="profiles" id="nav-profiles" hidden><span class="ic">▦</span> Habilitations</button>
+    <button class="nav-item" data-view="credits" id="nav-credits" hidden><span class="ic">✔</span> Validation crédit</button>
+    <button class="nav-item" data-view="clients" id="nav-clients" hidden><span class="ic">☷</span> Clients</button>
+    <button class="nav-item" data-view="caisse" id="nav-caisse" hidden><span class="ic">▣</span> Caisse</button>
+    <button class="nav-item" data-view="coffre" id="nav-coffre" hidden><span class="ic">▦</span> Coffre</button>
+    <button class="nav-item" data-view="compta" id="nav-compta" hidden><span class="ic">∑</span> Comptabilité</button>
+    <button class="nav-item" data-view="recouvrement" id="nav-recouvrement" hidden><span class="ic">⚑</span> Impayés &amp; recouvrement</button>
+    <button class="nav-item" data-view="audit" id="nav-audit" hidden><span class="ic">☰</span> Journal d’audit</button>
     <button class="nav-item" data-view="settings" id="nav-settings" hidden><span class="ic">⚙</span> Paramètres IMF</button>
     <div class="side__label">Sécurité &amp; accès</div>
     <button class="nav-item" data-view="security"><span class="ic">⛨</span> Mon accès</button>
@@ -234,17 +241,137 @@
       </div>
     </section>
 
-    <!-- MATRICE DES HABILITATIONS -->
+    <!-- GESTION DES HABILITATIONS (éditable) -->
     <section class="view" id="view-profiles" hidden>
       <div class="topbar">
         <div>
-          <h1>Profils &amp; habilitations</h1>
-          <p>Habilitations accordées par défaut à chaque profil. Elles sont attachées automatiquement à la création d’un utilisateur.</p>
+          <h1>Habilitations &amp; profils</h1>
+          <p>Cochez / décochez les habilitations accordées par défaut à chaque poste. Créez de nouveaux postes et de nouvelles habilitations propres à votre IMF.</p>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--ghost" id="btn-new-perm" type="button">+ Habilitation</button>
+          <button class="btn" id="btn-new-position" type="button">+ Poste / profil</button>
         </div>
       </div>
       <div class="card">
-        <div id="profiles-matrix"><div class="empty">Chargement…</div></div>
+        <div id="access-matrix"><div class="empty">Chargement…</div></div>
       </div>
+    </section>
+
+    <!-- VALIDATION FINALE DES CRÉDITS -->
+    <section class="view" id="view-credits" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Validation finale des crédits</h1>
+          <p>Dossiers en attente d’octroi définitif. Réservé aux postes habilités (DG, DGA, Directeur Crédit, Chef Octroi par défaut).</p>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--ghost" id="btn-credits-refresh" type="button">↻ Actualiser</button>
+        </div>
+      </div>
+      <div class="card">
+        <div id="credits-queue"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- CLIENTS : modifier la fiche -->
+    <section class="view" id="view-clients" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Clients</h1>
+          <p>Consulter et modifier les fiches clients de votre institution. Réservé aux postes habilités à la gestion client.</p>
+        </div>
+        <div class="topbar__actions"><button class="btn btn--ghost" id="btn-clients-refresh" type="button">↻ Actualiser</button></div>
+      </div>
+      <div class="card"><div id="clients-table"><div class="empty">Chargement…</div></div></div>
+    </section>
+
+    <!-- CAISSE : dépassement de plafond + arrêté de caisse -->
+    <section class="view" id="view-caisse" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Caisse</h1>
+          <p>Valider les dépassements de plafond et enregistrer les arrêtés de caisse (rapprochement théorique / réel).</p>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--ghost" id="btn-overrun-new" type="button">+ Demande de dépassement</button>
+          <button class="btn btn--dark" id="btn-closing-new" type="button">+ Arrêté de caisse</button>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Dépassements de plafond</h2></div>
+        <div id="overrun-table"><div class="empty">Chargement…</div></div>
+      </div>
+      <div class="card">
+        <div class="toolbar"><h2 style="font-size:16px">Arrêtés de caisse &amp; rapprochement</h2></div>
+        <div id="closing-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- COFFRE : approvisionner / délester -->
+    <section class="view" id="view-coffre" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Coffre</h1>
+          <p>Approvisionner ou délester le coffre. Chaque mouvement est tracé et le solde est recalculé automatiquement.</p>
+        </div>
+        <div class="topbar__actions"><button class="btn btn--dark" id="btn-vault-new" type="button">+ Mouvement de coffre</button></div>
+      </div>
+      <div class="grid grid--stats" id="vault-kpis"></div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Mouvements du coffre</h2></div>
+        <div id="vault-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- COMPTABILITÉ : écritures, clôture, états -->
+    <section class="view" id="view-compta" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Comptabilité</h1>
+          <p>Saisir les écritures (charges, taxes, produits), clôturer une période et consulter les états financiers.</p>
+        </div>
+        <div class="topbar__actions">
+          <label style="font-size:13px;color:var(--muted)">Période
+            <input id="compta-period" type="month" style="margin-left:6px">
+          </label>
+          <button class="btn btn--ghost" id="btn-entry-new" type="button">+ Écriture</button>
+          <button class="btn btn--dark" id="btn-period-close" type="button">Clôturer la période</button>
+        </div>
+      </div>
+      <div class="grid grid--stats" id="compta-kpis"></div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Écritures comptables</h2></div>
+        <div id="entries-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- IMPAYÉS & RECOUVREMENT -->
+    <section class="view" id="view-recouvrement" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Impayés &amp; recouvrement</h1>
+          <p>Suivre les dossiers en retard et enregistrer les actions de recouvrement (relance, promesse, échéancier, encaissement).</p>
+        </div>
+        <div class="topbar__actions"><button class="btn btn--ghost" id="btn-arrears-refresh" type="button">↻ Actualiser</button></div>
+      </div>
+      <div class="grid grid--stats" id="arrears-kpis"></div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Dossiers en impayé</h2></div>
+        <div id="arrears-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- JOURNAL D'AUDIT -->
+    <section class="view" id="view-audit" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Journal d’audit</h1>
+          <p>Traçabilité des actions sensibles de l’institution. Réservé aux postes habilités à la lecture de l’audit.</p>
+        </div>
+        <div class="topbar__actions"><button class="btn btn--ghost" id="btn-audit-refresh" type="button">↻ Actualiser</button></div>
+      </div>
+      <div class="card"><div id="audit-table"><div class="empty">Chargement…</div></div></div>
     </section>
   </main>
 </div>

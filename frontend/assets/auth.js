@@ -36,6 +36,8 @@
       locked: 'Trop de tentatives. Réessayez dans quelques minutes.',
       user_disabled: 'Ce compte est désactivé.',
       email_not_registered: 'Cet e-mail n’est pas enregistré. Contactez votre administrateur.',
+      missing_token: 'Lien de réinitialisation incomplet. Redemandez un lien.',
+      invalid_or_expired_token: 'Ce lien de réinitialisation est invalide ou a expiré. Redemandez-en un nouveau.',
       forbidden: 'Accès non autorisé.'
     };
     return m[code] || 'Une erreur est survenue. Réessayez.';
@@ -51,7 +53,7 @@
     t.addEventListener('click', function () {
       document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
       t.classList.add('active'); hide();
-      ['form-login','form-activate','form-change','form-2fa'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
+      ['form-login','form-activate','form-change','form-2fa','form-forgot','form-reset'].forEach(function (f) { if ($(f)) $(f).hidden = true; });
       var map = { login: 'form-login', activate: 'form-activate', 'change': 'form-change' };
       var target = $(map[t.dataset.tab]);
       if (target) target.hidden = false;
@@ -238,5 +240,87 @@
   if ($('btn-enroll-done')) {
     $('btn-enroll-done').addEventListener('click', function () { routeAfterLogin(); });
   }
+
+  // --- Mot de passe oublié / réinitialisation -----------------------------
+  var RESET_TOKEN = null;
+
+  function showOnlyPane(id, keepTabs) {
+    if (!keepTabs) document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
+    ['form-login','form-activate','form-change','form-2fa','form-enroll','form-recovery-list','form-forgot','form-reset']
+      .forEach(function (f) { if ($(f)) $(f).hidden = (f !== id); });
+  }
+  function backToLogin() {
+    hide();
+    document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('active'); });
+    var lt = document.querySelector('.tab[data-tab="login"]'); if (lt) lt.classList.add('active');
+    showOnlyPane('form-login', true);
+    // Nettoie l'éventuel paramètre ?reset= de l'URL.
+    try { if (window.history && window.history.replaceState) window.history.replaceState(null, '', window.location.pathname); } catch (e) {}
+  }
+
+  var lf = $('link-forgot');
+  if (lf) lf.addEventListener('click', function (e) {
+    e.preventDefault(); hide();
+    if ($('forgot-links')) { $('forgot-links').hidden = true; $('forgot-links').textContent = ''; }
+    showOnlyPane('form-forgot');
+    try { $('forgot-id').focus(); } catch (err) {}
+  });
+  if ($('btn-forgot-back')) $('btn-forgot-back').addEventListener('click', backToLogin);
+  if ($('btn-reset-back')) $('btn-reset-back').addEventListener('click', backToLogin);
+
+  if ($('form-forgot')) $('form-forgot').addEventListener('submit', function (e) {
+    e.preventDefault(); hide();
+    var id = ($('forgot-id').value || '').trim();
+    if (!id) { show('Saisissez votre identifiant ou votre e-mail.', false); return; }
+    var b = e.target.querySelector('button[type=submit]'); b.disabled = true; var old = b.textContent; b.textContent = 'Envoi…';
+    post('/api/v1/auth/forgot-password', { identifier: id })
+      .then(function (d) {
+        b.disabled = false; b.textContent = old;
+        show((d && d.message) || 'Si un compte correspond, un lien vient d’être envoyé.', true);
+        // Mode dégradé (aucune passerelle automatique) : on affiche les liens
+        // « prêts à envoyer » pour permettre la réinitialisation manuelle.
+        var wrap = $('forgot-links');
+        if (wrap && d && d.dev_links && d.dev_links.length) {
+          wrap.textContent = '';
+          var p = document.createElement('p'); p.className = 'req';
+          p.textContent = 'Aucune passerelle automatique n’est configurée. Utilisez le(s) lien(s) ci-dessous pour transmettre la réinitialisation :';
+          wrap.appendChild(p);
+          d.dev_links.forEach(function (l) {
+            var a = document.createElement('a');
+            a.href = l.lien; a.textContent = (l.canal === 'whatsapp' ? 'Envoyer par WhatsApp' : 'Envoyer par e-mail');
+            a.style.display = 'block'; a.style.marginTop = '6px'; a.target = '_blank'; a.rel = 'noopener';
+            wrap.appendChild(a);
+          });
+          wrap.hidden = false;
+        }
+      })
+      .catch(function (err) { b.disabled = false; b.textContent = old; show(msgFr(err.message), false); });
+  });
+
+  if ($('form-reset')) $('form-reset').addEventListener('submit', function (e) {
+    e.preventDefault(); hide();
+    if ($('reset-new').value !== $('reset-confirm').value) { show('Les mots de passe ne correspondent pas.', false); return; }
+    if (!RESET_TOKEN) { show(msgFr('missing_token'), false); return; }
+    var b = e.target.querySelector('button[type=submit]'); b.disabled = true; var old = b.textContent; b.textContent = 'Réinitialisation…';
+    post('/api/v1/auth/reset-password', { token: RESET_TOKEN, new_password: $('reset-new').value })
+      .then(function (d) {
+        RESET_TOKEN = null;
+        backToLogin();
+        show((d && d.message) || 'Mot de passe réinitialisé. Connectez-vous avec votre nouveau mot de passe.', true);
+      })
+      .catch(function (err) { b.disabled = false; b.textContent = old; show(msgFr(err.message), false); });
+  });
+
+  // Arrivée depuis le lien reçu (…/login.html?reset=TOKEN) : on ouvre
+  // directement l'écran de choix d'un nouveau mot de passe.
+  (function initResetFromUrl() {
+    var m = /[?&]reset=([^&]+)/.exec(window.location.search || '');
+    if (!m) return;
+    try { RESET_TOKEN = decodeURIComponent(m[1]); } catch (e) { RESET_TOKEN = m[1]; }
+    if (!RESET_TOKEN) return;
+    showOnlyPane('form-reset');
+    show('Choisissez votre nouveau mot de passe.', true);
+    try { $('reset-new').focus(); } catch (e) {}
+  })();
 
 })();

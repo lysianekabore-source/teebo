@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { q, tx } from '../db.js';
-import { requireRole } from '../auth.js';
+import { requireRole, canViewTeamData } from '../auth.js';
 import { getSettings, readSettings, saveSettings, collectriceCashBalance,
   clientCollectedToday, CHANNELS_FR } from '../collecte.js';
 
@@ -19,6 +19,8 @@ const READ_ROLES = ['admin_imf','direction','department','service','agency','sta
 const WRITE_ROLES = ['admin_imf','direction'];
 const DECLARE_ROLES = ['agency','staff','service','department','admin_imf','direction'];
 const VALIDATE_ROLES = ['caissier','admin_imf','direction'];
+// Postes pouvant superviser des collectrices (rapports de caisse remontés).
+const SUP_REPORT_ROLES = ['admin_imf','direction','department','service','agency'];
 
 /* ------------------------------ Paramètres ------------------------------- */
 
@@ -137,8 +139,8 @@ r.post('/collecte/cash-deposits', requireRole(...DECLARE_ROLES), async (req, res
 
 /** Lister les versements (la collectrice voit les siens, la caissière/admin voit tout). */
 r.get('/collecte/cash-deposits', requireRole(...READ_ROLES), async (req, res, next) => {
-  const scope = (req.user.role === 'agency' || req.user.role === 'staff')
-    ? [req.user.imf_id, req.user.id] : [req.user.imf_id, null];
+  const scope = canViewTeamData(req.user.role)
+    ? [req.user.imf_id, null] : [req.user.imf_id, req.user.id];
   const status = req.query.status || null;
   const { rows } = await q(
     `SELECT cd.*, u.full_name AS collectrice_name, v.full_name AS validated_by_name
@@ -150,6 +152,35 @@ r.get('/collecte/cash-deposits', requireRole(...READ_ROLES), async (req, res, ne
       ORDER BY cd.created_at DESC LIMIT 200`,
     [scope[0], scope[1], status]);
   res.json({ cash_deposits: rows, channels: CHANNELS_FR });
+});
+
+/**
+ * RAPPORTS DE CAISSE REMONTÉS AU SUPERVISEUR.
+ * Une Collectrice mobile pousse ses rapports de caisse vers son superviseur :
+ * ce dernier voit ici les versements déclarés par les collectrices qu'il
+ * supervise. Le lien de supervision est déduit de la chaîne de collecte
+ * (client.superviseur_user_id = req.user.id -> collectrices rattachées),
+ * en respectant strictement le cloisonnement imf_id.
+ */
+r.get('/collecte/supervisor-reports', requireRole(...SUP_REPORT_ROLES), async (req, res, next) => {
+  try {
+    const status = req.query.status || null;
+    const { rows } = await q(
+      `SELECT cd.*, u.full_name AS collectrice_name, v.full_name AS validated_by_name
+         FROM cash_deposit cd
+         JOIN app_user u ON u.id = cd.collectrice_user_id
+         LEFT JOIN app_user v ON v.id = cd.validated_by
+        WHERE cd.imf_id=$1
+          AND cd.collectrice_user_id IN (
+                SELECT DISTINCT cl.collectrice_user_id
+                  FROM client cl
+                 WHERE cl.imf_id=$1 AND cl.superviseur_user_id=$2
+                   AND cl.collectrice_user_id IS NOT NULL)
+          AND ($3::text IS NULL OR cd.status=$3)
+        ORDER BY cd.created_at DESC LIMIT 300`,
+      [req.user.imf_id, req.user.id, status]);
+    res.json({ cash_deposits: rows, channels: CHANNELS_FR });
+  } catch (e) { next(e); }
 });
 
 /** Valider ou rejeter un versement (caissière / admin IMF). */
@@ -196,8 +227,8 @@ r.get('/collecte/receipts/:id', requireRole(...READ_ROLES), async (req, res, nex
 
 /** Derniers reçus de la collectrice (pratique pour retrouver un reçu). */
 r.get('/collecte/receipts', requireRole(...READ_ROLES), async (req, res) => {
-  const scope = (req.user.role === 'agency' || req.user.role === 'staff')
-    ? [req.user.imf_id, req.user.id] : [req.user.imf_id, null];
+  const scope = canViewTeamData(req.user.role)
+    ? [req.user.imf_id, null] : [req.user.imf_id, req.user.id];
   const { rows } = await q(
     `SELECT r.*, c.full_name AS client_name, c.code_client
        FROM receipt r LEFT JOIN client c ON c.id = r.client_id

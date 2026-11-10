@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
   // Applique les schémas dans l'ordre : socle puis extensions (VAGUE 7).
-  const schemaFiles = ['schema.sql', 'schema_v3.sql', 'schema_v4.sql', 'schema_v5.sql', 'schema_v6.sql', 'schema_v7.sql', 'schema_v8.sql', 'schema_v9.sql'];
+  const schemaFiles = ['schema.sql', 'schema_v3.sql', 'schema_v4.sql', 'schema_v5.sql', 'schema_v6.sql', 'schema_v7.sql', 'schema_v8.sql', 'schema_v9.sql', 'schema_v10.sql', 'schema_v11.sql', 'schema_v12.sql', 'schema_v13.sql', 'schema_v14.sql', 'schema_v15.sql', 'schema_v16.sql', 'schema_v17.sql'];
   for (const file of schemaFiles) {
     const schemaPath = path.resolve(__dirname, '../../db/' + file);
     if (!fs.existsSync(schemaPath)) {
@@ -61,6 +61,14 @@ async function main() {
   } else {
     console.log('Admin teebo déjà présent.');
   }
+
+  // Matérialise la structure organisationnelle (8 départements + services)
+  // dans l'arbre org_unit de CHAQUE tenant existant. Idempotent.
+  const tenants = await q('SELECT id FROM imf');
+  for (const t of tenants.rows) {
+    await q('SELECT fn_seed_org_structure($1)', [t.id]);
+  }
+  console.log(`Structure org matérialisée pour ${tenants.rows.length} tenant(s).`);
 
   await pool.end();
   console.log('Migration terminée.');

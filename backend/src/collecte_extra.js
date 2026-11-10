@@ -88,7 +88,7 @@ export async function listCollectrices(imfId) {
     `SELECT u.id, u.full_name, u.code_user, u.role,
             (SELECT COUNT(*) FROM client c WHERE c.collectrice_user_id=u.id) AS clients_affectes
        FROM app_user u
-      WHERE u.imf_id=$1 AND u.is_active AND u.role IN ('staff','agency','service')
+      WHERE u.imf_id=$1 AND u.is_active AND u.role IN ('staff','collectrice','customer_agent','agency','service')
       ORDER BY u.full_name`, [imfId]);
   return rows;
 }

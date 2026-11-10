@@ -24,6 +24,9 @@ import roundRoutes from './routes/round.js';
 import collecteRoutes from './routes/collecte.js';
 import collecte6Routes from './routes/collecte6.js';
 import objectiveRoutes from './routes/objectives.js';
+import structureRoutes from './routes/structure.js';
+import accessRoutes from './routes/access.js';
+import bankingRoutes from './routes/banking.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -52,6 +55,10 @@ app.use(cookieParser());
 // Limitation des tentatives (anti brute-force)
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });
 app.use('/api/v1/auth/login', loginLimiter);
+// « Mot de passe oublié » : limite plus stricte (anti-abus / anti e-mail bombing).
+const resetLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 8, standardHeaders: true, legacyHeaders: false });
+app.use('/api/v1/auth/forgot-password', resetLimiter);
+app.use('/api/v1/auth/reset-password', resetLimiter);
 
 // ----------------------------- API ----------------------------------------
 app.use('/api/v1/auth', authRoutes);
@@ -65,6 +72,10 @@ app.use('/api/v1', operationRoutes);               // opérations terrain + cré
 // clients.js afin que /clients/enroll, /clients/new, /clients/completeness…
 // ne soient pas capturés par la route paramétrée /clients/:id.
 app.use('/api/v1', enrollmentRoutes);
+// VAGUE 15 : opérations bancaires fonctionnelles (modif client, dépassement de
+// plafond, arrêté de caisse, coffre, écritures comptables, impayés/recouvrement).
+// Monté AVANT productRoutes pour que /credits/arrears prime sur /credits/:id.
+app.use('/api/v1', bankingRoutes);
 // Produits d'épargne IMF, frais (tenue de compte, collecte mobile, rattrapage),
 // retrait anticipé, demandes personnalisées et dossiers de crédit.
 // Monté AVANT clients.js / operations.js : /operations/deposit, /operations/withdraw-early,
@@ -83,6 +94,12 @@ app.use('/api/v1', collecte6Routes);
 // VAGUE 7 : module Objectifs hiérarchiques (DG -> Superviseur -> Collectrice),
 // contrôle de cohérence d'équipe + roll-up temps réel de la progression.
 app.use('/api/v1', objectiveRoutes);
+// VAGUE 11 : structure org fine (8 départements/services), matrice RBAC par
+// verbe et consultation de la piste d'audit immuable (IA anti-fraude).
+app.use('/api/v1', structureRoutes);
+// VAGUE 13 : habilitations éditables (catalogue custom, postes custom, toggles
+// par poste / par utilisateur) + garde de l'écran de validation finale crédit.
+app.use('/api/v1', accessRoutes);
 
 // ----------------------------- Frontend -----------------------------------
 const pub = path.resolve(__dirname, '../../frontend');

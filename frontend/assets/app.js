@@ -2,6 +2,8 @@
 (function () {
   'use strict';
   var me = null, units = [], users = [], unitToDelete = null;
+  // Catalogue des postes (chargé à la demande depuis /api/v1/positions).
+  var positions = [], posDepts = [], posServices = [], posByCode = {};
   var KIND_META = {
     direction: { label: 'Direction', short: 'DIR' },
     department: { label: 'Département', short: 'DEP' },
@@ -10,7 +12,12 @@
   };
   var KIND_ORDER = { direction: 1, department: 2, service: 3, agency: 4 };
   var ROLE_LABEL = { admin_imf: 'Administrateur IMF', direction: 'Direction', department: 'Département',
-    service: 'Service', agency: 'Agence', staff: 'Personnel' };
+    service: 'Service', agency: "Chef d'agence", staff: 'Personnel', superadmin: 'Direction Générale',
+    compliance_officer: 'Conformité', it_admin: 'Admin. Système', security_engineer: 'Sécurité SI',
+    credit_director: 'Direction Crédit', credit_analyst: 'Crédit', recovery_agent: 'Recouvrement',
+    operations_director: 'Direction Opérations', teller: 'Caisse / Guichet', customer_agent: 'Clientèle',
+    cfo: 'Direction Financière', treasurer: 'Trésorerie', accountant: 'Comptabilité', auditor: 'Audit',
+    hr_logistics_manager: 'RH & Logistique', office_staff: 'Support administratif', collectrice: 'Collecte' };
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -28,7 +35,10 @@
     bad_parent: 'Unité parente invalide.', bad_unit: 'Unité invalide.', missing_fields: 'Champs obligatoires manquants.',
     weak_password: 'Mot de passe trop faible (10 car., majuscule, minuscule, chiffre).', invalid_current_password: 'Mot de passe actuel incorrect.',
     password_change_required: 'Votre mot de passe doit être changé.', idle_timeout: 'Session expirée (30 min d’inactivité).',
-    session_expired: 'Session expirée.', invalid_session: 'Session invalide.', not_authenticated: 'Non connecté.' };
+    session_expired: 'Session expirée.', invalid_session: 'Session invalide.', not_authenticated: 'Non connecté.',
+    invalid_position: 'Poste invalide.', supervisor_required: 'Un superviseur est requis pour ce poste.',
+    invalid_supervisor: 'Le superviseur choisi doit être un Chef d’agence ou un Agent de crédit.',
+    bad_supervisor: 'Superviseur invalide.' };
   function fr(e) { return MSG[e] || 'Une erreur est survenue.'; }
 
   function guard(err) {
@@ -40,7 +50,7 @@
   }
 
   // ----- Navigation -----
-  var VIEWS = ['dash', 'org', 'users', 'dispatches', 'profiles', 'settings', 'security'];
+  var VIEWS = ['dash', 'org', 'users', 'dispatches', 'profiles', 'credits', 'clients', 'caisse', 'coffre', 'compta', 'recouvrement', 'audit', 'settings', 'security'];
   document.querySelectorAll('.nav-item').forEach(function (b) {
     b.addEventListener('click', function () { switchView(b.dataset.view); });
   });
@@ -50,7 +60,14 @@
     if (v === 'org') loadUnits();
     if (v === 'users') loadUsers();
     if (v === 'dispatches') loadDispatches();
-    if (v === 'profiles') loadProfilesMatrix();
+    if (v === 'profiles') loadAccessMatrix();
+    if (v === 'credits') loadCreditsQueue();
+    if (v === 'clients') loadClients();
+    if (v === 'caisse') loadCaisse();
+    if (v === 'coffre') loadVault();
+    if (v === 'compta') loadCompta();
+    if (v === 'recouvrement') loadArrears();
+    if (v === 'audit') loadAudit();
     if (v === 'settings') loadSettings();
     if (v === 'security') renderSession();
   }
@@ -175,28 +192,79 @@
       b.addEventListener('click', function () { var u = users.find(function (x) { return x.id === b.dataset.resend; }); if (u) resendCode(u); });
     });
   }
+  function loadPositions() {
+    if (positions.length) return Promise.resolve();
+    return api('/api/v1/positions').then(function (d) {
+      positions = d.positions || []; posDepts = d.departments || []; posServices = d.services || [];
+      posByCode = {}; positions.forEach(function (p) { posByCode[p.code] = p; });
+    });
+  }
+  // Options du poste, groupées Département › Service (optgroup imbriqué à plat).
+  function positionOptionsHtml() {
+    var svcLabel = {}; posServices.forEach(function (s) { svcLabel[s.code] = s.label; });
+    return posDepts.map(function (dp) {
+      var list = positions.filter(function (p) { return p.dept === dp.code; });
+      if (!list.length) return '';
+      var byService = {};
+      list.forEach(function (p) { (byService[p.service] = byService[p.service] || []).push(p); });
+      var inner = Object.keys(byService).map(function (sc) {
+        return byService[sc].map(function (p) {
+          var svc = svcLabel[sc] || sc;
+          return '<option value="' + p.code + '">' + esc(svc + ' — ' + p.label) + '</option>';
+        }).join('');
+      }).join('');
+      return '<optgroup label="' + esc(dp.label) + '">' + inner + '</optgroup>';
+    }).join('');
+  }
+  // Superviseurs éligibles pour un agent de collecte : Chef d'agence OU Agent de crédit.
+  function eligibleSupervisors() {
+    return users.filter(function (u) {
+      var p = posByCode[u.position_code];
+      return p && p.supervisesCollectors;
+    });
+  }
   function userModal() {
-    var roleOpts = ['direction','department','service','agency','staff'];
-    openModal(
+    loadPositions().then(function () {
+      openModal(
       '<h3>Nouvel utilisateur</h3><p class="sub">Le code d’accès sera envoyé par e-mail et WhatsApp.</p>' +
       '<div class="fld"><label for="u-name">Nom complet</label><input id="u-name"></div>' +
-      '<div class="form-grid"><div class="fld"><label for="u-pos">Poste</label><input id="u-pos"></div>' +
-      '<div class="fld"><label for="u-role">Rôle</label><select id="u-role">' + roleOpts.map(function (r) { return '<option value="' + r + '">' + ROLE_LABEL[r] + '</option>'; }).join('') + '</select></div></div>' +
+      '<div class="fld"><label for="u-pos">Poste occupé</label><select id="u-pos"><option value="">— Choisir un poste —</option>' +
+        positionOptionsHtml() + '</select>' +
+        '<small id="u-pos-hint" style="color:var(--muted)">Le poste détermine automatiquement le rôle et les permissions.</small></div>' +
+      '<div class="fld" id="u-sup-wrap" hidden><label for="u-sup">Superviseur (Chef d’agence ou Agent de crédit)</label>' +
+        '<select id="u-sup"></select></div>' +
       '<div class="fld"><label for="u-unit">Unité de rattachement</label><select id="u-unit"><option value="">— Aucune —</option>' +
         units.map(function (u) { return '<option value="' + u.id + '">' + esc(KIND_META[u.kind].label + ' · ' + u.name) + '</option>'; }).join('') + '</select></div>' +
       '<div class="form-grid"><div class="fld"><label for="u-email">E-mail</label><input id="u-email" type="email"></div>' +
       '<div class="fld"><label for="u-phone">Téléphone (WhatsApp)</label><input id="u-phone" type="tel" placeholder="+226 00 00 00 00"></div></div>' +
       '<div class="modal__nav"><button class="btn btn--ghost" id="u-cancel">Annuler</button><button class="btn btn--primary" id="u-ok">Créer et envoyer le code</button></div>'
-    );
-    $('u-cancel').addEventListener('click', closeModal);
-    $('u-ok').addEventListener('click', function () {
-      var body = { full_name: $('u-name').value.trim(), position: $('u-pos').value.trim(), role: $('u-role').value,
-        org_unit_id: $('u-unit').value || null, email: $('u-email').value.trim(), phone: $('u-phone').value.trim() };
-      if (!body.full_name || !body.email || !body.role) { notify('Nom, e-mail et rôle sont requis.', 'err'); return; }
-      var self = this; self.disabled = true;
-      api('/api/v1/users', 'POST', body).then(function (d) { closeModal(); return loadUsers().then(function () { notify('Utilisateur créé — code ' + d.code_user + '.', 'ok'); showSendCodeModal(d, body.full_name); }); })
-        .catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
-    });
+      );
+      // Affiche le champ Superviseur uniquement pour un poste qui l'exige (collecte).
+      function syncSupervisor() {
+        var p = posByCode[$('u-pos').value];
+        var wrap = $('u-sup-wrap'), sel = $('u-sup');
+        if (p && p.needsSupervisor) {
+          var sup = eligibleSupervisors();
+          sel.innerHTML = sup.length
+            ? sup.map(function (u) { return '<option value="' + u.id + '">' + esc(u.full_name + ' — ' + (posByCode[u.position_code] ? posByCode[u.position_code].label : u.role)) + '</option>'; }).join('')
+            : '<option value="">Aucun superviseur disponible — créez d’abord un Chef d’agence ou un Agent de crédit</option>';
+          wrap.hidden = false;
+        } else { wrap.hidden = true; sel.innerHTML = ''; }
+      }
+      $('u-pos').addEventListener('change', syncSupervisor);
+      $('u-cancel').addEventListener('click', closeModal);
+      $('u-ok').addEventListener('click', function () {
+        var pos = posByCode[$('u-pos').value];
+        var body = { full_name: $('u-name').value.trim(), position_code: $('u-pos').value || null,
+          org_unit_id: $('u-unit').value || null, email: $('u-email').value.trim(), phone: $('u-phone').value.trim() };
+        if (pos && pos.needsSupervisor) body.supervisor_id = $('u-sup').value || null;
+        if (!body.full_name || !body.email || !body.position_code) { notify('Nom, e-mail et poste sont requis.', 'err'); return; }
+        if (pos && pos.needsSupervisor && !body.supervisor_id) { notify('Un agent de collecte doit être rattaché à un superviseur (Chef d’agence ou Agent de crédit).', 'err'); return; }
+        var self = this; self.disabled = true;
+        api('/api/v1/users', 'POST', body).then(function (d) { closeModal(); return loadUsers().then(function () { notify('Utilisateur créé — code ' + d.code_user + '.', 'ok'); showSendCodeModal(d, body.full_name); }); })
+          .catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+      });
+    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
   }
 
   // ----- Sécurité -----
@@ -534,26 +602,222 @@
     }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
   }
 
-  // ----- Matrice des profils & habilitations -----
-  function loadProfilesMatrix() {
-    return api('/api/v1/profiles-matrix').then(function (m) {
-      var roles = m.roles || [], perms = m.permissions || [], grid = m.grid || {};
-      var head = '<tr><th style="min-width:220px">Habilitation</th>' +
-        roles.map(function (r) { return '<th style="text-align:center">' + esc(r.label) + '</th>'; }).join('') + '</tr>';
-      var body = perms.map(function (p) {
-        return '<tr><td>' + esc(p.label) + '</td>' +
-          roles.map(function (r) {
-            var ok = grid[r.key] && grid[r.key][p.key];
-            return '<td style="text-align:center">' + (ok
-              ? '<span class="tag tag--ok">✓</span>'
-              : '<span style="color:var(--muted)">—</span>') + '</td>';
-          }).join('') + '</tr>';
-      }).join('');
-      $('profiles-matrix').innerHTML =
-        '<p class="hint" style="margin-bottom:14px">✓ = habilitation accordée par défaut à ce profil. ' +
-        'Ces droits sont attachés automatiquement à chaque nouvel utilisateur selon son rôle.</p>' +
-        '<div style="overflow-x:auto"><table class="tbl"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
+  // ----- Gestion des habilitations (éditable) -----
+  var accessCatalog = null; // { permissions, positions, position_permissions, final_validator_key }
+
+  function loadAccessMatrix() {
+    return api('/api/v1/access/catalog').then(function (m) {
+      accessCatalog = m;
+      renderAccessMatrix();
     }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+
+  function kindBadge(k) {
+    var map = { lecture: ['R', 'Lecture', '#2563eb'], ecriture: ['É', 'Écriture', '#059669'],
+      validation: ['V', 'Validation', '#b45309'] };
+    var d = map[k] || map.ecriture;
+    return '<span class="tag" title="' + d[1] + '" style="background:' + d[2] +
+      ';color:#fff;font-size:10px;padding:0 5px;border-radius:3px">' + d[0] + '</span>';
+  }
+
+  function renderAccessMatrix() {
+    var m = accessCatalog || {}, perms = m.permissions || [], positions = m.positions || [];
+    var byPos = m.position_permissions || {}, finalKey = m.final_validator_key || 'credit.validate_final';
+    if (!positions.length) { $('access-matrix').innerHTML = '<div class="empty">Aucun poste.</div>'; return; }
+    var head = '<tr><th style="min-width:240px;position:sticky;left:0;background:var(--card)">Poste / profil</th>' +
+      perms.map(function (p) {
+        var isFinal = p.key === finalKey || p.permission_key === finalKey;
+        return '<th style="text-align:center;min-width:92px;vertical-align:bottom">' +
+          '<span style="font-size:11px;line-height:1.25;display:inline-block;max-width:120px">' +
+          kindBadge(p.access_kind) + ' ' + esc(p.label) + (p.custom ? ' <span class="tag">custom</span>' : '') +
+          (isFinal ? ' <span class="tag tag--ok">finale</span>' : '') +
+          (p.is_system ? '' : ' <a href="#" data-delperm="' + esc(p.permission_key) + '" style="color:var(--danger,#d33);text-decoration:none" title="Supprimer">\u00d7</a>') +
+          '</span></th>';
+      }).join('') + '</tr>';
+    var body = positions.map(function (pos) {
+      var row = byPos[pos.code] || {};
+      return '<tr><td style="position:sticky;left:0;background:var(--card)">' +
+        '<b>' + esc(pos.label) + '</b>' + (pos.custom ? ' <span class="tag">custom</span>' : '') +
+        '<br><span class="hint" style="font-size:11px">' + esc(pos.dept_code || '') +
+        (pos.service_code ? ' \u00b7 ' + esc(pos.service_code) : '') + '</span></td>' +
+        perms.map(function (p) {
+          var key = p.permission_key, on = !!row[key];
+          return '<td style="text-align:center"><input type="checkbox" ' + (on ? 'checked' : '') +
+            ' data-pos="' + esc(pos.code) + '" data-perm="' + esc(key) + '"></td>';
+        }).join('') + '</tr>';
+    }).join('');
+    $('access-matrix').innerHTML =
+      '<p class="hint" style="margin-bottom:12px">Cochez une case pour accorder l\u2019habilitation par d\u00e9faut au poste. ' +
+      'Chaque habilitation porte sa nature : ' + kindBadge('lecture') + ' lecture, ' + kindBadge('ecriture') +
+      ' \u00e9criture, ' + kindBadge('validation') + ' validation. ' +
+      'La case <span class="tag tag--ok">finale</span> r\u00e9affecte l\u2019\u00e9cran de validation finale des cr\u00e9dits. ' +
+      'Les modifications s\u2019appliquent \u00e0 votre IMF uniquement.</p>' +
+      '<div style="overflow:auto;max-height:70vh"><table class="tbl"><thead>' + head +
+      '</thead><tbody>' + body + '</tbody></table></div>';
+    // Toggles habilitation par poste.
+    $('access-matrix').querySelectorAll('input[type=checkbox]').forEach(function (cb) {
+      cb.addEventListener('change', function () {
+        var code = cb.dataset.pos, key = cb.dataset.perm, allowed = cb.checked;
+        cb.disabled = true;
+        api('/api/v1/access/positions/' + encodeURIComponent(code) + '/permission', 'PATCH',
+          { permission_key: key, allowed: allowed })
+          .then(function () {
+            if (!byPos[code]) byPos[code] = {};
+            byPos[code][key] = allowed;
+            notify('Habilitation mise \u00e0 jour.', 'ok');
+          })
+          .catch(function (e) { cb.checked = !allowed; if (!guard(e)) notify(fr(e), 'err'); })
+          .then(function () { cb.disabled = false; });
+      });
+    });
+    // Suppression d'une habilitation custom.
+    $('access-matrix').querySelectorAll('a[data-delperm]').forEach(function (a) {
+      a.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        var key = a.dataset.delperm;
+        if (!window.confirm('Supprimer d\u00e9finitivement cette habilitation personnalis\u00e9e ?')) return;
+        api('/api/v1/access/permissions/' + encodeURIComponent(key), 'DELETE')
+          .then(function () { notify('Habilitation supprim\u00e9e.', 'ok'); loadAccessMatrix(); })
+          .catch(function (e) { if (!guard(e)) notify(e.message === 'system_permission'
+            ? 'Habilitation du socle : suppression impossible.' : fr(e), 'err'); });
+      });
+    });
+  }
+
+  // Modale : créer une habilitation supplémentaire.
+  function openNewPermModal() {
+    openModal(
+      '<h3>Nouvelle habilitation</h3><p class="sub">Habilitation suppl\u00e9mentaire propre \u00e0 votre IMF.</p>' +
+      '<div class="fld"><label for="np-label">Libell\u00e9</label><input id="np-label" placeholder="Ex. Export comptable"></div>' +
+      '<div class="fld"><label for="np-cat">Cat\u00e9gorie</label><input id="np-cat" placeholder="Habilitations suppl\u00e9mentaires"></div>' +
+      '<div class="fld"><label for="np-kind">Nature de l\u2019acc\u00e8s</label><select id="np-kind">' +
+      '<option value="lecture">Lecture (R)</option>' +
+      '<option value="ecriture" selected>\u00c9criture (\u00c9)</option>' +
+      '<option value="validation">Validation (V)</option></select></div>' +
+      '<div class="fld"><label for="np-key">Cl\u00e9 technique (optionnel)</label><input id="np-key" placeholder="module.action"></div>' +
+      '<p class="hint">La cl\u00e9 est g\u00e9n\u00e9r\u00e9e automatiquement depuis le libell\u00e9 si laiss\u00e9e vide.</p>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="np-cancel" type="button">Annuler</button>' +
+      '<button class="btn btn--primary" id="np-save" type="button">Cr\u00e9er</button></div>');
+    $('np-cancel').addEventListener('click', closeModal);
+    $('np-save').addEventListener('click', function () {
+      var label = $('np-label').value.trim();
+      if (!label) { notify('Indiquez un libell\u00e9.', 'err'); return; }
+      var body = { label: label, category: $('np-cat').value.trim() || undefined,
+        access_kind: ($('np-kind') && $('np-kind').value) || 'ecriture',
+        permission_key: $('np-key').value.trim() || undefined };
+      $('np-save').disabled = true;
+      api('/api/v1/access/permissions', 'POST', body)
+        .then(function () { closeModal(); notify('Habilitation cr\u00e9\u00e9e.', 'ok'); loadAccessMatrix(); })
+        .catch(function (e) { $('np-save').disabled = false;
+          if (!guard(e)) notify(e.message === 'duplicate_permission' ? 'Cette habilitation existe d\u00e9j\u00e0.'
+            : e.message === 'invalid_key' ? 'Cl\u00e9 invalide (format module.action).' : fr(e), 'err'); });
+    });
+  }
+
+  // Modale : créer un poste / profil.
+  function openNewPositionModal() {
+    var perms = (accessCatalog && accessCatalog.permissions) || [];
+    var depts = {};
+    (accessCatalog && accessCatalog.positions || []).forEach(function (p) { if (p.dept_code) depts[p.dept_code] = true; });
+    var deptOpts = Object.keys(depts).sort().map(function (d) {
+      return '<option value="' + esc(d) + '">' + esc(d) + '</option>'; }).join('');
+    var permChecks = perms.map(function (p) {
+      return '<label style="display:flex;align-items:center;gap:8px;padding:4px 0">' +
+        '<input type="checkbox" value="' + esc(p.permission_key) + '" class="npos-perm">' +
+        '<span>' + esc(p.label) + '</span></label>';
+    }).join('');
+    openModal(
+      '<h3>Nouveau poste / profil</h3><p class="sub">Cr\u00e9ez un poste propre \u00e0 votre IMF et choisissez ses habilitations par d\u00e9faut.</p>' +
+      '<div class="fld"><label for="nx-label">Intitul\u00e9 du poste</label><input id="nx-label" placeholder="Ex. Charg\u00e9 de recouvrement senior"></div>' +
+      '<div class="fld"><label for="nx-dept">D\u00e9partement</label><select id="nx-dept">' + deptOpts + '</select></div>' +
+      '<div class="fld"><label for="nx-service">Service (optionnel)</label><input id="nx-service" placeholder="Code service"></div>' +
+      '<div class="fld"><label>Habilitations par d\u00e9faut</label>' +
+      '<div style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:8px">' +
+      (permChecks || '<span class="hint">Aucune habilitation disponible.</span>') + '</div></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="nx-cancel" type="button">Annuler</button>' +
+      '<button class="btn btn--primary" id="nx-save" type="button">Cr\u00e9er le poste</button></div>');
+    $('nx-cancel').addEventListener('click', closeModal);
+    $('nx-save').addEventListener('click', function () {
+      var label = $('nx-label').value.trim(), dept = $('nx-dept').value;
+      if (!label) { notify('Indiquez l\u2019intitul\u00e9 du poste.', 'err'); return; }
+      if (!dept) { notify('Choisissez un d\u00e9partement.', 'err'); return; }
+      var keys = [];
+      $('modal-root').querySelectorAll('.npos-perm:checked').forEach(function (cb) { keys.push(cb.value); });
+      var body = { label: label, dept_code: dept,
+        service_code: $('nx-service').value.trim() || undefined, permission_keys: keys };
+      $('nx-save').disabled = true;
+      api('/api/v1/access/positions', 'POST', body)
+        .then(function () { closeModal(); notify('Poste cr\u00e9\u00e9.', 'ok'); loadAccessMatrix(); })
+        .catch(function (e) { $('nx-save').disabled = false;
+          if (!guard(e)) notify(e.message === 'invalid_dept' ? 'D\u00e9partement invalide.' : fr(e), 'err'); });
+    });
+  }
+
+  // ----- Validation finale des crédits -----
+  function loadCreditsQueue() {
+    return api('/api/v1/credits/final-queue').then(function (d) {
+      renderCreditsQueue(d.queue || [], d.labels || {});
+    }).catch(function (e) {
+      if (guard(e)) return;
+      if (e.message === 'forbidden' || e.message === 'missing_permission')
+        $('credits-queue').innerHTML = '<div class="empty">Vous n\u2019\u00eates pas habilit\u00e9 \u00e0 la validation finale des cr\u00e9dits.</div>';
+      else notify(fr(e), 'err');
+    });
+  }
+
+  function renderCreditsQueue(queue, labels) {
+    if (!queue.length) { $('credits-queue').innerHTML = '<div class="empty">Aucun dossier en attente de validation finale.</div>'; return; }
+    var head = '<tr><th>R\u00e9f\u00e9rence</th><th>Client</th><th>Montant demand\u00e9</th><th>Dur\u00e9e</th>' +
+      '<th>Origine</th><th>Statut</th><th>Agent</th><th style="text-align:right">Action</th></tr>';
+    var body = queue.map(function (c) {
+      var amt = c.amount_cents != null ? fmtAmount(c.amount_cents / 100) + ' FCFA' : '\u2014';
+      return '<tr><td><b>' + esc(c.reference || '\u2014') + '</b></td>' +
+        '<td>' + esc(c.client_name || '\u2014') + '<br><span class="hint" style="font-size:11px">' + esc(c.code_client || '') + '</span></td>' +
+        '<td>' + amt + '</td>' +
+        '<td>' + (c.duration_months ? esc(c.duration_months) + ' mois' : '\u2014') + '</td>' +
+        '<td>' + esc(c.origin || '\u2014') + '</td>' +
+        '<td><span class="tag">' + esc(labels[c.status] || c.status) + '</span></td>' +
+        '<td>' + esc(c.officer_name || c.collectrice_name || '\u2014') + '</td>' +
+        '<td style="text-align:right;white-space:nowrap">' +
+        '<button class="btn btn--sm" data-cv-approve="' + esc(c.id) + '">Octroyer</button> ' +
+        '<button class="btn btn--sm btn--ghost" data-cv-reject="' + esc(c.id) + '">Rejeter</button></td></tr>';
+    }).join('');
+    $('credits-queue').innerHTML =
+      '<p class="hint" style="margin-bottom:12px">' + queue.length + ' dossier(s) en attente de d\u00e9cision finale.</p>' +
+      '<div style="overflow-x:auto"><table class="tbl"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
+    $('credits-queue').querySelectorAll('[data-cv-approve]').forEach(function (b) {
+      b.addEventListener('click', function () { openFinalValidateModal(b.dataset.cvApprove, 'approuve'); });
+    });
+    $('credits-queue').querySelectorAll('[data-cv-reject]').forEach(function (b) {
+      b.addEventListener('click', function () { openFinalValidateModal(b.dataset.cvReject, 'rejete'); });
+    });
+  }
+
+  function openFinalValidateModal(id, decision) {
+    var isApprove = decision === 'approuve';
+    openModal(
+      '<h3>' + (isApprove ? 'Octroi d\u00e9finitif du cr\u00e9dit' : 'Rejet d\u00e9finitif du dossier') + '</h3>' +
+      '<p class="sub">D\u00e9cision finale \u2014 suivie en temps r\u00e9el par la Collectrice, le Superviseur et le Client.</p>' +
+      (isApprove
+        ? '<div class="fld"><label for="fv-amount">Montant accord\u00e9 (FCFA, optionnel)</label><input id="fv-amount" inputmode="numeric" placeholder="Laisser vide = montant demand\u00e9"></div>'
+        : '') +
+      '<div class="fld"><label for="fv-note">' + (isApprove ? 'Note (optionnel)' : 'Motif du rejet') + '</label>' +
+      '<textarea id="fv-note" rows="3" placeholder="' + (isApprove ? 'Observations\u2026' : 'Pr\u00e9cisez le motif\u2026') + '"></textarea></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="fv-cancel" type="button">Annuler</button>' +
+      '<button class="btn btn--primary" id="fv-save" type="button">' +
+      (isApprove ? 'Confirmer l\u2019octroi' : 'Confirmer le rejet') + '</button></div>');
+    $('fv-cancel').addEventListener('click', closeModal);
+    $('fv-save').addEventListener('click', function () {
+      var body = { decision: decision, note: $('fv-note').value.trim() || undefined };
+      if (isApprove) { var raw = ($('fv-amount') ? $('fv-amount').value : '').replace(/[^0-9]/g, '');
+        if (raw) body.approved_amount_cents = Number(raw) * 100; }
+      else if (!body.note) { notify('Indiquez le motif du rejet.', 'err'); return; }
+      $('fv-save').disabled = true;
+      api('/api/v1/credits/' + encodeURIComponent(id) + '/final-validate', 'POST', body)
+        .then(function () { closeModal();
+          notify(isApprove ? 'Cr\u00e9dit octroy\u00e9.' : 'Dossier rejet\u00e9.', 'ok'); loadCreditsQueue(); })
+        .catch(function (e) { $('fv-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
   }
 
   // ----- Démarrage -----
@@ -567,7 +831,15 @@
     var navS = $('nav-settings'); if (navS) navS.hidden = !canSee;
     var navD = $('nav-dispatches'); if (navD) navD.hidden = !canSee;
     var navP = $('nav-profiles'); if (navP) navP.hidden = !canSee;
+    // Validation finale des crédits : réservée aux postes habilités.
+    var canFinal = !!d.can_validate_credit_final || canSee;
+    var navC = $('nav-credits'); if (navC) navC.hidden = !canFinal;
+    // VAGUE 15 : menus opérationnels, affichés selon les habilitations du poste.
+    setupBankingNav();
     initSettingsHandlers();
+    var bnP = $('btn-new-perm'); if (bnP) bnP.addEventListener('click', openNewPermModal);
+    var bnPos = $('btn-new-position'); if (bnPos) bnPos.addEventListener('click', openNewPositionModal);
+    var bnCr = $('btn-credits-refresh'); if (bnCr) bnCr.addEventListener('click', loadCreditsQueue);
     return Promise.all([loadUnits(), loadUsers(), loadTrial()]);
   }).then(function () {
     renderDash(); renderSession();
@@ -609,5 +881,241 @@
       '<a href="https://wa.me/' + String(c.whatsapp).replace(/[^0-9]/g, '') + '" style="display:inline-block;background:#d8f500;color:#0b0c26;font-weight:700;padding:13px 22px;border-radius:11px;text-decoration:none;margin:4px">WhatsApp ' + esc(c.whatsapp) + '</a>' +
       '<a href="mailto:' + esc(c.email) + '" style="display:inline-block;background:transparent;color:#fff;border:1px solid rgba(255,255,255,.3);font-weight:700;padding:13px 22px;border-radius:11px;text-decoration:none;margin:4px">' + esc(c.email) + '</a></div>';
     document.body.appendChild(d);
+  }
+
+  /* ===== VAGUE 15 : modules opérationnels (clients, caisse, coffre, compta, recouvrement, audit) ===== */
+  function has(p) {
+    if (!me) return false;
+    if (['admin_imf', 'direction'].indexOf(me.user.role) >= 0) return true;
+    return Array.isArray(me.permissions) && me.permissions.indexOf(p) >= 0;
+  }
+  function digits(s) { return String(s == null ? '' : s).replace(/[^0-9]/g, ''); }
+  function cents(fcfaStr) { var n = digits(fcfaStr); return n ? Number(n) * 100 : 0; }
+  function money(c) { return fmtAmount((Number(c || 0)) / 100) + ' FCFA'; }
+  function dt(s) { return s ? new Date(s).toLocaleString('fr-FR') : '\u2014'; }
+  function setupBankingNav() {
+    var map = {
+      'nav-clients': has('clients.manage'),
+      'nav-caisse': has('operations.read') || has('cash.approve'),
+      'nav-coffre': has('accounts.manage'),
+      'nav-compta': has('accounts.manage'),
+      'nav-recouvrement': has('credit.recovery'),
+      'nav-audit': has('audit.read')
+    };
+    Object.keys(map).forEach(function (id) { var n = $(id); if (n) n.hidden = !map[id]; });
+    var b;
+    b = $('btn-clients-refresh'); if (b) b.addEventListener('click', loadClients);
+    b = $('btn-overrun-new'); if (b) b.addEventListener('click', openOverrunModal);
+    b = $('btn-closing-new'); if (b) b.addEventListener('click', openClosingModal);
+    b = $('btn-vault-new'); if (b) b.addEventListener('click', openVaultModal);
+    b = $('btn-entry-new'); if (b) b.addEventListener('click', openEntryModal);
+    b = $('btn-period-close'); if (b) b.addEventListener('click', closePeriod);
+    b = $('btn-arrears-refresh'); if (b) b.addEventListener('click', loadArrears);
+    b = $('btn-audit-refresh'); if (b) b.addEventListener('click', loadAudit);
+    var mp = $('compta-period'); if (mp) { mp.value = new Date().toISOString().slice(0, 7); mp.addEventListener('change', loadCompta); }
+  }
+  function forbidden(boxId, msg) {
+    $(boxId).innerHTML = '<div class="empty">' + esc(msg) + '</div>';
+  }
+
+  /* ----- CLIENTS : liste + modifier la fiche ----- */
+  function loadClients() {
+    return api('/api/v1/clients').then(function (d) { renderClients(d.clients || []); })
+      .catch(function (e) { if (guard(e)) return;
+        if (e.message === 'forbidden' || e.message === 'missing_permission') forbidden('clients-table', 'Vous n\u2019\u00eates pas habilit\u00e9 \u00e0 la gestion des clients.');
+        else notify(fr(e), 'err'); });
+  }
+  function renderClients(list) {
+    if (!list.length) { $('clients-table').innerHTML = '<div class="empty">Aucun client enregistr\u00e9.</div>'; return; }
+    var head = '<tr><th>Code</th><th>Nom complet</th><th>T\u00e9l\u00e9phone</th><th>Pi\u00e8ce</th><th>Solde</th><th style="text-align:right">Action</th></tr>';
+    var body = list.map(function (c) {
+      return '<tr><td><b>' + esc(c.code_client || '\u2014') + '</b></td>' +
+        '<td>' + esc(c.full_name || '\u2014') + '</td>' +
+        '<td>' + esc(c.phone || '\u2014') + '</td>' +
+        '<td>' + esc(c.id_number || '\u2014') + '</td>' +
+        '<td>' + (c.balance_cents != null ? money(c.balance_cents) : '\u2014') + '</td>' +
+        '<td style="text-align:right"><button class="btn btn--sm" data-cl-edit="' + esc(c.id) + '">Modifier la fiche</button></td></tr>';
+    }).join('');
+    $('clients-table').innerHTML = '<div style="overflow-x:auto"><table class="tbl"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
+    $('clients-table').querySelectorAll('[data-cl-edit]').forEach(function (b) {
+      b.addEventListener('click', function () { openClientEdit(list.find(function (x) { return x.id === b.dataset.clEdit; })); });
+    });
+  }
+  function openClientEdit(c) {
+    if (!c) return;
+    openModal(
+      '<h3>Modifier la fiche client</h3>' +
+      '<p class="sub">' + esc(c.code_client || '') + '</p>' +
+      '<div class="fld"><label for="cl-name">Nom complet</label><input id="cl-name" value="' + esc(c.full_name || '') + '"></div>' +
+      '<div class="fld"><label for="cl-phone">T\u00e9l\u00e9phone</label><input id="cl-phone" value="' + esc(c.phone || '') + '"></div>' +
+      '<div class="fld"><label for="cl-id">N\u00b0 de pi\u00e8ce</label><input id="cl-id" value="' + esc(c.id_number || '') + '"></div>' +
+      '<div class="fld"><label for="cl-addr">Adresse</label><input id="cl-addr" value="' + esc(c.address || '') + '"></div>' +
+      '<div class="fld"><label for="cl-birth">Date de naissance</label><input id="cl-birth" type="date" value="' + esc(c.birth_date ? String(c.birth_date).slice(0, 10) : '') + '"></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="cl-cancel" type="button">Annuler</button>' +
+      '<button class="btn btn--primary" id="cl-save" type="button">Enregistrer</button></div>');
+    $('cl-cancel').addEventListener('click', closeModal);
+    $('cl-save').addEventListener('click', function () {
+      var body = { full_name: $('cl-name').value.trim(), phone: $('cl-phone').value.trim(),
+        id_number: $('cl-id').value.trim(), address: $('cl-addr').value.trim(),
+        birth_date: $('cl-birth').value || null };
+      if (!body.full_name) { notify('Le nom complet est obligatoire.', 'err'); return; }
+      $('cl-save').disabled = true;
+      api('/api/v1/clients/' + encodeURIComponent(c.id), 'PATCH', body)
+        .then(function () { closeModal(); notify('Fiche client mise \u00e0 jour.', 'ok'); loadClients(); })
+        .catch(function (e) { $('cl-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+/*BANKING_MODULE*/
+  /* ----- CAISSE ----- */
+  function loadCaisse() { loadOverruns(); loadClosings(); }
+  var OV_ST = { en_attente: 'En attente', approuve: 'Approuv\u00e9', rejete: 'Rejet\u00e9' };
+  function loadOverruns() {
+    return api('/api/v1/cash/overrun-requests').then(function (d) {
+      var l = d.requests || [], ca = has('cash.approve');
+      if (!l.length) { $('overrun-table').innerHTML = '<div class="empty">Aucune demande.</div>'; return; }
+      var body = l.map(function (o) {
+        var act = (ca && o.status === 'en_attente') ? '<button class="btn btn--sm" data-ok="' + esc(o.id) + '">Approuver</button> <button class="btn btn--sm btn--ghost" data-no="' + esc(o.id) + '">Rejeter</button>' : '\u2014';
+        return '<tr><td>' + esc(o.kind === 'caisse' ? 'Caisse' : 'Client') + '</td><td>' + esc(o.client_name || '\u2014') + '</td><td>' + money(o.amount_cents) + '</td><td>' + (o.cap_cents ? money(o.cap_cents) : '\u2014') + '</td><td>' + esc(o.reason || '\u2014') + '</td><td><span class="tag">' + esc(OV_ST[o.status] || o.status) + '</span></td><td style="text-align:right;white-space:nowrap">' + act + '</td></tr>';
+      }).join('');
+      $('overrun-table').innerHTML = '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Type</th><th>Client</th><th>Montant</th><th>Plafond</th><th>Motif</th><th>Statut</th><th style="text-align:right">Action</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+      $('overrun-table').querySelectorAll('[data-ok]').forEach(function (b) { b.addEventListener('click', function () { decideOverrun(b.dataset.ok, 'approuve'); }); });
+      $('overrun-table').querySelectorAll('[data-no]').forEach(function (b) { b.addEventListener('click', function () { decideOverrun(b.dataset.no, 'rejete'); }); });
+    }).catch(function (e) { if (guard(e)) return; if (e.message === 'forbidden' || e.message === 'missing_permission') forbidden('overrun-table', 'Acc\u00e8s non habilit\u00e9.'); else notify(fr(e), 'err'); });
+  }
+  function decideOverrun(id, dec) {
+    var note = dec === 'rejete' ? window.prompt('Motif du rejet (optionnel) :', '') : undefined;
+    if (note === null) return;
+    api('/api/v1/cash/overrun-requests/' + encodeURIComponent(id) + '/decide', 'POST', { decision: dec, note: note || undefined })
+      .then(function (r) { notify(r.note || 'D\u00e9cision enregistr\u00e9e.', 'ok'); loadOverruns(); })
+      .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+  function openOverrunModal() {
+    openModal('<h3>Demande de d\u00e9passement de plafond</h3><div class="fld"><label for="ov-kind">Type</label><select id="ov-kind"><option value="client">Client</option><option value="caisse">Caisse</option></select></div><div class="fld"><label for="ov-amount">Montant (FCFA)</label><input id="ov-amount" inputmode="numeric"></div><div class="fld"><label for="ov-cap">Plafond autoris\u00e9 (FCFA, optionnel)</label><input id="ov-cap" inputmode="numeric"></div><div class="fld"><label for="ov-reason">Motif</label><textarea id="ov-reason" rows="3"></textarea></div><div class="modal__nav"><button class="btn btn--ghost" id="ov-cancel" type="button">Annuler</button><button class="btn btn--primary" id="ov-save" type="button">Enregistrer</button></div>');
+    $('ov-cancel').addEventListener('click', closeModal);
+    $('ov-save').addEventListener('click', function () {
+      var amount = cents($('ov-amount').value);
+      if (!(amount > 0)) { notify('Montant invalide.', 'err'); return; }
+      $('ov-save').disabled = true;
+      api('/api/v1/cash/overrun-requests', 'POST', { kind: $('ov-kind').value, amount_cents: amount, cap_cents: cents($('ov-cap').value), reason: $('ov-reason').value.trim() || undefined })
+        .then(function (r) { closeModal(); notify(r.note || 'Demande enregistr\u00e9e.', 'ok'); loadOverruns(); })
+        .catch(function (e) { $('ov-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+  function loadClosings() {
+    return api('/api/v1/cash/closings').then(function (d) {
+      var l = d.closings || [];
+      if (!l.length) { $('closing-table').innerHTML = '<div class="empty">Aucun arr\u00eat\u00e9.</div>'; return; }
+      var body = l.map(function (c) { var g = Number(c.gap_cents || 0);
+        return '<tr><td>' + esc(c.closing_date ? String(c.closing_date).slice(0, 10) : '\u2014') + '</td><td>' + money(c.theoretical_cents) + '</td><td>' + money(c.counted_cents) + '</td><td style="color:' + (g === 0 ? 'inherit' : (g > 0 ? '#1a7f37' : '#c0392b')) + '">' + (g > 0 ? '+' : '') + money(g) + '</td><td><span class="tag">' + (c.status === 'equilibre' ? '\u00c9quilibr\u00e9' : '\u00c9cart') + '</span></td><td>' + esc(c.user_name || '\u2014') + '</td></tr>';
+      }).join('');
+      $('closing-table').innerHTML = '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>Th\u00e9orique</th><th>Compt\u00e9</th><th>\u00c9cart</th><th>Statut</th><th>Agent</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+    }).catch(function (e) { if (guard(e)) return; if (e.message === 'forbidden' || e.message === 'missing_permission') forbidden('closing-table', 'Acc\u00e8s non habilit\u00e9.'); else notify(fr(e), 'err'); });
+  }
+  function openClosingModal() {
+    openModal('<h3>Arr\u00eat\u00e9 de caisse</h3><div class="fld"><label for="cc-date">Date</label><input id="cc-date" type="date"></div><div class="fld"><label for="cc-th">Solde th\u00e9orique (FCFA)</label><input id="cc-th" inputmode="numeric"></div><div class="fld"><label for="cc-ct">Esp\u00e8ces compt\u00e9es (FCFA)</label><input id="cc-ct" inputmode="numeric"></div><div class="fld"><label for="cc-note">Note</label><textarea id="cc-note" rows="2"></textarea></div><div class="modal__nav"><button class="btn btn--ghost" id="cc-cancel" type="button">Annuler</button><button class="btn btn--primary" id="cc-save" type="button">Enregistrer</button></div>');
+    $('cc-cancel').addEventListener('click', closeModal);
+    $('cc-save').addEventListener('click', function () {
+      $('cc-save').disabled = true;
+      api('/api/v1/cash/closings', 'POST', { closing_date: $('cc-date').value || undefined, theoretical_cents: cents($('cc-th').value), counted_cents: cents($('cc-ct').value), note: $('cc-note').value.trim() || undefined })
+        .then(function (r) { closeModal(); notify(r.note || 'Arr\u00eat\u00e9 enregistr\u00e9.', 'ok'); loadClosings(); })
+        .catch(function (e) { $('cc-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+  /* ----- COFFRE ----- */
+  function loadVault() {
+    return api('/api/v1/vault/movements').then(function (d) {
+      $('vault-kpis').innerHTML = kpi(money(d.balance_cents), 'Solde du coffre', true);
+      var l = d.movements || [];
+      if (!l.length) { $('vault-table').innerHTML = '<div class="empty">Aucun mouvement.</div>'; return; }
+      var body = l.map(function (m) {
+        return '<tr><td>' + dt(m.created_at) + '</td><td>' + (m.direction === 'approvisionnement' ? 'Approvisionnement' : 'D\u00e9lestage') + '</td><td>' + money(m.amount_cents) + '</td><td>' + esc(m.counterpart || '\u2014') + '</td><td>' + esc(m.reason || '\u2014') + '</td><td>' + money(m.balance_after_cents) + '</td><td>' + esc(m.created_by_name || '\u2014') + '</td></tr>';
+      }).join('');
+      $('vault-table').innerHTML = '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>Sens</th><th>Montant</th><th>Contrepartie</th><th>Motif</th><th>Solde apr\u00e8s</th><th>Par</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+    }).catch(function (e) { if (guard(e)) return; if (e.message === 'forbidden' || e.message === 'missing_permission') forbidden('vault-table', 'Acc\u00e8s non habilit\u00e9.'); else notify(fr(e), 'err'); });
+  }
+  function openVaultModal() {
+    openModal('<h3>Mouvement de coffre</h3><div class="fld"><label for="vm-dir">Sens</label><select id="vm-dir"><option value="approvisionnement">Approvisionnement</option><option value="delestage">D\u00e9lestage</option></select></div><div class="fld"><label for="vm-amount">Montant (FCFA)</label><input id="vm-amount" inputmode="numeric"></div><div class="fld"><label for="vm-cp">Contrepartie (optionnel)</label><input id="vm-cp"></div><div class="fld"><label for="vm-reason">Motif</label><textarea id="vm-reason" rows="2"></textarea></div><div class="modal__nav"><button class="btn btn--ghost" id="vm-cancel" type="button">Annuler</button><button class="btn btn--primary" id="vm-save" type="button">Valider</button></div>');
+    $('vm-cancel').addEventListener('click', closeModal);
+    $('vm-save').addEventListener('click', function () {
+      var amount = cents($('vm-amount').value);
+      if (!(amount > 0)) { notify('Montant invalide.', 'err'); return; }
+      $('vm-save').disabled = true;
+      api('/api/v1/vault/movements', 'POST', { direction: $('vm-dir').value, amount_cents: amount, counterpart: $('vm-cp').value.trim() || undefined, reason: $('vm-reason').value.trim() || undefined })
+        .then(function (r) { closeModal(); notify(r.note || 'Mouvement enregistr\u00e9.', 'ok'); loadVault(); })
+        .catch(function (e) { $('vm-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+  /* ----- COMPTABILIT\u00c9 ----- */
+  var CAT = { charge: 'Charge', taxe: 'Taxe', produit: 'Produit', od: 'OD' };
+  function comptaPeriod() { var m = $('compta-period'); return m && m.value ? m.value : new Date().toISOString().slice(0, 7); }
+  function loadCompta() {
+    var p = comptaPeriod();
+    return api('/api/v1/accounting/entries?period=' + encodeURIComponent(p)).then(function (d) {
+      api('/api/v1/accounting/statements?period=' + encodeURIComponent(p)).then(function (s) {
+        $('compta-kpis').innerHTML = kpi(money(s.produits_cents), 'Produits') + kpi(money(s.charges_cents), 'Charges') + kpi(money(s.taxes_cents), 'Taxes') + kpi(money(s.resultat_net_cents), 'R\u00e9sultat net', true);
+      }).catch(function () {});
+      var l = d.entries || [], lock = d.period_closed;
+      var hdr = '<p class="hint" style="margin-bottom:10px">P\u00e9riode ' + esc(p) + (lock ? ' \u2014 <b>cl\u00f4tur\u00e9e</b>' : '') + '</p>';
+      if (!l.length) { $('entries-table').innerHTML = hdr + '<div class="empty">Aucune \u00e9criture.</div>'; return; }
+      var body = l.map(function (e2) {
+        return '<tr><td>' + esc(e2.entry_date ? String(e2.entry_date).slice(0, 10) : '\u2014') + '</td><td>' + esc(e2.journal || '\u2014') + '</td><td>' + esc(CAT[e2.category] || e2.category) + '</td><td>' + esc(e2.label || '\u2014') + '</td><td>' + money(e2.amount_cents) + '</td></tr>';
+      }).join('');
+      $('entries-table').innerHTML = hdr + '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>Journal</th><th>Cat\u00e9gorie</th><th>Libell\u00e9</th><th>Montant</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+    }).catch(function (e) { if (guard(e)) return; if (e.message === 'forbidden' || e.message === 'missing_permission') forbidden('entries-table', 'Acc\u00e8s non habilit\u00e9.'); else notify(fr(e), 'err'); });
+  }
+  function openEntryModal() {
+    openModal('<h3>Nouvelle \u00e9criture comptable</h3><div class="fld"><label for="en-date">Date</label><input id="en-date" type="date"></div><div class="fld"><label for="en-cat">Cat\u00e9gorie</label><select id="en-cat"><option value="charge">Charge</option><option value="taxe">Taxe</option><option value="produit">Produit</option><option value="od">OD</option></select></div><div class="fld"><label for="en-journal">Journal</label><input id="en-journal" value="OD"></div><div class="fld"><label for="en-label">Libell\u00e9</label><input id="en-label"></div><div class="fld"><label for="en-amount">Montant (FCFA)</label><input id="en-amount" inputmode="numeric"></div><div class="modal__nav"><button class="btn btn--ghost" id="en-cancel" type="button">Annuler</button><button class="btn btn--primary" id="en-save" type="button">Enregistrer</button></div>');
+    $('en-cancel').addEventListener('click', closeModal);
+    $('en-save').addEventListener('click', function () {
+      var label = $('en-label').value.trim(), amount = cents($('en-amount').value);
+      if (!label) { notify('Libell\u00e9 requis.', 'err'); return; }
+      if (!(amount > 0)) { notify('Montant invalide.', 'err'); return; }
+      $('en-save').disabled = true;
+      api('/api/v1/accounting/entries', 'POST', { entry_date: $('en-date').value || undefined, category: $('en-cat').value, journal: $('en-journal').value.trim() || 'OD', label: label, amount_cents: amount, period: comptaPeriod() })
+        .then(function (r) { closeModal(); notify(r.note || '\u00c9criture enregistr\u00e9e.', 'ok'); loadCompta(); })
+        .catch(function (e) { $('en-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+  function closePeriod() {
+    var p = comptaPeriod();
+    if (!window.confirm('Cl\u00f4turer la p\u00e9riode ' + p + ' ? Les \u00e9critures seront verrouill\u00e9es.')) return;
+    api('/api/v1/accounting/close-period', 'POST', { period: p })
+      .then(function (r) { notify(r.note || 'P\u00e9riode cl\u00f4tur\u00e9e.', 'ok'); loadCompta(); })
+      .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+  /* ----- IMPAY\u00c9S & RECOUVREMENT ----- */
+  var RK = { relance: 'Relance', promesse: 'Promesse', echeancier: '\u00c9ch\u00e9ancier', contentieux: 'Contentieux', encaissement: 'Encaissement' };
+  function loadArrears() {
+    return api('/api/v1/credits/arrears').then(function (d) {
+      $('arrears-kpis').innerHTML = kpi(d.count || 0, 'Dossiers en impay\u00e9') + kpi(money(d.total_overdue_cents), 'Encours impay\u00e9', true);
+      var l = d.arrears || [];
+      if (!l.length) { $('arrears-table').innerHTML = '<div class="empty">Aucun dossier en impay\u00e9.</div>'; return; }
+      var body = l.map(function (c) {
+        return '<tr><td><b>' + esc(c.reference || '\u2014') + '</b></td><td>' + esc(c.client_name || '\u2014') + '<br><span class="hint" style="font-size:11px">' + esc(c.client_phone || '') + '</span></td><td>' + money(c.overdue_amount_cents) + '</td><td>' + esc(c.overdue_since ? String(c.overdue_since).slice(0, 10) : '\u2014') + '</td><td>' + esc(c.actions) + '</td><td style="text-align:right"><button class="btn btn--sm" data-ra="' + esc(c.id) + '" data-ref="' + esc(c.reference || '') + '">Action</button></td></tr>';
+      }).join('');
+      $('arrears-table').innerHTML = '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>R\u00e9f.</th><th>Client</th><th>Impay\u00e9</th><th>Depuis</th><th>Actions</th><th style="text-align:right"></th></tr></thead><tbody>' + body + '</tbody></table></div>';
+      $('arrears-table').querySelectorAll('[data-ra]').forEach(function (b) { b.addEventListener('click', function () { openRecoveryModal(b.dataset.ra, b.dataset.ref); }); });
+    }).catch(function (e) { if (guard(e)) return; if (e.message === 'forbidden' || e.message === 'missing_permission') forbidden('arrears-table', 'Acc\u00e8s non habilit\u00e9.'); else notify(fr(e), 'err'); });
+  }
+  function openRecoveryModal(id, ref) {
+    openModal('<h3>Action de recouvrement</h3><p class="sub">' + esc(ref) + '</p><div class="fld"><label for="ra-kind">Type</label><select id="ra-kind"><option value="relance">Relance</option><option value="promesse">Promesse</option><option value="echeancier">\u00c9ch\u00e9ancier</option><option value="encaissement">Encaissement</option><option value="contentieux">Contentieux</option></select></div><div class="fld"><label for="ra-amount">Montant (FCFA, encaissement)</label><input id="ra-amount" inputmode="numeric"></div><div class="fld"><label for="ra-note">Note</label><textarea id="ra-note" rows="2"></textarea></div><div class="modal__nav"><button class="btn btn--ghost" id="ra-cancel" type="button">Annuler</button><button class="btn btn--primary" id="ra-save" type="button">Enregistrer</button></div>');
+    $('ra-cancel').addEventListener('click', closeModal);
+    $('ra-save').addEventListener('click', function () {
+      $('ra-save').disabled = true;
+      api('/api/v1/credits/' + encodeURIComponent(id) + '/recovery-actions', 'POST', { kind: $('ra-kind').value, amount_cents: cents($('ra-amount').value), note: $('ra-note').value.trim() || undefined })
+        .then(function (r) { closeModal(); notify(r.note || 'Action enregistr\u00e9e.', 'ok'); loadArrears(); })
+        .catch(function (e) { $('ra-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+  /* ----- JOURNAL D'AUDIT ----- */
+  function loadAudit() {
+    return api('/api/v1/audit-log?limit=200').then(function (d) {
+      var l = d.entries || [];
+      if (!l.length) { $('audit-table').innerHTML = '<div class="empty">Aucun \u00e9v\u00e9nement.</div>'; return; }
+      var body = l.map(function (a) {
+        return '<tr><td>' + dt(a.created_at) + '</td><td>' + esc(a.actor_role || '\u2014') + '</td><td>' + esc(a.action || '\u2014') + '</td><td>' + esc(a.entity || '\u2014') + '</td><td><span class="hint" style="font-size:11px">' + esc(a.entity_id || '') + '</span></td></tr>';
+      }).join('');
+      $('audit-table').innerHTML = '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>R\u00f4le</th><th>Action</th><th>Entit\u00e9</th><th>R\u00e9f.</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+    }).catch(function (e) { if (guard(e)) return; if (e.message === 'forbidden' || e.message === 'missing_permission' || e.message === 'insufficient_privilege') forbidden('audit-table', 'Vous n\u2019\u00eates pas habilit\u00e9 \u00e0 consulter le journal d\u2019audit.'); else notify(fr(e), 'err'); });
   }
 })();

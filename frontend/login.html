@@ -35,9 +35,8 @@
           <button type="button" class="toggle" data-toggle="password" aria-label="Afficher">Afficher</button></div>
       </div>
       <button type="submit" class="btn btn--primary btn--block">Se connecter</button>
+      <p class="hint" style="text-align:center;margin-top:12px"><a href="#" id="link-forgot">Mot de passe oublié ?</a></p>
     </form>
-
-    <!-- Premier accès / activation -->
     <form id="form-activate" class="pane" hidden novalidate>
       <p class="hint">Saisissez le code d’accès reçu par WhatsApp ou e-mail, puis créez votre mot de passe.</p>
       <div class="field">
@@ -105,6 +104,35 @@
       <ul id="recovery-codes" class="recovery-codes"></ul>
       <button type="button" class="btn btn--primary btn--block" id="btn-enroll-done">J'ai noté mes codes, continuer</button>
     </div>
+
+    <!-- Mot de passe oublié : demande d'un lien de réinitialisation -->
+    <form id="form-forgot" class="pane" hidden novalidate>
+      <p class="hint">Saisissez votre identifiant ou votre e-mail. Si un compte correspond, vous recevrez un lien de réinitialisation par e-mail et WhatsApp.</p>
+      <div class="field">
+        <label for="forgot-id">Identifiant ou e-mail</label>
+        <input id="forgot-id" name="forgot-id" type="text" autocomplete="username" autocapitalize="none" required>
+      </div>
+      <button type="submit" class="btn btn--primary btn--block">Envoyer le lien</button>
+      <button type="button" class="btn btn--ghost btn--block" id="btn-forgot-back" style="margin-top:8px">Retour à la connexion</button>
+      <div id="forgot-links" class="field" hidden style="margin-top:12px"></div>
+    </form>
+
+    <!-- Réinitialisation : choix d'un nouveau mot de passe via le lien reçu -->
+    <form id="form-reset" class="pane" hidden novalidate>
+      <p class="hint">Choisissez un nouveau mot de passe pour votre compte teebo.</p>
+      <div class="field">
+        <label for="reset-new">Nouveau mot de passe</label>
+        <div class="pwd"><input id="reset-new" type="password" autocomplete="new-password" required>
+          <button type="button" class="toggle" data-toggle="reset-new" aria-label="Afficher">Afficher</button></div>
+        <p class="req">Au moins 10 caractères, avec majuscule, minuscule et chiffre.</p>
+      </div>
+      <div class="field">
+        <label for="reset-confirm">Confirmer le mot de passe</label>
+        <input id="reset-confirm" type="password" autocomplete="new-password" required>
+      </div>
+      <button type="submit" class="btn btn--primary btn--block">Réinitialiser mon mot de passe</button>
+      <button type="button" class="btn btn--ghost btn--block" id="btn-reset-back" style="margin-top:8px">Retour à la connexion</button>
+    </form>
 
     <p class="foot"><span class="brand">teeBo</span> — La finance à visage humain<br>Copyright © <span class="brand">teebo</span> 2026</p>
   </div>

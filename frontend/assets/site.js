@@ -483,7 +483,7 @@
     var box = el('div', 'proforma');
     var cyc = p.billing_cycle === 'annuel' ? 'Annuel (12 mois)' : 'Mensuel (1 mois)';
     var aboLabel = p.billing_cycle === 'annuel'
-      ? 'Abonnement annuel (12 mois, −15 % inclus)'
+      ? 'Abonnement annuel (12 mois)'
       : 'Abonnement mensuel (1er mois)';
     var rows = '' +
       '<tr><td>Institution</td><td>' + esc((state.imf && state.imf.imf_code) || '') + '</td></tr>' +
@@ -494,7 +494,7 @@
       '<tr><td>Frais de licence unique</td><td>' + money(p.licence_cents) + ' HT</td></tr>' +
       '<tr><td>' + esc(aboLabel) + '</td><td>' + money(p.subscription_cents) + ' HT</td></tr>';
     if (p.billing_cycle === 'annuel' && p.savings_cents)
-      rows += '<tr><td>Économie réalisée (cycle annuel)</td><td>−' + money(p.savings_cents) + '</td></tr>';
+      rows += '<tr><td>Remise annuelle (−15 %)</td><td>−' + money(p.savings_cents) + '</td></tr>';
     rows +=
       '<tr><td><b>Total partiel (HT)</b></td><td><b>' + money(p.amount_cents) + '</b></td></tr>' +
       '<tr><td>Période d’essai</td><td>' + esc(p.trial_days) + ' jours calendaires — gratuit</td></tr>' +

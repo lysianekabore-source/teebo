@@ -91,26 +91,26 @@ export function computeCollectionFee(product, monthlyDepositsCents) {
  * @param {number} monthDepositsCents cumul des dépôts du mois en cours
  * @returns {{amount_cents:number, exempt:boolean, reason:string, detail:object}}
  */
-export function computeEarlyWithdrawalFee(product, withdrawCents, monthDepositsCents) {
+export function computeEarlyWithdrawalFee(product, withdrawCents, monthDepositsCents, priorBalanceCents = null) {
   const bp = Number(product.early_withdrawal_fee_bp || 0);
   const w = Math.max(0, Math.round(Number(withdrawCents) || 0));
   const deposits = Math.max(0, Math.round(Number(monthDepositsCents) || 0));
-  const newDeposits = deposits; // dépôts du mois en cours = « nouveaux dépôts du mois »
+  const prior = priorBalanceCents === null || priorBalanceCents === undefined
+    ? null : Math.max(0, Math.round(Number(priorBalanceCents) || 0));
 
-  // Règle (c) — exonération : le retrait ne touche pas les nouveaux dépôts du mois.
-  //   Concrètement : le retrait ne consomme que de l'ancien solde (hors apports du mois).
-  if (product.early_withdrawal_exempt_new_deposits && w <= newDeposits && newDeposits > 0) {
-    // Le retrait reste couvert par les dépôts du mois => il ne les « entame » pas
-    // que s'il est inférieur ou égal au solde antérieur aux dépôts du mois.
-    const priorBalance = Math.max(0, deposits - newDeposits); // toujours 0 ici : on raisonne hors nouveaux dépôts
-    if (w <= priorBalance) {
-      return { amount_cents: 0, exempt: true, reason: 'retrait_ne_touche_pas_les_nouveaux_depots_du_mois',
-        detail: { withdraw_cents: w, month_deposits_cents: deposits, rate_bp: bp } };
-    }
+  // Règle (c) — exonération : le retrait ne touche pas les nouveaux dépôts du
+  //   mois dès lors qu'il est INTÉGRALEMENT couvert par le solde ANTÉRIEUR
+  //   (solde du compte avant les dépôts du mois en cours).
+  //   priorBalance = soldeCourant − dépôtsDuMois (borné à 0), fourni par l'appelant.
+  //   Si priorBalance est inconnu (null), l'exonération ne peut être établie
+  //   avec certitude ⇒ la commission reste due (choix prudent anti-fraude).
+  if (product.early_withdrawal_exempt_new_deposits && prior !== null && w > 0 && w <= prior) {
+    return { amount_cents: 0, exempt: true, reason: 'retrait_ne_touche_pas_les_nouveaux_depots_du_mois',
+      detail: { withdraw_cents: w, month_deposits_cents: deposits, prior_balance_cents: prior, rate_bp: bp } };
   }
   const amount = Math.round(w * bp / 10000);
   return { amount_cents: amount, exempt: false, reason: 'commission_retrait_anticipe',
-    detail: { withdraw_cents: w, month_deposits_cents: deposits, rate_bp: bp } };
+    detail: { withdraw_cents: w, month_deposits_cents: deposits, prior_balance_cents: prior, rate_bp: bp } };
 }
 
 /**

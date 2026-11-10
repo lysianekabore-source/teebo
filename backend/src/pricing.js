@@ -12,10 +12,11 @@
  *     soit 63 750 FCFA / mois -> 765 000 FCFA / an (licence au plein tarif) ;
  *   - Essai gratuit de 30 jours : la licence n'est facturée qu'APRÈS l'essai.
  *
- * Pour rester lisible sur la proforma et la facture, l'abonnement annuel est
- * présenté NET (remise de 15 % déjà incluse dans le montant affiché) : il n'y a
- * donc pas de ligne « remise » séparée à soustraire. Toutes les valeurs restent
- * surchargeables par variable d'environnement, sans être figées dans la logique.
+ * Sur la proforma ET la facture définitive, l'abonnement annuel est présenté au
+ * tarif BRUT (12 × mensuel) suivi d'une LIGNE DE REMISE de 15 % réellement
+ * déduite. Ainsi : Sous-total HT = licence + abonnement brut ; « Remise » en
+ * négatif ; total HT = brut − remise. Chaque montant se recoupe avec les lignes
+ * affichées. Toutes les valeurs restent surchargeables par variable d'env.
  */
 
 // Licence : 250 000 FCFA = 25 000 000 centimes (frais unique d'activation).
@@ -59,8 +60,8 @@ export function computePricing(monthlyCents, billing) {
     months = 12;
     grossSubscriptionCents = monthly * 12;
     savingsCents = Math.round(grossSubscriptionCents * ANNUAL_DISCOUNT_BP / 10000);
-    subscriptionCents = grossSubscriptionCents - savingsCents; // net annuel
-    periodLabel = '12 mois (annuel, remise \u221215 % incluse)';
+    subscriptionCents = grossSubscriptionCents;               // montant BRUT porté sur la ligne
+    periodLabel = '12 mois (annuel)';
   } else {
     months = 1;
     grossSubscriptionCents = monthly;
@@ -69,9 +70,12 @@ export function computePricing(monthlyCents, billing) {
     periodLabel = '1 mois (mensuel)';
   }
 
-  const discountCents = 0;                                  // aucune remise à soustraire
-  const subtotalCents = licenceCents + subscriptionCents;   // HT (net) = total
-  const totalCents = subtotalCents;                          // HT
+  // La remise annuelle est une LIGNE de remise réellement déduite : le
+  // Sous-total HT affiche le brut, la remise apparaît en négatif, et le total
+  // HT = brut − remise. Tout se recoupe avec les lignes de désignation.
+  const discountCents = savingsCents;                        // remise annuelle (0 en mensuel)
+  const subtotalCents = licenceCents + subscriptionCents;    // HT AVANT remise (brut)
+  const totalCents = Math.max(0, subtotalCents - discountCents); // HT APRÈS remise
 
   return { billing: cycle, licenceCents, subscriptionCents, grossSubscriptionCents,
     savingsCents, discountCents, subtotalCents, totalCents, periodLabel, months };
@@ -84,7 +88,7 @@ export function computePricing(monthlyCents, billing) {
 export function buildInvoiceLines({ planLabel, billing, licenceCents, subscriptionCents }) {
   const cycle = BILLING_CYCLES.includes(billing) ? billing : 'mensuel';
   const period = cycle === 'annuel'
-    ? '12 mois (annuel, remise \u221215 % incluse)'
+    ? '12 mois (annuel)'
     : '1 mois (mensuel)';
   return [
     { label: 'Licence teeBo \u2014 activation (frais unique)', amountCents: Number(licenceCents || 0) },

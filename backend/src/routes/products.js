@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { q, tx } from '../db.js';
-import { requireRole } from '../auth.js';
+import { requireRole, requirePermission, userHasPermission } from '../auth.js';
 import {
   monthBounds, monthsStarted, computeCollectionFee, computeEarlyWithdrawalFee,
   chargeFee, recoverPendingFees, monthDeposits, minPermanentOf, isLastDayOfMonth, lastDayOfMonth,
@@ -429,7 +429,11 @@ r.post('/operations/withdraw-early', requireRole(...STAFF), async (req, res, nex
       }
 
       // --- ÉTAPE 2 + 3 : commission de retrait anticipé / exonération ---
-      const ew = computeEarlyWithdrawalFee(acc, amount, depositsMonth);
+      // Solde antérieur = solde courant du compte MOINS les dépôts du mois en
+      // cours (borné à 0). Sert à déterminer si le retrait entame les nouveaux
+      // dépôts du mois (règle d'exonération).
+      const priorBalance = Math.max(0, Number(acc.balance_cents || 0) - Number(depositsMonth || 0));
+      const ew = computeEarlyWithdrawalFee(acc, amount, depositsMonth, priorBalance);
       let ewFee = 0;
       if (!ew.exempt && ew.amount_cents > 0) {
         ewFee = ew.amount_cents;
@@ -556,8 +560,12 @@ r.post('/fees/simulate', requireRole(...STAFF), async (req, res, next) => {
     if (!prod) return res.status(404).json({ error: 'produit_introuvable' });
     const deposits = int(b.month_deposits_cents);
     const withdraw = int(b.withdraw_cents);
+    // Solde antérieur optionnel pour simuler l'exonération (retrait couvert par
+    // l'ancien solde). Absent => pas d'exonération simulée (commission due).
+    const priorBalance = b.prior_balance_cents === undefined || b.prior_balance_cents === null
+      ? null : int(b.prior_balance_cents);
     const cf = computeCollectionFee(prod, deposits);
-    const ew = computeEarlyWithdrawalFee(prod, withdraw, deposits);
+    const ew = computeEarlyWithdrawalFee(prod, withdraw, deposits, priorBalance);
     res.json({
       product: { code: prod.code, label: prod.label, nature: prod.nature },
       opening: { opening_fee_cents: Number(prod.opening_fee_cents),
@@ -654,6 +662,27 @@ r.get('/credits', requireRole(...STAFF), async (req, res) => {
     labels: { en_attente: 'En attente', a_l_etude: 'À l\'étude', approuve: 'Approuvé', rejete: 'Rejeté', decaisse: 'Décaissé' } });
 });
 
+/** ÉCRAN DE VALIDATION FINALE — file d'attente des dossiers à valider.
+ *  Réservé aux postes habilités (credit.validate_final). Déclaré AVANT
+ *  /credits/:id pour ne pas être capturé comme un identifiant. */
+r.get('/credits/final-queue', requirePermission('credit.validate_final'), async (req, res, next) => {
+  try {
+    const { rows } = await q(
+      `SELECT cf.id, cf.reference, cf.status, cf.amount_cents, cf.approved_amount_cents,
+              cf.duration_months, cf.purpose, cf.origin, cf.created_at,
+              c.full_name AS client_name, c.code_client,
+              col.full_name AS collectrice_name, off.full_name AS officer_name
+         FROM credit_file cf
+         JOIN client c ON c.id=cf.client_id
+         LEFT JOIN app_user col ON col.id=cf.collectrice_user_id
+         LEFT JOIN app_user off ON off.id=cf.officer_user_id
+        WHERE cf.imf_id=$1 AND cf.status IN ('en_attente','a_l_etude')
+        ORDER BY cf.created_at`, [req.user.imf_id]);
+    res.json({ queue: rows,
+      labels: { en_attente: 'En attente', a_l_etude: 'À l\'étude', approuve: 'Approuvé', rejete: 'Rejeté', decaisse: 'Décaissé' } });
+  } catch (e) { next(e); }
+});
+
 /** Tableau de bord partagé d'un dossier (Client, Collectrice, Superviseur). */
 r.get('/credits/:id', requireRole(...STAFF), async (req, res, next) => {
   try {
@@ -690,6 +719,14 @@ r.post('/credits/:id/process', requireRole(...OFFICER), async (req, res, next) =
     const b = req.body || {};
     const to = b.status;
     if (!CREDIT_STATUSES.includes(to)) return res.status(400).json({ error: 'statut_invalide', allowed: CREDIT_STATUSES });
+    // VALIDATION FINALE réservée : l'octroi définitif (approuve / decaisse) exige
+    // l'habilitation 'credit.validate_final'. L'instruction (a_l_etude) et le
+    // rejet restent ouverts aux agents de crédit habilités (OFFICER).
+    if ((to === 'approuve' || to === 'decaisse') &&
+        !(await userHasPermission(req.user, 'credit.validate_final'))) {
+      return res.status(403).json({ error: 'final_validation_reserved',
+        message: 'L\'octroi définitif est réservé aux postes habilités à la validation finale du crédit.' });
+    }
     const out = await tx(async (c) => {
       const f = (await c.query('SELECT * FROM credit_file WHERE id=$1 AND imf_id=$2 FOR UPDATE',
         [req.params.id, req.user.imf_id])).rows[0];
@@ -712,9 +749,41 @@ r.post('/credits/:id/process', requireRole(...OFFICER), async (req, res, next) =
   } catch (e) { next(e); }
 });
 
+/** VALIDATION FINALE d'un dossier (octroi définitif ou rejet définitif).
+ *  Réservée aux postes habilités (credit.validate_final), réaffectables par
+ *  l'admin IMF via /access/positions/:code/permission. */
+r.post('/credits/:id/final-validate', requirePermission('credit.validate_final'), async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const decision = b.decision; // 'approuve' | 'rejete' | 'decaisse'
+    if (!['approuve', 'rejete', 'decaisse'].includes(decision))
+      return res.status(400).json({ error: 'decision_invalide', allowed: ['approuve', 'rejete', 'decaisse'] });
+    const out = await tx(async (c) => {
+      const f = (await c.query('SELECT * FROM credit_file WHERE id=$1 AND imf_id=$2 FOR UPDATE',
+        [req.params.id, req.user.imf_id])).rows[0];
+      if (!f) { const e = new Error('dossier_introuvable'); e.status = 404; throw e; }
+      const note = b.note || null;
+      const approved = decision === 'approuve'
+        ? (b.approved_amount_cents !== undefined ? int(b.approved_amount_cents) : Number(f.amount_cents))
+        : f.approved_amount_cents;
+      const decided = ['approuve', 'rejete'].includes(decision) ? new Date() : f.decided_at;
+      const f2 = (await c.query(
+        `UPDATE credit_file SET status=$2::credit_status,
+              decided_at=$3, decision_note=COALESCE($4,decision_note),
+              approved_amount_cents=$5, updated_at=now()
+          WHERE id=$1 RETURNING *`,
+        [f.id, decision, decided, note, approved])).rows[0];
+      await logCreditEvent(c, f.id, f.status, decision, req.user, note || 'Validation finale');
+      return f2;
+    });
+    res.json({ ok: true, credit: { id: out.id, reference: out.reference, status: out.status,
+      approved_amount_cents: out.approved_amount_cents !== null ? Number(out.approved_amount_cents) : null },
+      note: 'Validation finale enregistrée — suivi visible en temps réel par la Collectrice, le Superviseur et le Client.' });
+  } catch (e) { next(e); }
+});
+
 /** Suivi côté collectrice / superviseur (tableau de bord partagé). */
-r.get('/credits/dashboard/summary', requireRole(...STAFF), async (req, res) => {
-  const rows = (await q(
+r.get('/credits/dashboard/summary', requireRole(...STAFF), async (req, res) => {  const rows = (await q(
     `SELECT cf.status, COUNT(*)::int AS n, COALESCE(SUM(cf.amount_cents),0)::bigint AS total_cents
        FROM credit_file cf WHERE cf.imf_id=$1 GROUP BY cf.status`, [req.user.imf_id])).rows;
   const { rows: recent } = await q(

@@ -1,7 +1,9 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { q, tx } from '../db.js';
-import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken } from '../auth.js';
+import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken, userHasPermission, effectivePermissionKeys } from '../auth.js';
+import { notifyEmail, notifyWhatsApp, PUBLIC_SITE_URL } from '../notify.js';
 import { getStatus, is2faRequired, createChallenge, consumeChallenge, verifyForUser,
   verifyRecoveryCode, startEnrollment, confirmEnrollment, disable,
   createEnrollmentTicket, resolveEnrollmentTicket, consumeEnrollmentTicket } from '../twofa.js';
@@ -225,6 +227,110 @@ router.post('/change-password', authenticate, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// --- Mot de passe oublié : demande de réinitialisation ---------------------
+// Accessible SANS session (l'utilisateur est justement bloqué dehors). On
+// identifie le compte par son identifiant OU son e-mail, on génère un jeton à
+// usage unique (haché, valable 30 min) et on envoie un lien par e-mail et
+// WhatsApp. Réponse TOUJOURS générique pour ne pas révéler l'existence d'un
+// compte (anti-énumération). En mode dégradé (SMTP/WhatsApp non configurés),
+// on renvoie les liens « prêts à envoyer », comme ailleurs dans l'application.
+const RESET_TTL_MIN = 30;
+function b64url(buf) {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const { identifier } = req.body || {};
+    const generic = {
+      ok: true,
+      message: 'Si un compte correspond à cet identifiant, un lien de réinitialisation vient d’être envoyé par e-mail et WhatsApp. Le lien est valable ' + RESET_TTL_MIN + ' minutes.'
+    };
+    if (!identifier || !String(identifier).trim()) return res.json(generic);
+
+    const { rows } = await q(
+      `SELECT id, imf_id, email, phone, full_name, is_active, password_hash
+         FROM app_user WHERE (email = $1 OR code_user = $1)`, [String(identifier).trim()]
+    );
+    const u = rows[0];
+    // Compte inexistant, désactivé ou jamais activé : on ne crée pas de jeton
+    // mais on répond comme si tout s'était bien passé.
+    if (!u || !u.is_active || !u.password_hash) return res.json(generic);
+
+    // On invalide les éventuels jetons encore actifs de ce compte.
+    await q(`UPDATE password_reset SET used_at = now()
+               WHERE user_id = $1 AND used_at IS NULL AND expires_at > now()`, [u.id]);
+
+    const token = b64url(crypto.randomBytes(32));
+    await q(
+      `INSERT INTO password_reset(user_id, imf_id, token_hash, expires_at)
+       VALUES ($1,$2,$3, now() + ($4 || ' minutes')::interval)`,
+      [u.id, u.imf_id, hashToken(token), String(RESET_TTL_MIN)]
+    );
+
+    const link = `${PUBLIC_SITE_URL}/login.html?reset=${encodeURIComponent(token)}`;
+    const prenom = (u.full_name || '').split(' ')[0] || '';
+    const subject = 'teebo — Réinitialisation de votre mot de passe';
+    const body =
+      `Bonjour ${prenom},\n\n` +
+      `Vous avez demandé la réinitialisation de votre mot de passe teebo.\n` +
+      `Cliquez sur le lien ci-dessous (valable ${RESET_TTL_MIN} minutes) pour choisir un nouveau mot de passe :\n\n` +
+      `${link}\n\n` +
+      `Si vous n’êtes pas à l’origine de cette demande, ignorez ce message : votre mot de passe actuel reste inchangé.\n\n` +
+      `— L’équipe teebo`;
+
+    const dev = [];
+    try {
+      const em = await notifyEmail(u.email, subject, body);
+      if (em && em.mode === 'dev' && em.link) dev.push({ canal: 'email', lien: em.link });
+    } catch (e) { /* on reste silencieux côté client */ }
+    if (u.phone) {
+      try {
+        const wa = await notifyWhatsApp(u.phone,
+          `teebo — Réinitialisez votre mot de passe (valable ${RESET_TTL_MIN} min) : ${link}`);
+        if (wa && wa.mode === 'dev' && wa.link) dev.push({ canal: 'whatsapp', lien: wa.link });
+      } catch (e) { /* silencieux */ }
+    }
+
+    // En mode dégradé uniquement, on expose les liens « prêts à envoyer » afin
+    // que la réinitialisation reste possible sans passerelle automatique.
+    if (dev.length) return res.json({ ...generic, mode: 'dev', dev_links: dev });
+    return res.json(generic);
+  } catch (e) { next(e); }
+});
+
+// --- Réinitialisation : définir un nouveau mot de passe via le jeton --------
+// Ne nécessite pas de session. Le jeton est vérifié par empreinte, à usage
+// unique et expiré au-delà de 30 min. La 2FA reste exigée à la connexion
+// suivante : réinitialiser le mot de passe ne contourne jamais la double
+// authentification. Toutes les sessions existantes du compte sont révoquées.
+router.post('/reset-password', async (req, res, next) => {
+  try {
+    const { token, new_password } = req.body || {};
+    if (!token) return res.status(422).json({ error: 'missing_token' });
+    if (weakPassword(new_password)) return res.status(422).json({ error: 'weak_password' });
+
+    const { rows } = await q(
+      `SELECT pr.id, pr.user_id
+         FROM password_reset pr
+        WHERE pr.token_hash = $1 AND pr.used_at IS NULL AND pr.expires_at > now()`,
+      [hashToken(token)]
+    );
+    if (!rows.length) return res.status(400).json({ error: 'invalid_or_expired_token' });
+    const pr = rows[0];
+
+    const hash = await bcrypt.hash(new_password, 12);
+    await tx(async (c) => {
+      await c.query(
+        `UPDATE app_user SET password_hash=$1, password_set_at=now(), must_change_password=false
+         WHERE id=$2`, [hash, pr.user_id]);
+      await c.query('UPDATE password_reset SET used_at = now() WHERE id=$1', [pr.id]);
+      // Par sécurité, on révoque toutes les sessions ouvertes de ce compte.
+      await c.query('UPDATE session SET revoked = true WHERE user_id = $1', [pr.user_id]);
+    });
+    res.json({ ok: true, message: 'Mot de passe réinitialisé. Vous pouvez désormais vous connecter.' });
+  } catch (e) { next(e); }
+});
+
 // --- Déconnexion ------------------------------------------------------------
 router.post('/logout', authenticate, async (req, res, next) => {
   try {
@@ -247,6 +353,9 @@ router.get('/me', authenticate, async (req, res, next) => {
       ? Math.max(0, Math.ceil((trialEnds.getTime() - Date.now()) / 86400000)) : null;
     const pwdSetAt = req.user.password_set_at ? new Date(req.user.password_set_at) : null;
     const pwdExpiresAt = pwdSetAt ? new Date(pwdSetAt.getTime() + MDP_MAX_DAYS * 86400000) : null;
+    // Habilitation à l'écran de validation finale des crédits (pour l'affichage du menu).
+    const canValidateCreditFinal = await userHasPermission(req.user, 'credit.validate_final');
+    const permissionKeys = await effectivePermissionKeys(req.user);
     res.json({
       user: {
         id: req.user.id, email: req.user.email, full_name: req.user.full_name,
@@ -260,7 +369,9 @@ router.get('/me', authenticate, async (req, res, next) => {
       trial_ends_at: imf.trial_ends_at || null,
       password_set_at: req.user.password_set_at || null,
       password_expires_at: pwdExpiresAt,
-      password_change_required: req.user.must_change_password || req.passwordExpired
+      password_change_required: req.user.must_change_password || req.passwordExpired,
+      can_validate_credit_final: canValidateCreditFinal,
+      permissions: permissionKeys
     });
   } catch (e) { next(e); }
 });

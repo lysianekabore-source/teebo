@@ -5,6 +5,7 @@ import { authenticate, requireFreshPassword, requireRole } from '../auth.js';
 import { notifyWhatsApp, notifyEmail, waLink, mailtoLink, PUBLIC_SITE_URL } from '../notify.js';
 import { getBranding } from '../documents.js';
 import { defaultPermissionKeysForRole, buildProfilesMatrix } from '../permissions.js';
+import { positionInfo } from '../org_structure.js';
 
 const router = express.Router();
 router.use(authenticate, requireFreshPassword);
@@ -70,7 +71,8 @@ router.delete('/units/:id', requireRole('admin_imf','direction'), async (req, re
 router.get('/users', async (req, res, next) => {
   try {
     const { rows } = await q(
-      `SELECT u.id,u.code_user,u.full_name,u.email,u.phone,u.role,u.position,
+      `SELECT u.id,u.code_user,u.full_name,u.email,u.phone,u.role,u.position,u.position_code,
+              u.parent_id,u.dept_code,u.service_code,
               u.org_unit_id,u.must_change_password,u.is_active,o.name AS unit_name
          FROM app_user u LEFT JOIN org_unit o ON o.id=u.org_unit_id
         WHERE u.imf_id=$1 AND u.role <> 'teebo_admin' ORDER BY u.created_at`,
@@ -81,29 +83,83 @@ router.get('/users', async (req, res, next) => {
 
 router.post('/users', requireRole('admin_imf','direction'), async (req, res, next) => {
   try {
-    const { full_name, position, email, phone, role, org_unit_id } = req.body || {};
-    if (!full_name || !email || !role) return res.status(422).json({ error: 'missing_fields' });
+    const { full_name, position, email, phone, org_unit_id } = req.body || {};
+    let { role, position_code, supervisor_id } = req.body || {};
+    if (!full_name || !email) return res.status(422).json({ error: 'missing_fields' });
+
+    // --- Dérivation à partir du POSTE (source de vérité si fourni) -----------
+    // Le poste impose son rôle-archetype, son département et son service ;
+    // on ne réécrit jamais ces valeurs à la main quand un poste est choisi.
+    let posDept = null, posService = null, posLabel = position || null, pos = null;
+    if (position_code) {
+      pos = positionInfo(position_code);
+      if (!pos) {
+        // Poste CUSTOM créé par l'IMF (position_catalog, schema_v13).
+        const row = (await q(
+          `SELECT code,label,role_key,dept_code,service_code,
+                  can_supervise_collectors,needs_supervisor
+             FROM position_catalog
+            WHERE code=$1 AND (imf_id=$2 OR imf_id IS NULL)`,
+          [position_code, req.user.imf_id])).rows[0];
+        if (!row) return res.status(422).json({ error: 'invalid_position' });
+        pos = { code: row.code, label: row.label, role: row.role_key, dept: row.dept_code,
+          service: row.service_code, supervisesCollectors: row.can_supervise_collectors,
+          needsSupervisor: row.needs_supervisor };
+      }
+      role = pos.role;
+      posDept = pos.dept;
+      posService = pos.service;
+      posLabel = pos.label;
+    }
+    if (!role) return res.status(422).json({ error: 'missing_fields' });
     if (role === 'teebo_admin') return res.status(422).json({ error: 'invalid_role' });
+
     const out = await tx(async (c) => {
       if (org_unit_id) {
         const u = (await c.query('SELECT imf_id FROM org_unit WHERE id=$1', [org_unit_id])).rows[0];
         if (!u || u.imf_id !== req.user.imf_id) { const e=new Error('bad_unit'); e.status=403; throw e; }
       }
+      // --- Règle de supervision de la collecte -------------------------------
+      // Un agent de collecte DOIT être rattaché à un superviseur dont le poste
+      // peut superviser la collecte : Chef d'agence OU Agent de crédit.
+      if (pos && pos.needsSupervisor) {
+        if (!supervisor_id) { const e=new Error('supervisor_required'); e.status=422; throw e; }
+        const sup = (await c.query(
+          'SELECT imf_id, position_code, is_active FROM app_user WHERE id=$1', [supervisor_id])).rows[0];
+        if (!sup || sup.imf_id !== req.user.imf_id) { const e=new Error('bad_supervisor'); e.status=403; throw e; }
+        const supPos = positionInfo(sup.position_code);
+        if (!supPos || !supPos.supervisesCollectors) {
+          const e=new Error('invalid_supervisor'); e.status=422; throw e; }
+      } else {
+        supervisor_id = null; // pas de superviseur pour les autres postes
+      }
       const code = (await c.query('SELECT fn_gen_user_code($1) AS c', [req.user.imf_id])).rows[0].c;
       const r = (await c.query(
-        `INSERT INTO app_user(imf_id,org_unit_id,code_user,full_name,position,email,phone,role,
-             password_hash,must_change_password)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,true) RETURNING id, code_user`,
-        [req.user.imf_id, org_unit_id || null, code, full_name, position || null, email, phone || null, role]
+        `INSERT INTO app_user(imf_id,org_unit_id,parent_id,code_user,full_name,position,position_code,
+             dept_code,service_code,email,phone,role,password_hash,must_change_password)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULL,true) RETURNING id, code_user`,
+        [req.user.imf_id, org_unit_id || null, supervisor_id || null, code, full_name, posLabel,
+         position_code || null, posDept, posService, email, phone || null, role]
       )).rows[0];
-      // Habilitations par défaut attachées au profil (matrice profils → droits).
-      const perms = defaultPermissionKeysForRole(role);
+      // Habilitations par défaut attachées au PROFIL/POSTE.
+      // Priorité : habilitations par défaut du poste (position_default_permission,
+      // surcharge IMF prioritaire) ; à défaut (poste sans réglage), la matrice
+      // profils → droits du rôle-archetype. L'admin IMF peut ensuite cocher /
+      // décocher chaque habilitation par poste ou par utilisateur.
+      let perms = [];
+      let source = 'position';
+      if (position_code) {
+        perms = (await c.query(
+          'SELECT permission_key FROM fn_position_default_perms($1,$2)',
+          [req.user.imf_id, position_code])).rows.map((x) => x.permission_key);
+      }
+      if (!perms.length) { perms = defaultPermissionKeysForRole(role); source = 'default'; }
       for (const key of perms) {
         await c.query(
           `INSERT INTO user_permission(imf_id, user_id, permission_key, allowed, source)
-           VALUES ($1,$2,$3,true,'default')
+           VALUES ($1,$2,$3,true,$4)
            ON CONFLICT (user_id, permission_key) DO NOTHING`,
-          [req.user.imf_id, r.id, key]);
+          [req.user.imf_id, r.id, key, source]);
       }
       return r;
     });

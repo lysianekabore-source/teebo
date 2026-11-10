@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { q, tx } from '../db.js';
-import { requireRole } from '../auth.js';
+import { requireRole, canViewTeamData } from '../auth.js';
 import { runFreezeSweep, unfreezeClient, getSchedule, scheduleCoversDay, isFrozen, FREEZE_AFTER_DAYS } from '../freeze.js';
 
 const r = Router();
@@ -95,10 +95,10 @@ async function ensureRound(c, imfId, userId) {
 r.get('/round/today', requireRole(...ALL), async (req, res, next) => {
   try {
     // Le compteur « sans visite » est recalculé à chaque affichage (gel auto 1 mois).
-    if (req.user.role === 'staff') { try { await runFreezeSweep(req.user.imf_id); } catch (e) { /* tolérant */ } }
+    if (!canViewTeamData(req.user.role)) { try { await runFreezeSweep(req.user.imf_id); } catch (e) { /* tolérant */ } }
 
     const pos = readPos(null, req);
-    const targetId = (req.user.role === 'staff') ? req.user.id : (req.query.collectrice_user_id || req.user.id);
+    const targetId = canViewTeamData(req.user.role) ? (req.query.collectrice_user_id || req.user.id) : req.user.id;
 
     const round = (await q(
       `SELECT * FROM collection_round WHERE imf_id=$1 AND collectrice_user_id=$2 AND round_date=CURRENT_DATE`,
@@ -233,7 +233,7 @@ r.post('/round/today/add', requireRole(...ALL), async (req, res, next) => {
     const b = req.body || {};
     const ids = Array.isArray(b.client_ids) ? b.client_ids : (b.client_id ? [b.client_id] : []);
     if (!ids.length) return res.status(400).json({ error: 'au moins un client est requis' });
-    const targetId = (req.user.role === 'staff') ? req.user.id : (b.collectrice_user_id || req.user.id);
+    const targetId = canViewTeamData(req.user.role) ? (b.collectrice_user_id || req.user.id) : req.user.id;
 
     const out = await tx(async (c) => {
       const round = await ensureRound(c, req.user.imf_id, targetId);
@@ -273,7 +273,7 @@ const checkIn = async (req, res, next) => {
     const b = req.body || {};
     if (!b.client_id) return res.status(400).json({ error: 'client_id requis' });
     const pos = readPos(b, req);
-    const targetId = (req.user.role === 'staff') ? req.user.id : (b.collectrice_user_id || req.user.id);
+    const targetId = canViewTeamData(req.user.role) ? (b.collectrice_user_id || req.user.id) : req.user.id;
 
     // Le client doit appartenir à l’IMF (cloisonnement).
     const cl = (await q('SELECT id, full_name, code_client, is_frozen, frozen_at, frozen_reason FROM client WHERE id=$1 AND imf_id=$2',
@@ -574,7 +574,7 @@ r.get('/clients/:id/freeze-events', requireRole(...ALL), async (req, res, next) 
 /* ------------------------------------------------------------------ */
 r.get('/round/dashboard', requireRole(...ALL), async (req, res, next) => {
   try {
-    const targetId = (req.user.role === 'staff') ? req.user.id : (req.query.collectrice_user_id || req.user.id);
+    const targetId = canViewTeamData(req.user.role) ? (req.query.collectrice_user_id || req.user.id) : req.user.id;
     const today = (await q(
       `SELECT COUNT(*)::int AS n FROM client_visit_log
         WHERE imf_id=$1 AND collectrice_user_id=$2 AND visit_date=CURRENT_DATE`,
