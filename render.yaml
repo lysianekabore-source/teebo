@@ -1,57 +1,74 @@
-# teebo — Blueprint Render pour l'API Matrice des habilitations
+# ===================================================================
+# teebo - Deploiement automatique sur Render (https://render.com)
+#
+# IMPORTANT : ce fichier NE contient AUCUNE ligne "branch".
+# Render utilise alors la branche choisie dans l'interface (main).
+# C'est ce qui corrige l'erreur :
+#   "services[0].branch  branch principal could not be found"
+#
+# Etapes :
+#   1. Ce fichier doit etre a la RACINE du depot GitHub.
+#   2. Sur Render : New + > Blueprint > choisissez le depot, branche "main".
+#   3. Render cree : la base PostgreSQL + le serveur API.
+#   4. Renseignez TEEBO_ADMIN_PASSWORD (variable marquee "sync: false").
+# ===================================================================
+
+databases:
+  - name: teebo-db
+    databaseName: teebo
+    user: teebo
+    plan: free             # base PostgreSQL geree (offre gratuite)
+    region: frankfurt
+
 services:
   - type: web
-    name: teebo-habilitations-api
-    runtime: node
+    name: teebo-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
     plan: free
-    buildCommand: npm install
-    startCommand: npm start
-    healthCheckPath: /health
+    region: frankfurt
+    healthCheckPath: /healthz
     envVars:
-      # Base PostgreSQL de teebo (laisser vide si DEMO=1)
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+      - key: HOST
+        value: 0.0.0.0
       - key: DATABASE_URL
+        fromDatabase:
+          name: teebo-db
+          property: connectionString
+      - key: CORS_ORIGIN
+        value: "true"
+      - key: TEEBO_ADMIN_EMAIL
+        value: hello@teebo.africa
+      - key: TEEBO_ADMIN_PASSWORD
+        sync: false        # a saisir dans Render (mot de passe fort)
+      - key: TEEBO_WHATSAPP
+        value: "+22650321432"
+      - key: TEEBO_EMAIL
+        value: hello@teebo.africa
+      - key: PUBLIC_API_URL
+        value: https://teebo-api-p825.onrender.com
+      - key: PUBLIC_SITE_URL
+        value: https://www.teebo.africa
+      - key: DOC_LINK_SECRET
+        sync: false        # secret de signature des liens de facture publics
+      - key: GOOGLE_CLIENT_ID
+        sync: false        # optionnel
+      - key: WHATSAPP_TOKEN
+        sync: false        # optionnel (sinon mode degrade)
+      - key: WHATSAPP_PHONE_ID
         sync: false
-      # Mode démo (1 = état en mémoire, aucune base requise)
-      - key: DEMO
-        value: "1"
-      # Jeton super-admin teebo (côté plateforme : entitlements par IMF)
-      - key: TEEBO_ADMIN_TOKEN
-        sync: false
-      # Jeton admin IMF (côté IMF : habilitations par utilisateur)
-      - key: API_TOKEN
-        sync: false
-      # Origine autorisée (URL du site Netlify)
-      - key: NETLIFY_ORIGIN
-        sync: false
-      # Production : vraie session (1 = JWT vérifié, imf_id/roles depuis la session)
-      - key: USE_SESSION
-        value: "0"
-      # Secret de signature du JWT de session (obligatoire si USE_SESSION=1)
-      - key: SESSION_JWT_SECRET
-        generateValue: true
-      # Durée de validité d'une session (secondes)
-      - key: SESSION_TTL_SECONDS
-        value: "28800"
-      # Rôle plateforme teebo attendu
-      - key: TEEBO_ROLE
-        value: "TEEBO_ADMIN"
-      # --- E-mail d'invitation (laisser SMTP_HOST vide = mode MOCK : l'e-mail
-      #     est affiché dans les logs, jamais envoyé ; idéal pour tester) ---
-      # URL publique du site Netlify (sert à construire le lien de connexion)
-      - key: APP_BASE_URL
-        sync: false
-      # Expéditeur affiché
-      - key: MAIL_FROM
-        value: "teebo <no-reply@teebo.io>"
-      # Serveur SMTP (ex. smtp.sendgrid.net, smtp.mailgun.org, smtp.gmail.com)
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT
         value: "587"
-      # "1" pour le port 465 (TLS implicite), sinon laisser "0"
-      - key: SMTP_SECURE
-        value: "0"
       - key: SMTP_USER
         sync: false
       - key: SMTP_PASS
         sync: false
+      - key: SMTP_FROM
+        value: "teebo <no-reply@teebo.africa>"
