@@ -42,7 +42,9 @@ router.get('/org-settings', async (req, res, next) => {
         bank_details: b.bank_details,
         footer_note: b.footer_note,
         notify_whatsapp: b.notify_whatsapp,
-        notify_email: b.notify_email
+        notify_email: b.notify_email,
+        part_sociale_nominal_cents: await currentPartSociale(req.user.imf_id),
+        id_doc_validity_months: await currentIdDocValidity(req.user.imf_id)
       },
       imf: {
         code_imf: b.imf.code_imf, name: b.imf.name, type: b.imf.type,
@@ -119,6 +121,25 @@ router.post('/org-settings', requireRole('admin_imf', 'direction'), async (req, 
           `INSERT INTO imf_document_settings(imf_id, vat_rate_bp) VALUES ($1,$2)
            ON CONFLICT (imf_id) DO UPDATE SET vat_rate_bp=EXCLUDED.vat_rate_bp, updated_at=now()`,
           [req.user.imf_id, bp]);
+      }
+      // Valeur nominale de la part sociale (SCOOP) : paramètre IMF.
+      if (b.part_sociale_nominal_cents !== undefined) {
+        const ps = b.part_sociale_nominal_cents === null || b.part_sociale_nominal_cents === ''
+          ? null : Math.max(0, Math.round(Number(b.part_sociale_nominal_cents)));
+        await c.query(
+          `INSERT INTO imf_document_settings(imf_id, part_sociale_nominal_cents) VALUES ($1,$2)
+           ON CONFLICT (imf_id) DO UPDATE SET part_sociale_nominal_cents=EXCLUDED.part_sociale_nominal_cents, updated_at=now()`,
+          [req.user.imf_id, ps]);
+      }
+      // Durée de validité par défaut (en mois) de chaque type de pièce d'identité,
+      // selon la localité de l'IMF. Sert au calcul automatique de la date
+      // d'expiration lors de la création d'un client particulier.
+      if (b.id_doc_validity_months !== undefined) {
+        const vm = normalizeIdDocValidity(b.id_doc_validity_months);
+        await c.query(
+          `INSERT INTO imf_document_settings(imf_id, id_doc_validity_months) VALUES ($1,$2)
+           ON CONFLICT (imf_id) DO UPDATE SET id_doc_validity_months=EXCLUDED.id_doc_validity_months, updated_at=now()`,
+          [req.user.imf_id, vm]);
       }
       // Répercussion des mentions légales sur la fiche imf (cohérence).
       if (b.legal_name || b.legal_address) {
@@ -198,6 +219,28 @@ function canEdit(role) { return ['admin_imf', 'direction'].includes(role); }
 async function currentVatBp(imfId) {
   const r = (await q('SELECT vat_rate_bp FROM imf_document_settings WHERE imf_id=$1', [imfId])).rows[0];
   return r ? r.vat_rate_bp : null;
+}
+async function currentPartSociale(imfId) {
+  const r = (await q('SELECT part_sociale_nominal_cents FROM imf_document_settings WHERE imf_id=$1', [imfId])).rows[0];
+  return r && r.part_sociale_nominal_cents != null ? Number(r.part_sociale_nominal_cents) : null;
+}
+async function currentIdDocValidity(imfId) {
+  const r = (await q('SELECT id_doc_validity_months FROM imf_document_settings WHERE imf_id=$1', [imfId])).rows[0];
+  return r && r.id_doc_validity_months ? r.id_doc_validity_months : {};
+}
+// Ne garde que les 4 types de pièce connus, convertis en nombre de mois > 0.
+const ID_DOC_CODES = ['cni', 'passeport', 'cedeao', 'consulaire_sejour'];
+function normalizeIdDocValidity(input) {
+  const out = {};
+  if (input && typeof input === 'object') {
+    for (const k of ID_DOC_CODES) {
+      const v = input[k];
+      if (v === undefined || v === null || v === '') continue;
+      const m = Math.trunc(Number(v));
+      if (Number.isFinite(m) && m > 0) out[k] = m;
+    }
+  }
+  return out;
 }
 
 export default router;

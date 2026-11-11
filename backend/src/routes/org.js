@@ -131,7 +131,16 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
         if (!supPos || !supPos.supervisesCollectors) {
           const e=new Error('invalid_supervisor'); e.status=422; throw e; }
       } else {
-        supervisor_id = null; // pas de superviseur pour les autres postes
+        // Autres postes : le responsable hiérarchique est facultatif. S'il est
+        // fourni (pré-rempli d'après le poste côté interface), on le valide
+        // (même IMF) et on le conserve comme parent_id ; sinon aucun parent.
+        if (supervisor_id) {
+          const sup = (await c.query(
+            'SELECT imf_id FROM app_user WHERE id=$1', [supervisor_id])).rows[0];
+          if (!sup || sup.imf_id !== req.user.imf_id) { const e=new Error('bad_supervisor'); e.status=403; throw e; }
+        } else {
+          supervisor_id = null;
+        }
       }
       const code = (await c.query('SELECT fn_gen_user_code($1) AS c', [req.user.imf_id])).rows[0].c;
       const r = (await c.query(

@@ -156,6 +156,15 @@ export function servicesOfDept(deptCode) { return SERVICES.filter((s) => s.dept 
 // --- Helpers POSTES --------------------------------------------------------
 const _posByCode = new Map(POSITIONS.map((p) => [p.code, p]));
 export function positionInfo(code) { return _posByCode.get(code) || null; }
+// Vrai si le poste tient une caisse/guichet (mouvements dans les deux sens) :
+// service « Caisses & Guichets » (OPS_CAISSE) ou rôle-poste « teller »
+// (Caissier, Chef de Caisse, Chef d'Agence). L'agent de collecte
+// (POS_AGENT_COLLECTE, rôle « collectrice ») en est EXCLU.
+export function isCashierPosition(code) {
+  const p = code ? _posByCode.get(code) : null;
+  if (!p) return false;
+  return p.service === 'OPS_CAISSE' || p.role === 'teller';
+}
 export function positionsOfDept(deptCode) { return POSITIONS.filter((p) => p.dept === deptCode); }
 // Un agent de collecte doit être rattaché à un Chef d'agence OU un Agent de crédit.
 export function positionCanSuperviseCollectors(code) { return Boolean(_posByCode.get(code)?.supervisesCollectors); }

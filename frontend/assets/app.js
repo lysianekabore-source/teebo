@@ -22,10 +22,38 @@
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function api(path, method, body) {
-    return fetch(path, { method: method || 'GET', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined })
-      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { if (!r.ok) throw new Error(d.error || 'error'); return d; }); });
+    method = method || 'GET';
+    // On ne RE-ESSAIE automatiquement que les lectures (GET) : rejouer un POST
+    // ou un DELETE pourrait dupliquer une opération. Les réponses 502/503/504 et
+    // les coupures réseau correspondent au réveil du serveur (offre gratuite
+    // Render) : on patiente puis on retente, au lieu de laisser tourner sans fin.
+    var canRetry = method === 'GET';
+    function wait(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
+    function attempt(left) {
+      var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 30000) : null;
+      return fetch(path, { method: method, credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: ctrl ? ctrl.signal : undefined })
+        .then(function (r) {
+          if (timer) clearTimeout(timer);
+          if ((r.status === 502 || r.status === 503 || r.status === 504) && canRetry && left > 0) {
+            return wait(1800).then(function () { return attempt(left - 1); });
+          }
+          return r.json().catch(function () { return {}; }).then(function (d) {
+            if (!r.ok) { var er = new Error(d.error || ('http_' + r.status)); er.serverMessage = d.message || null; er.field = d.field || null; throw er; }
+            return d;
+          });
+        }, function (err) {
+          if (timer) clearTimeout(timer);
+          var net = !!(err && (err.name === 'AbortError' ||
+            /Failed to fetch|NetworkError|network|load failed/i.test(err.message || '')));
+          if (net && canRetry && left > 0) { return wait(1800).then(function () { return attempt(left - 1); }); }
+          throw new Error(net ? 'network' : ((err && err.message) || 'error'));
+        });
+    }
+    return attempt(canRetry ? 2 : 0);
   }
   function notify(msg, type) {
     var a = $('global-alert'); a.textContent = msg; a.className = 'alert alert--' + (type || 'info'); a.hidden = false;
@@ -38,8 +66,12 @@
     session_expired: 'Session expirée.', invalid_session: 'Session invalide.', not_authenticated: 'Non connecté.',
     invalid_position: 'Poste invalide.', supervisor_required: 'Un superviseur est requis pour ce poste.',
     invalid_supervisor: 'Le superviseur choisi doit être un Chef d’agence ou un Agent de crédit.',
-    bad_supervisor: 'Superviseur invalide.' };
-  function fr(e) { return MSG[e] || 'Une erreur est survenue.'; }
+    bad_supervisor: 'Superviseur invalide.',
+    use_teebo_console: 'Ce compte est l’administrateur teebo (super-admin) et n’a pas d’espace IMF. Connectez-vous avec un compte administrateur de votre IMF.',
+    network: 'Connexion au serveur impossible pour le moment. Le serveur se réveille peut-être (quelques secondes sur l’offre gratuite). Patientez puis réessayez.' };
+  function fr(e) { var k = (e && e.message) ? e.message : e; return MSG[k] || 'Une erreur est survenue.'; }
+  // Message serveur explicite (validation métier) sinon libellé générique.
+  function srv(e) { return (e && e.serverMessage) ? e.serverMessage : fr(e); }
 
   function guard(err) {
     if (['idle_timeout','session_expired','invalid_session','not_authenticated','session_revoked'].indexOf(err.message) >= 0) {
@@ -108,7 +140,19 @@
     return api('/api/v1/units').then(function (d) {
       units = d.units || [];
       renderTree(); renderDash();
-    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+    }).catch(function (e) { if (!guard(e)) { renderUnitsError(e); notify(fr(e), 'err'); } });
+  }
+  // Au lieu de laisser le libellé « Chargement… » tourner indéfiniment lorsque
+  // l'appel échoue, on affiche la raison et un bouton « Réessayer ».
+  function renderUnitsError(e) {
+    var root = $('org-tree'); if (!root) return;
+    root.innerHTML = '<div class="empty">' + esc(fr(e)) +
+      '<br><button class="btn btn--ghost btn--sm" id="org-retry" type="button" style="margin-top:10px">Réessayer</button></div>';
+    var b = $('org-retry');
+    if (b) b.addEventListener('click', function () {
+      root.innerHTML = '<div class="empty">Chargement…</div>';
+      loadUnits();
+    });
   }
   function renderTree() {
     var root = $('org-tree');
@@ -223,6 +267,52 @@
       return p && p.supervisesCollectors;
     });
   }
+  // Clé de rattachement d'une unité : préfixe du code d'unité posé par le
+  // séchage de structure (ex. « OPS_CAISSE::<imf> » -> « OPS_CAISSE »).
+  function unitKey(u) { return String(u && u.code_unit || '').split('::')[0]; }
+  function normLabel(s) {
+    return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+  // Unité de rattachement déduite du poste : on relie le SERVICE du poste (puis,
+  // à défaut, son DÉPARTEMENT) à l'unité org correspondante. Repli par libellé
+  // pour les structures renommées ou les unités créées manuellement.
+  function autoUnitForPosition(p) {
+    if (!p) return '';
+    var byKey = function (kind, key) {
+      var u = units.find(function (x) { return x.kind === kind && unitKey(x) === key; });
+      return u ? u.id : '';
+    };
+    var id = byKey('service', p.service) || byKey('department', p.dept);
+    if (id) return id;
+    var svcLabel = {}; posServices.forEach(function (s) { svcLabel[s.code] = s.label; });
+    var deptLabel = {}; posDepts.forEach(function (d) { deptLabel[d.code] = d.label; });
+    var targets = [normLabel(svcLabel[p.service]), normLabel(deptLabel[p.dept])].filter(Boolean);
+    var m = units.find(function (x) { return targets.indexOf(normLabel(x.name)) >= 0; });
+    return m ? m.id : '';
+  }
+  // Responsable hiérarchique déduit du poste : pour un agent de collecte, un
+  // superviseur habilité (Chef d'agence / Agent de crédit) ; pour les autres
+  // postes, le manager du même service, à défaut du même département, de niveau
+  // hiérarchique supérieur. Trié : même service d'abord, puis niveau le plus
+  // proche au-dessus.
+  function supervisorCandidates(p) {
+    if (!p) return [];
+    if (p.needsSupervisor) return eligibleSupervisors();
+    return users.filter(function (u) {
+      var up = posByCode[u.position_code];
+      return up && up.manager && up.dept === p.dept && (up.level || 0) > (p.level || 0);
+    }).sort(function (a, b) {
+      var pa = posByCode[a.position_code], pb = posByCode[b.position_code];
+      var sa = (pa.service === p.service) ? 0 : 1, sb = (pb.service === p.service) ? 0 : 1;
+      if (sa !== sb) return sa - sb;
+      return (pa.level || 0) - (pb.level || 0);
+    });
+  }
+  function supOption(u) {
+    var pp = posByCode[u.position_code];
+    return '<option value="' + u.id + '">' + esc(u.full_name + ' — ' + (pp ? pp.label : (ROLE_LABEL[u.role] || u.role))) + '</option>';
+  }
   function userModal() {
     loadPositions().then(function () {
       openModal(
@@ -231,35 +321,46 @@
       '<div class="fld"><label for="u-pos">Poste occupé</label><select id="u-pos"><option value="">— Choisir un poste —</option>' +
         positionOptionsHtml() + '</select>' +
         '<small id="u-pos-hint" style="color:var(--muted)">Le poste détermine automatiquement le rôle et les permissions.</small></div>' +
-      '<div class="fld" id="u-sup-wrap" hidden><label for="u-sup">Superviseur (Chef d’agence ou Agent de crédit)</label>' +
-        '<select id="u-sup"></select></div>' +
+      '<div class="fld" id="u-sup-wrap" hidden><label for="u-sup">Superviseur / Responsable hiérarchique</label>' +
+        '<select id="u-sup"></select>' +
+        '<small style="color:var(--muted)">Pré-rempli d’après le poste ; vous pouvez le modifier.</small></div>' +
       '<div class="fld"><label for="u-unit">Unité de rattachement</label><select id="u-unit"><option value="">— Aucune —</option>' +
         units.map(function (u) { return '<option value="' + u.id + '">' + esc(KIND_META[u.kind].label + ' · ' + u.name) + '</option>'; }).join('') + '</select></div>' +
       '<div class="form-grid"><div class="fld"><label for="u-email">E-mail</label><input id="u-email" type="email"></div>' +
       '<div class="fld"><label for="u-phone">Téléphone (WhatsApp)</label><input id="u-phone" type="tel" placeholder="+226 00 00 00 00"></div></div>' +
       '<div class="modal__nav"><button class="btn btn--ghost" id="u-cancel">Annuler</button><button class="btn btn--primary" id="u-ok">Créer et envoyer le code</button></div>'
       );
-      // Affiche le champ Superviseur uniquement pour un poste qui l'exige (collecte).
-      function syncSupervisor() {
+      // À chaque choix de poste : on pré-remplit automatiquement le responsable
+      // hiérarchique ET l'unité de rattachement correspondants.
+      function syncFromPosition() {
         var p = posByCode[$('u-pos').value];
-        var wrap = $('u-sup-wrap'), sel = $('u-sup');
-        if (p && p.needsSupervisor) {
-          var sup = eligibleSupervisors();
-          sel.innerHTML = sup.length
-            ? sup.map(function (u) { return '<option value="' + u.id + '">' + esc(u.full_name + ' — ' + (posByCode[u.position_code] ? posByCode[u.position_code].label : u.role)) + '</option>'; }).join('')
-            : '<option value="">Aucun superviseur disponible — créez d’abord un Chef d’agence ou un Agent de crédit</option>';
-          wrap.hidden = false;
+        var wrap = $('u-sup-wrap'), sel = $('u-sup'), unitSel = $('u-unit');
+        if (p) {
+          var cands = supervisorCandidates(p);
+          if (p.needsSupervisor) {
+            sel.innerHTML = cands.length
+              ? cands.map(supOption).join('')
+              : '<option value="">Aucun superviseur disponible — créez d’abord un Chef d’agence ou un Agent de crédit</option>';
+            wrap.hidden = false;
+          } else if (cands.length) {
+            sel.innerHTML = '<option value="">— Aucun —</option>' + cands.map(supOption).join('');
+            sel.value = cands[0].id; // responsable hiérarchique proposé
+            wrap.hidden = false;
+          } else { wrap.hidden = true; sel.innerHTML = ''; }
+          var uid = autoUnitForPosition(p);
+          if (uid) unitSel.value = uid;
         } else { wrap.hidden = true; sel.innerHTML = ''; }
       }
-      $('u-pos').addEventListener('change', syncSupervisor);
+      $('u-pos').addEventListener('change', syncFromPosition);
       $('u-cancel').addEventListener('click', closeModal);
       $('u-ok').addEventListener('click', function () {
         var pos = posByCode[$('u-pos').value];
         var body = { full_name: $('u-name').value.trim(), position_code: $('u-pos').value || null,
           org_unit_id: $('u-unit').value || null, email: $('u-email').value.trim(), phone: $('u-phone').value.trim() };
-        if (pos && pos.needsSupervisor) body.supervisor_id = $('u-sup').value || null;
+        var supId = (!$('u-sup-wrap').hidden && $('u-sup').value) ? $('u-sup').value : null;
+        if (supId) body.supervisor_id = supId;
         if (!body.full_name || !body.email || !body.position_code) { notify('Nom, e-mail et poste sont requis.', 'err'); return; }
-        if (pos && pos.needsSupervisor && !body.supervisor_id) { notify('Un agent de collecte doit être rattaché à un superviseur (Chef d’agence ou Agent de crédit).', 'err'); return; }
+        if (pos && pos.needsSupervisor && !supId) { notify('Un agent de collecte doit être rattaché à un superviseur (Chef d’agence ou Agent de crédit).', 'err'); return; }
         var self = this; self.disabled = true;
         api('/api/v1/users', 'POST', body).then(function (d) { closeModal(); return loadUsers().then(function () { notify('Utilisateur créé — code ' + d.code_user + '.', 'ok'); showSendCodeModal(d, body.full_name); }); })
           .catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
@@ -378,6 +479,12 @@
       set('s-footer_note', s.footer_note);
       set('s-notify_whatsapp', s.notify_whatsapp); set('s-notify_email', s.notify_email);
       $('s-share_capital').value = s.share_capital_cents != null ? fmtAmount(s.share_capital_cents / 100) : '';
+      if ($('s-part-sociale')) $('s-part-sociale').value = s.part_sociale_nominal_cents != null ? fmtAmount(s.part_sociale_nominal_cents / 100) : '';
+      // Durées de validité des pièces d'identité (en mois).
+      var vmap = s.id_doc_validity_months || {};
+      ['cni','passeport','cedeao','consulaire_sejour'].forEach(function (k) {
+        var el = $('s-valid-' + k); if (el) el.value = vmap[k] != null ? String(vmap[k]) : '';
+      });
       // TVA : points de base -> pourcentage lisible (vide = non applicable)
       $('s-vat').value = d.vat_rate_bp != null ? String(d.vat_rate_bp / 100).replace('.', ',') : '';
       // Prestataire
@@ -395,7 +502,7 @@
       $('settings-badge').textContent = settingsCanEdit ? 'Modifiable' : 'Lecture seule';
       $('settings-readonly').hidden = settingsCanEdit;
       ['s-legal_name','s-legal_form','s-trade_register_no','s-tax_id','s-vat_number','s-bceao_agreement_no',
-       's-share_capital','s-legal_address','s-bank_details','s-footer_note','s-vat',
+       's-share_capital','s-part-sociale','s-valid-cni','s-valid-passeport','s-valid-cedeao','s-valid-consulaire_sejour','s-legal_address','s-bank_details','s-footer_note','s-vat',
        's-notify_whatsapp','s-notify_email','btn-notify-save',
        'btn-logo-pick','btn-settings-save'].forEach(function (id) {
         var e = $(id); if (e) e.disabled = !settingsCanEdit;
@@ -450,6 +557,8 @@
       vatBp = Math.round(n * 100);
     }
     var capRaw = $('s-share_capital').value.replace(/[^0-9]/g, '');
+    var psEl = $('s-part-sociale');
+    var psRaw = psEl ? psEl.value.replace(/[^0-9]/g, '') : '';
     var body = {
       legal_name: $('s-legal_name').value.trim(), legal_form: $('s-legal_form').value,
       trade_register_no: $('s-trade_register_no').value.trim(), tax_id: $('s-tax_id').value.trim(),
@@ -459,6 +568,16 @@
       notify_whatsapp: $('s-notify_whatsapp').value.trim(),
       notify_email: $('s-notify_email').value.trim(),
       share_capital_cents: capRaw ? Number(capRaw) * 100 : null,
+      part_sociale_nominal_cents: psEl ? (psRaw ? Number(psRaw) * 100 : null) : undefined,
+      id_doc_validity_months: (function () {
+        var o = {};
+        ['cni','passeport','cedeao','consulaire_sejour'].forEach(function (k) {
+          var el = $('s-valid-' + k); if (!el) return;
+          var raw = (el.value || '').replace(/[^0-9]/g, '');
+          if (raw) o[k] = Number(raw);
+        });
+        return o;
+      })(),
       vat_rate_bp: vatBp
     };
     if (logoDraft) body.logo_data_url = logoDraft;
@@ -502,7 +621,7 @@
       : '<span class="hint">Aucun numéro WhatsApp renseigné pour cet utilisateur.</span>';
     var mailBtn = s.mailto_link
       ? '<a class="btn btn--dark" href="' + esc(s.mailto_link) + '">Envoyer par e-mail</a>'
-      : '';
+      : '<span class="hint">Aucune adresse e-mail renseignée pour cet utilisateur.</span>';
     var channels = [];
     if (s.sender_whatsapp) channels.push('WhatsApp : ' + esc(s.sender_whatsapp));
     if (s.sender_email) channels.push('e-mail : ' + esc(s.sender_email));
@@ -905,6 +1024,7 @@
     Object.keys(map).forEach(function (id) { var n = $(id); if (n) n.hidden = !map[id]; });
     var b;
     b = $('btn-clients-refresh'); if (b) b.addEventListener('click', loadClients);
+    b = $('btn-client-new'); if (b) b.addEventListener('click', openClientCreate);
     b = $('btn-overrun-new'); if (b) b.addEventListener('click', openOverrunModal);
     b = $('btn-closing-new'); if (b) b.addEventListener('click', openClosingModal);
     b = $('btn-vault-new'); if (b) b.addEventListener('click', openVaultModal);
@@ -927,18 +1047,52 @@
   }
   function renderClients(list) {
     if (!list.length) { $('clients-table').innerHTML = '<div class="empty">Aucun client enregistr\u00e9.</div>'; return; }
-    var head = '<tr><th>Code</th><th>Nom complet</th><th>T\u00e9l\u00e9phone</th><th>Pi\u00e8ce</th><th>Solde</th><th style="text-align:right">Action</th></tr>';
+    var head = '<tr><th>Code</th><th>Nom complet</th><th>T\u00e9l\u00e9phone</th><th>Pi\u00e8ce</th><th>Conformit\u00e9</th><th>Solde</th><th style="text-align:right">Actions</th></tr>';
     var body = list.map(function (c) {
+      var isPart = c.client_category === 'particulier';
+      var hasAcc = !!c.code_account;
+      var confBadge = '\u2014';
+      if (isPart) {
+        var cs = c.conformity_status || 'en_attente';
+        var col = cs === 'conforme' ? '#1a7f37' : (cs === 'non_conforme' ? '#c0392b' : '#8a6d0b');
+        var lbl = cs === 'conforme' ? 'Conforme' : (cs === 'non_conforme' ? 'Non conforme' : 'En attente');
+        confBadge = '<span style="color:' + col + ';font-weight:600">' + lbl + '</span>';
+      }
+      var act = '<button class="btn btn--sm" data-cl-edit="' + esc(c.id) + '">Modifier</button>';
+      if (isPart) {
+        act += ' <button class="btn btn--sm" data-cl-fiche="' + esc(c.id) + '">Fiche PDF</button>'
+          + ' <button class="btn btn--sm" data-cl-sign="' + esc(c.id) + '">Signatures</button>'
+          + ' <button class="btn btn--sm" data-cl-scan="' + esc(c.id) + '">Scanner &amp; confronter</button>';
+      }
+      if (hasAcc) {
+        act += ' <span class="hint" style="margin-left:6px">Compte : <b>' + esc(c.code_account) + '</b></span>';
+      } else {
+        act += ' <button class="btn btn--sm btn--primary" data-cl-open="' + esc(c.id) + '">Ouvrir le compte</button>';
+      }
       return '<tr><td><b>' + esc(c.code_client || '\u2014') + '</b></td>' +
         '<td>' + esc(c.full_name || '\u2014') + '</td>' +
         '<td>' + esc(c.phone || '\u2014') + '</td>' +
         '<td>' + esc(c.id_number || '\u2014') + '</td>' +
+        '<td>' + confBadge + '</td>' +
         '<td>' + (c.balance_cents != null ? money(c.balance_cents) : '\u2014') + '</td>' +
-        '<td style="text-align:right"><button class="btn btn--sm" data-cl-edit="' + esc(c.id) + '">Modifier la fiche</button></td></tr>';
+        '<td style="text-align:right">' + act + '</td></tr>';
     }).join('');
     $('clients-table').innerHTML = '<div style="overflow-x:auto"><table class="tbl"><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
+    var byId = function (id) { return list.find(function (x) { return x.id === id; }); };
     $('clients-table').querySelectorAll('[data-cl-edit]').forEach(function (b) {
-      b.addEventListener('click', function () { openClientEdit(list.find(function (x) { return x.id === b.dataset.clEdit; })); });
+      b.addEventListener('click', function () { openClientEdit(byId(b.dataset.clEdit)); });
+    });
+    $('clients-table').querySelectorAll('[data-cl-fiche]').forEach(function (b) {
+      b.addEventListener('click', function () { window.open('/api/v1/clients/' + encodeURIComponent(b.dataset.clFiche) + '/fiche', '_blank'); });
+    });
+    $('clients-table').querySelectorAll('[data-cl-sign]').forEach(function (b) {
+      b.addEventListener('click', function () { openSignatures(byId(b.dataset.clSign)); });
+    });
+    $('clients-table').querySelectorAll('[data-cl-scan]').forEach(function (b) {
+      b.addEventListener('click', function () { openConformity(byId(b.dataset.clScan)); });
+    });
+    $('clients-table').querySelectorAll('[data-cl-open]').forEach(function (b) {
+      b.addEventListener('click', function () { openAccountFor(byId(b.dataset.clOpen)); });
     });
   }
   function openClientEdit(c) {
@@ -965,6 +1119,625 @@
         .catch(function (e) { $('cl-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
     });
   }
+
+  // Ouverture du compte (bloqu\u00e9e si non conforme c\u00f4t\u00e9 serveur).
+  function openAccountFor(c) {
+    if (!c) return;
+    api('/api/v1/clients/' + encodeURIComponent(c.id) + '/open-account', 'POST', {})
+      .then(function (r) { notify((r && r.message) || 'Compte ouvert.', 'ok'); loadClients(); })
+      .catch(function (e) {
+        if (guard(e)) return;
+        if (e && e.serverMessage) notify(e.serverMessage, 'err');
+        else notify(srv(e), 'err');
+      });
+  }
+
+  // --- Signatures num\u00e9riques : stylet (canvas) ou empreinte (WebAuthn) ---
+  function bindPad(canvas) {
+    var ctx = canvas.getContext('2d'); ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = '#111';
+    var drawing = false, dirty = false, last = null;
+    function pos(ev) { var r = canvas.getBoundingClientRect(); var t = ev.touches ? ev.touches[0] : ev; return { x: t.clientX - r.left, y: t.clientY - r.top }; }
+    function start(ev) { ev.preventDefault(); drawing = true; last = pos(ev); }
+    function move(ev) { if (!drawing) return; ev.preventDefault(); var p = pos(ev); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; dirty = true; }
+    function end() { drawing = false; }
+    canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', end);
+    canvas.addEventListener('touchstart', start, { passive: false }); canvas.addEventListener('touchmove', move, { passive: false }); canvas.addEventListener('touchend', end);
+    return { clear: function () { ctx.clearRect(0, 0, canvas.width, canvas.height); dirty = false; }, isDirty: function () { return dirty; }, dataUrl: function () { return dirty ? canvas.toDataURL('image/png') : null; } };
+  }
+  function webauthnAttest(label) {
+    if (!window.PublicKeyCredential || !navigator.credentials) {
+      return Promise.reject(new Error('non_supporte'));
+    }
+    var ch = new Uint8Array(32); window.crypto && window.crypto.getRandomValues && window.crypto.getRandomValues(ch);
+    var uid = new Uint8Array(16); window.crypto && window.crypto.getRandomValues && window.crypto.getRandomValues(uid);
+    return navigator.credentials.create({ publicKey: {
+      challenge: ch, rp: { name: 'TEEBO' },
+      user: { id: uid, name: label || 'signataire', displayName: label || 'signataire' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { userVerification: 'required' }, timeout: 60000
+    } }).then(function (cred) {
+      return 'webauthn:' + (cred && cred.id ? cred.id : 'ok') + ':' + new Date().toISOString();
+    });
+  }
+  function openSignatures(c) {
+    if (!c) return;
+    var roles = [{ role: 'client', label: 'Signature du client' }, { role: 'user', label: 'Signature de l\u2019agent' }];
+    var html = '<h3>Signatures num\u00e9riques</h3><p class="sub">' + esc(c.full_name || '') + '</p>'
+      + '<p class="hint">Faites signer au stylet directement \u00e0 l\u2019\u00e9cran, ou validez par empreinte digitale (via l\u2019authentification biom\u00e9trique de l\u2019appareil).</p>';
+    roles.forEach(function (r) {
+      html += '<div class="fld"><label>' + esc(r.label) + '</label>'
+        + '<div><label style="font-weight:400;margin-right:14px"><input type="radio" name="sig-m-' + r.role + '" value="stylet" checked> Stylet</label>'
+        + '<label style="font-weight:400"><input type="radio" name="sig-m-' + r.role + '" value="empreinte"> Empreinte digitale</label></div>'
+        + '<div id="sig-pad-wrap-' + r.role + '"><canvas id="sig-pad-' + r.role + '" width="320" height="120" style="border:1px solid #ccc;border-radius:6px;touch-action:none;width:100%;max-width:340px"></canvas>'
+        + '<div><button class="btn btn--sm btn--ghost" type="button" id="sig-clear-' + r.role + '">Effacer</button></div></div>'
+        + '<div id="sig-fp-wrap-' + r.role + '" style="display:none"><button class="btn btn--sm" type="button" id="sig-fp-' + r.role + '">Valider par empreinte</button>'
+        + ' <span class="hint" id="sig-fp-st-' + r.role + '"></span></div></div>';
+    });
+    html += '<div class="modal__nav"><button class="btn btn--ghost" id="sig-cancel" type="button">Fermer</button>'
+      + '<button class="btn btn--primary" id="sig-save" type="button">Enregistrer les signatures</button></div>';
+    openModal(html);
+    var state = {};
+    roles.forEach(function (r) {
+      var pad = bindPad($('sig-pad-' + r.role));
+      state[r.role] = { pad: pad, att: null };
+      $('sig-clear-' + r.role).addEventListener('click', function () { pad.clear(); });
+      Array.prototype.forEach.call(document.querySelectorAll('input[name="sig-m-' + r.role + '"]'), function (el) {
+        el.addEventListener('change', function () {
+          var fp = this.value === 'empreinte';
+          $('sig-pad-wrap-' + r.role).style.display = fp ? 'none' : '';
+          $('sig-fp-wrap-' + r.role).style.display = fp ? '' : 'none';
+        });
+      });
+      $('sig-fp-' + r.role).addEventListener('click', function () {
+        $('sig-fp-st-' + r.role).textContent = 'V\u00e9rification\u2026';
+        webauthnAttest(c.full_name + ' / ' + r.role).then(function (att) {
+          state[r.role].att = att; $('sig-fp-st-' + r.role).textContent = '\u2713 Empreinte valid\u00e9e.'; $('sig-fp-st-' + r.role).style.color = '#1a7f37';
+        }).catch(function () {
+          state[r.role].att = null; $('sig-fp-st-' + r.role).textContent = '\u26a0 Empreinte non support\u00e9e sur cet appareil.'; $('sig-fp-st-' + r.role).style.color = '#c0392b';
+        });
+      });
+    });
+    $('sig-cancel').addEventListener('click', closeModal);
+    $('sig-save').addEventListener('click', function () {
+      var items = [];
+      for (var i = 0; i < roles.length; i++) {
+        var r = roles[i];
+        var m = (document.querySelector('input[name="sig-m-' + r.role + '"]:checked') || {}).value;
+        if (m === 'stylet') {
+          var url = state[r.role].pad.dataUrl();
+          if (url) items.push({ role: r.role, method: 'stylet', image_data_url: url });
+        } else if (m === 'empreinte' && state[r.role].att) {
+          items.push({ role: r.role, method: 'empreinte', attestation: state[r.role].att });
+        }
+      }
+      if (!items.length) { notify('Faites signer au moins une partie (client ou agent).', 'err'); return; }
+      $('sig-save').disabled = true;
+      api('/api/v1/clients/' + encodeURIComponent(c.id) + '/signatures', 'POST', { signatures: items })
+        .then(function (rr) { closeModal(); notify((rr && rr.note) || 'Signatures enregistr\u00e9es.', 'ok'); })
+        .catch(function (e) { $('sig-save').disabled = false; if (!guard(e)) notify(srv(e), 'err'); });
+    });
+  }
+  /* ----- Ouverture de compte (verrou de conformité côté serveur) ----- */
+  function openAccountFor(c) {
+    if (!c) return;
+    if (!confirm('Ouvrir le compte de ' + (c.full_name || c.code_client) + ' ?')) return;
+    api('/api/v1/clients/' + encodeURIComponent(c.id) + '/open-account', 'POST', {})
+      .then(function (r) { notify((r && r.note) || 'Compte ouvert.', 'ok'); loadClients(); })
+      .catch(function (e) {
+        if (guard(e)) return;
+        if (e && e.message === 'conformite_requise') {
+          notify(e.serverMessage || 'Confrontez d’abord les pièces scannées avant d’ouvrir le compte.', 'err');
+          openConformity(c);
+          return;
+        }
+        if (e && e.message === 'account_exists') { notify(e.serverMessage || 'Ce client possède déjà un compte actif.', 'err'); loadClients(); return; }
+        notify(e && e.serverMessage ? e.serverMessage : fr(e), 'err');
+      });
+  }
+
+  /* ----- Scanner une pièce puis confronter à la saisie (conformité) ----- */
+  function openConformity(c) {
+    if (!c) return;
+    openModal('<h3>Scanner &amp; confronter — ' + esc(c.full_name || '') + '</h3><div class="empty">Chargement…</div>');
+    api('/api/v1/clients/' + encodeURIComponent(c.id) + '/conformity').then(function (d) {
+      var fields = d.fields || [];
+      var rows = fields.map(function (f) {
+        var last = (d.checks || []).find(function (x) { return x.field_key === f.key; });
+        var prev = last ? esc(last.scanned || '') : '';
+        return '<tr><td style="padding:4px 6px">' + esc(f.label) + '</td>' +
+          '<td style="padding:4px 6px"><b>' + esc(f.expected || '—') + '</b></td>' +
+          '<td style="padding:4px 6px"><input data-conf-key="' + esc(f.key) + '" data-conf-kind="' + esc(f.kind) + '" value="' + prev + '" placeholder="valeur lue sur le document" style="width:100%"></td></tr>';
+      }).join('');
+      openModal(
+        '<h3>Scanner &amp; confronter — ' + esc(c.full_name || '') + '</h3>' +
+        '<p class="sub">Scannez chaque pièce reçue, reportez les valeurs lues puis lancez la confrontation. Les informations non conformes devront être corrigées avant l’ouverture du compte.</p>' +
+        '<div class="fld"><label for="conf-scan">Scan de la pièce (image, facultatif)</label><input id="conf-scan" type="file" accept="image/*"></div>' +
+        '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th style="text-align:left">Champ</th><th style="text-align:left">Saisi</th><th style="text-align:left">Lu sur le scan</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+        '<div id="conf-result" style="margin-top:10px"></div>' +
+        '<div class="modal__nav"><button class="btn btn--ghost" id="conf-cancel" type="button">Fermer</button>' +
+        '<button class="btn btn--primary" id="conf-run" type="button">Confronter</button></div>');
+      $('conf-cancel').addEventListener('click', function () { closeModal(); loadClients(); });
+      $('conf-run').addEventListener('click', function () { runConfrontation(c); });
+    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+
+  function runConfrontation(c) {
+    var scanned = {};
+    document.querySelectorAll('[data-conf-key]').forEach(function (el) {
+      var v = el.value.trim();
+      if (v) scanned[el.dataset.confKey] = v;
+    });
+    if (!Object.keys(scanned).length) { notify('Renseignez au moins une valeur lue sur le document scanné.', 'err'); return; }
+    var fileEl = $('conf-scan');
+    var file = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
+    $('conf-run').disabled = true;
+    var pre = file ? readFileAsDataUrl(file).then(function (durl) {
+      return api('/api/v1/clients/' + encodeURIComponent(c.id) + '/scans', 'POST',
+        { image_data_url: durl, doc_type: 'piece_identite', extracted: scanned }).catch(function () { return null; });
+    }) : Promise.resolve(null);
+    pre.then(function () {
+      return api('/api/v1/clients/' + encodeURIComponent(c.id) + '/conformity', 'POST', { scanned: scanned });
+    }).then(function (r) {
+      $('conf-run').disabled = false;
+      var ok = r && r.conformity_status === 'conforme';
+      var html = '<div style="padding:8px 10px;border-radius:8px;background:' + (ok ? '#e7f6ec' : '#fdecec') + ';color:' + (ok ? '#1a7f37' : '#c0392b') + '">' + esc(r.note || '') + '</div>';
+      $('conf-result').innerHTML = html;
+      notify(r.note || 'Confrontation enregistrée.', ok ? 'ok' : 'err');
+    }).catch(function (e) { $('conf-run').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise(function (resolve, reject) {
+      var fr2 = new FileReader();
+      fr2.onload = function () { resolve(fr2.result); };
+      fr2.onerror = function () { reject(new Error('lecture_fichier')); };
+      fr2.readAsDataURL(file);
+    });
+  }
+
+  /* ----- Signatures numériques : stylet (canvas) OU empreinte (WebAuthn) ----- */
+  function openSignatures(c) {
+    if (!c) return;
+    openModal(
+      '<h3>Signatures — ' + esc(c.full_name || '') + '</h3>' +
+      '<p class="sub">Faites signer au stylet directement à l’écran, ou validez par empreinte digitale de l’appareil. Une signature est requise pour le client et pour l’agent.</p>' +
+      sigPadHtml('client', 'Signature du client') +
+      sigPadHtml('user', 'Signature de l’agent') +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="sig-cancel" type="button">Fermer</button>' +
+      '<button class="btn btn--primary" id="sig-save" type="button">Enregistrer les signatures</button></div>');
+    var pads = { client: setupPad('client'), user: setupPad('user') };
+    $('sig-cancel').addEventListener('click', closeModal);
+    ['client', 'user'].forEach(function (role) {
+      var cl = document.querySelector('[data-sig-clear="' + role + '"]');
+      if (cl) cl.addEventListener('click', function () { pads[role].clear(); });
+      var fp = document.querySelector('[data-sig-fp="' + role + '"]');
+      if (fp) fp.addEventListener('click', function () { captureEmpreinte(c, role, pads[role]); });
+    });
+    $('sig-save').addEventListener('click', function () {
+      var items = [];
+      ['client', 'user'].forEach(function (role) {
+        var p = pads[role];
+        if (p.empreinte) items.push({ role: role, method: 'empreinte', attestation: p.empreinte });
+        else if (!p.isEmpty()) items.push({ role: role, method: 'stylet', image_data_url: p.toDataURL() });
+      });
+      if (!items.length) { notify('Aucune signature à enregistrer.', 'err'); return; }
+      $('sig-save').disabled = true;
+      api('/api/v1/clients/' + encodeURIComponent(c.id) + '/signatures', 'POST', { signatures: items })
+        .then(function (r) { closeModal(); notify((r && r.note) || 'Signatures enregistrées.', 'ok'); loadClients(); })
+        .catch(function (e) { $('sig-save').disabled = false; if (!guard(e)) notify(e && e.serverMessage ? e.serverMessage : fr(e), 'err'); });
+    });
+  }
+
+  function sigPadHtml(role, title) {
+    return '<div class="fld"><label>' + esc(title) + '</label>' +
+      '<canvas data-sig-pad="' + role + '" width="520" height="150" style="width:100%;max-width:520px;height:150px;border:1px solid #c7c9d6;border-radius:8px;touch-action:none;background:#fff"></canvas>' +
+      '<div id="sig-state-' + role + '" class="hint" style="margin-top:4px"></div>' +
+      '<div style="margin-top:6px"><button class="btn btn--sm btn--ghost" type="button" data-sig-clear="' + role + '">Effacer</button> ' +
+      '<button class="btn btn--sm btn--ghost" type="button" data-sig-fp="' + role + '">Valider par empreinte</button></div></div>';
+  }
+
+  function setupPad(role) {
+    var cv = document.querySelector('[data-sig-pad="' + role + '"]');
+    var ctx = cv.getContext('2d');
+    ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#13131a';
+    var drawing = false, dirty = false, last = null;
+    function pos(e) {
+      var r = cv.getBoundingClientRect();
+      var t = (e.touches && e.touches[0]) ? e.touches[0] : e;
+      return { x: (t.clientX - r.left) * (cv.width / r.width), y: (t.clientY - r.top) * (cv.height / r.height) };
+    }
+    function start(e) { e.preventDefault(); drawing = true; last = pos(e); }
+    function move(e) {
+      if (!drawing) return; e.preventDefault();
+      var p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+      last = p; dirty = true; pad.empreinte = null;
+    }
+    function end() { drawing = false; }
+    cv.addEventListener('pointerdown', start); cv.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    var pad = {
+      empreinte: null,
+      isEmpty: function () { return !dirty; },
+      toDataURL: function () { return cv.toDataURL('image/png'); },
+      clear: function () { ctx.clearRect(0, 0, cv.width, cv.height); dirty = false; pad.empreinte = null;
+        var st = $('sig-state-' + role); if (st) st.textContent = ''; }
+    };
+    return pad;
+  }
+
+  function captureEmpreinte(c, role, pad) {
+    var st = $('sig-state-' + role);
+    if (!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create)) {
+      if (st) st.textContent = 'Empreinte digitale non supportée sur cet appareil — utilisez le stylet.';
+      return;
+    }
+    var chall = new Uint8Array(32); (window.crypto || {}).getRandomValues && window.crypto.getRandomValues(chall);
+    var uid = new Uint8Array(16); (window.crypto || {}).getRandomValues && window.crypto.getRandomValues(uid);
+    navigator.credentials.create({ publicKey: {
+      challenge: chall,
+      rp: { name: 'teebo' },
+      user: { id: uid, name: (c.code_client || 'client') + '-' + role, displayName: c.full_name || role },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { userVerification: 'required' },
+      timeout: 60000, attestation: 'none'
+    } }).then(function (cred) {
+      pad.empreinte = (cred && cred.id ? cred.id : 'empreinte') + ':' + Date.now();
+      if (st) st.textContent = '✓ Validé par empreinte digitale.';
+    }).catch(function () {
+      if (st) st.textContent = 'La validation par empreinte a échoué ou a été annulée — utilisez le stylet.';
+    });
+  }
+
+  /* ----- CLIENTS : création (nouveau / existant) + typologie en cascade ----- */
+  var _docMeta = null, _docValidity = {}, _docProf = null, _docsBuilt = false;
+  function openClientCreate() {
+    openModal('<h3>Créer un client</h3><div class="empty">Chargement\u2026</div>');
+    Promise.all([
+      api('/api/v1/client-meta'),
+      api('/api/v1/clients')
+    ]).then(function (res) {
+      renderClientCreate(res[0] || {}, (res[1] && res[1].clients) || []);
+    }).catch(function (e) { closeModal(); if (!guard(e)) notify(fr(e), 'err'); });
+  }
+
+  function renderClientCreate(meta, existing) {
+    var isScoop = !!meta.is_scoop;
+    var nominal = meta.part_sociale_nominal_cents;
+    var typology = meta.typology || null;
+    _docMeta = meta.particulier_docs || null;
+    _docValidity = meta.id_doc_validity_months || {};
+    _docProf = null; _docsBuilt = false;
+
+    var existOpts = existing.map(function (c) {
+      return '<option value="' + esc(c.id) + '">' + esc((c.code_client || '') + ' \u2014 ' + (c.full_name || '')) + '</option>';
+    }).join('');
+
+    var memberBlock = '';
+    if (isScoop) {
+      memberBlock =
+        '<div class="fld"><label>Qualit\u00e9 (IMF coop\u00e9rative)</label>'
+        + '<div><label style="font-weight:400;margin-right:16px"><input type="radio" name="cl-member" value="membre" checked> Client membre (souscrit une part sociale)</label>'
+        + '<label style="font-weight:400"><input type="radio" name="cl-member" value="usager"> Client usager</label></div></div>'
+        + '<div class="fld" id="cl-shares-wrap"><label for="cl-shares">Nombre de parts sociales</label>'
+        + '<input id="cl-shares" inputmode="numeric" value="1">'
+        + '<p class="hint" id="cl-shares-hint"></p></div>';
+    }
+
+    openModal(
+      '<h3>Cr\u00e9er un client</h3>'
+      + '<div class="fld"><label>Type de saisie</label>'
+      + '<div><label style="font-weight:400;margin-right:16px"><input type="radio" name="cl-mode" value="nouveau" checked> Nouveau client</label>'
+      + '<label style="font-weight:400"><input type="radio" name="cl-mode" value="existant"> Client existant</label></div></div>'
+      + '<div id="cl-existing-wrap" style="display:none"><div class="fld"><label for="cl-existing">Choisir le client</label>'
+      + '<select id="cl-existing"><option value="">\u2014 choisir \u2014</option>' + existOpts + '</select></div></div>'
+      + '<div id="cl-identity">'
+      + '<div class="fld"><label for="cl-c-name">Nom complet / D\u00e9nomination</label><input id="cl-c-name"></div>'
+      + '<div class="fld"><label for="cl-c-phone">T\u00e9l\u00e9phone</label><input id="cl-c-phone"></div>'
+      + '<div class="fld"><label for="cl-c-id">N\u00b0 de pi\u00e8ce / registre</label><input id="cl-c-id"></div>'
+      + '<div class="fld"><label for="cl-c-addr">Adresse</label><input id="cl-c-addr"></div>'
+      + '<div class="fld"><label for="cl-c-birth">Date de naissance / cr\u00e9ation</label><input id="cl-c-birth" type="date"></div>'
+      + '</div>'
+      + memberBlock
+      + '<div class="fld"><label>Type de client</label><div id="cl-typo"></div></div>'
+      + '<div id="cl-docs"></div>'
+      + '<div class="modal__nav"><button class="btn btn--ghost" id="cl-c-cancel" type="button">Annuler</button>'
+      + '<button class="btn btn--primary" id="cl-c-save" type="button">Enregistrer</button></div>');
+
+    // Cascade typologie (rendue depuis l'arbre fourni par le serveur).
+    if (typology) buildCascade(typology, $('cl-typo'));
+    // À chaque changement dans la cascade, (re)construire les pièces requises.
+    $('cl-typo').addEventListener('change', function () { refreshDocs(); });
+
+    // Parts sociales : affichage du montant total (parts \u00d7 valeur nominale).
+    function refreshShares() {
+      if (!isScoop) return;
+      var isMember = (document.querySelector('input[name="cl-member"]:checked') || {}).value === 'membre';
+      $('cl-shares-wrap').style.display = isMember ? '' : 'none';
+      var n = Number(digits($('cl-shares').value)) || 0;
+      var hint = $('cl-shares-hint');
+      if (nominal == null) { hint.textContent = '\u26a0 Valeur nominale non fix\u00e9e dans les param\u00e8tres de l\u2019IMF.'; hint.style.color = '#c0392b'; }
+      else { hint.textContent = 'Valeur nominale : ' + money(nominal) + ' \u00b7 Total \u00e0 lib\u00e9rer : ' + money(n * nominal); hint.style.color = ''; }
+    }
+    if (isScoop) {
+      Array.prototype.forEach.call(document.querySelectorAll('input[name="cl-member"]'), function (el) { el.addEventListener('change', refreshShares); });
+      $('cl-shares').addEventListener('input', refreshShares);
+      refreshShares();
+    }
+
+    // Bascule nouveau / existant + pièces requises (particulier).
+    function refreshMode() {
+      var mode = (document.querySelector('input[name="cl-mode"]:checked') || {}).value;
+      var cat = (collectTypology() || {}).client_category;
+      var isPart = cat === 'particulier';
+      $('cl-existing-wrap').style.display = mode === 'existant' ? '' : 'none';
+      // Pour un particulier, l'identité est saisie dans le bloc « pièces requises ».
+      $('cl-identity').style.display = (mode === 'existant' || isPart) ? 'none' : '';
+      $('cl-docs').style.display = isPart ? '' : 'none';
+    }
+    function refreshDocs() { buildDocsForm(); refreshMode(); }
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="cl-mode"]'), function (el) { el.addEventListener('change', refreshMode); });
+    refreshMode();
+
+    $('cl-c-cancel').addEventListener('click', closeModal);
+    $('cl-c-save').addEventListener('click', function () { submitClientCreate(isScoop, nominal); });
+  }
+
+  // Construit r\u00e9cursivement les listes d\u00e9roulantes en cascade.
+  function buildCascade(node, mount) {
+    var wrap = document.createElement('div'); wrap.className = 'fld';
+    var lab = document.createElement('label'); lab.textContent = node.label; wrap.appendChild(lab);
+    var sel = document.createElement('select'); sel.id = 'cl-f-' + node.field;
+    sel.setAttribute('data-field', node.field);
+    var html = '<option value="">\u2014 choisir \u2014</option>';
+    (node.options || []).forEach(function (o) { html += '<option value="' + esc(o.code) + '">' + esc(o.label) + '</option>'; });
+    sel.innerHTML = html; wrap.appendChild(sel);
+    mount.appendChild(wrap);
+    var childMount = document.createElement('div'); mount.appendChild(childMount);
+    sel.addEventListener('change', function () {
+      childMount.innerHTML = '';
+      var opt = (node.options || []).filter(function (o) { return o.code === sel.value; })[0];
+      if (opt && opt.children) opt.children.forEach(function (ch) { buildCascade(ch, childMount); });
+    });
+  }
+
+  function collectTypology() {
+    var vals = {};
+    Array.prototype.forEach.call($('cl-typo').querySelectorAll('select[data-field]'), function (sel) {
+      if (sel.value) vals[sel.getAttribute('data-field')] = sel.value;
+    });
+    return vals;
+  }
+
+  /* ----- PIÈCES REQUISES (PARTICULIER) ----- */
+  // Ajoute N mois à une date ISO (miroir côté serveur de computeExpiry).
+  function addMonthsIso(iso, months) {
+    if (!iso || months == null) return null;
+    var m = Math.trunc(Number(months)); if (!isFinite(m) || m <= 0) return null;
+    var d = new Date(iso + 'T00:00:00Z'); if (isNaN(d.getTime())) return null;
+    var day = d.getUTCDate();
+    var t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + m, 1));
+    var last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate();
+    t.setUTCDate(Math.min(day, last));
+    return t.toISOString().slice(0, 10);
+  }
+  function optList(list) {
+    return '<option value="">\u2014 choisir \u2014</option>' + (list || []).map(function (o) {
+      return '<option value="' + esc(o.code) + '">' + esc(o.label) + '</option>';
+    }).join('');
+  }
+  // (Re)construit le bloc des pièces requises selon la typologie courante.
+  function buildDocsForm() {
+    var typo = collectTypology();
+    if (typo.client_category !== 'particulier' || !_docMeta) return;
+    var dm = _docMeta;
+    if (!_docsBuilt) {
+      $('cl-docs').innerHTML =
+        '<h4 style="margin:14px 0 6px">Pi\u00e8ces requises \u2014 Particulier</h4>'
+        + '<div class="fld"><label for="cl-doc-idtype">Document officiel d\u2019identit\u00e9 valide</label>'
+        + '<select id="cl-doc-idtype">' + optList(dm.id_doc_types) + '</select></div>'
+        + '<div class="fld"><label style="font-weight:400"><input type="checkbox" id="cl-doc-idrecu"> Document physique re\u00e7u</label></div>'
+        + '<div class="fld"><label for="cl-doc-birthcert">Acte de naissance</label>'
+        + '<select id="cl-doc-birthcert">' + optList(dm.birth_cert_statuses) + '</select></div>'
+        + '<div class="fld"><label for="cl-doc-last">Nom</label><input id="cl-doc-last"></div>'
+        + '<div class="fld"><label for="cl-doc-first">Pr\u00e9nom</label><input id="cl-doc-first"></div>'
+        + '<div class="fld"><label for="cl-doc-phone">T\u00e9l\u00e9phone</label><input id="cl-doc-phone"></div>'
+        + '<div class="fld"><label for="cl-doc-birth">Date de naissance</label><input id="cl-doc-birth" type="date"></div>'
+        + '<div class="fld"><label for="cl-doc-birthplace">Lieu de naissance</label><input id="cl-doc-birthplace"></div>'
+        + '<div class="fld"><label for="cl-doc-idnum">N\u00b0 de la pi\u00e8ce d\u2019identit\u00e9</label><input id="cl-doc-idnum"></div>'
+        + '<div class="fld"><label for="cl-doc-issue">Date d\u2019\u00e9tablissement</label><input id="cl-doc-issue" type="date"></div>'
+        + '<div class="fld"><label for="cl-doc-expiry">Date d\u2019expiration (calcul\u00e9e)</label>'
+        + '<input id="cl-doc-expiry" type="date" readonly><p class="hint" id="cl-doc-expiry-hint"></p></div>'
+        + '<h4 style="margin:14px 0 6px">Localisation</h4>'
+        + '<div class="fld"><label for="cl-doc-homeloc">Plan de localisation du domicile (itin\u00e9raire + rep\u00e8res)</label>'
+        + '<textarea id="cl-doc-homeloc" rows="3"></textarea></div>'
+        + '<div class="fld"><label for="cl-doc-homestatus">Justificatif de domicile</label>'
+        + '<select id="cl-doc-homestatus">' + optList(dm.proof_statuses) + '</select></div>'
+        + '<div class="fld" id="cl-doc-hometype-wrap" style="display:none"><label for="cl-doc-hometype">Type de justificatif de domicile</label>'
+        + '<select id="cl-doc-hometype">' + optList(dm.home_proof_types) + '</select></div>'
+        + '<div class="fld"><label for="cl-doc-actloc">Plan de localisation d\u2019activit\u00e9 (itin\u00e9raire + rep\u00e8res)</label>'
+        + '<textarea id="cl-doc-actloc" rows="3"></textarea></div>'
+        + '<div class="fld"><label for="cl-doc-actstatus">Justificatif de lieu d\u2019activit\u00e9</label>'
+        + '<select id="cl-doc-actstatus">' + optList(dm.proof_statuses) + '</select></div>'
+        + '<div class="fld" id="cl-doc-acttype-wrap" style="display:none"><label for="cl-doc-acttype">Type de justificatif de lieu d\u2019activit\u00e9</label>'
+        + '<select id="cl-doc-acttype">' + optList(dm.activity_proof_types) + '</select></div>'
+        + '<h4 style="margin:14px 0 6px">Ayant droit</h4>'
+        + '<p class="hint">Personne \u00e0 pr\u00e9venir / b\u00e9n\u00e9ficiaire d\u00e9sign\u00e9 (facultatif).</p>'
+        + '<div class="fld"><label for="cl-doc-ben-last">Nom de l\u2019ayant droit</label><input id="cl-doc-ben-last"></div>'
+        + '<div class="fld"><label for="cl-doc-ben-first">Pr\u00e9nom de l\u2019ayant droit</label><input id="cl-doc-ben-first"></div>'
+        + '<div class="fld"><label for="cl-doc-ben-rel">Lien avec le client</label>'
+        + '<select id="cl-doc-ben-rel"><option value="">\u2014</option>' + optList(dm.beneficiary_relations) + '</select></div>'
+        + '<div id="cl-doc-income"></div>';
+      _docsBuilt = true; _docProf = null;
+      $('cl-doc-idtype').addEventListener('change', recalcExpiry);
+      $('cl-doc-issue').addEventListener('change', recalcExpiry);
+      $('cl-doc-homestatus').addEventListener('change', function () {
+        $('cl-doc-hometype-wrap').style.display = this.value === 'recu' ? '' : 'none';
+      });
+      $('cl-doc-actstatus').addEventListener('change', function () {
+        $('cl-doc-acttype-wrap').style.display = this.value === 'recu' ? '' : 'none';
+      });
+    }
+    if (typo.profession !== _docProf) { buildIncomeSection(typo.profession); _docProf = typo.profession; }
+    recalcExpiry();
+  }
+  function recalcExpiry() {
+    if (!$('cl-doc-idtype')) return;
+    var type = $('cl-doc-idtype').value;
+    var issue = $('cl-doc-issue').value;
+    var months = type && _docValidity[type] != null ? _docValidity[type] : null;
+    var exp = addMonthsIso(issue, months);
+    $('cl-doc-expiry').value = exp || '';
+    var hint = $('cl-doc-expiry-hint');
+    if (!type || !issue) { hint.textContent = ''; hint.style.color = ''; }
+    else if (months == null) { hint.textContent = '\u26a0 Dur\u00e9e de validit\u00e9 non param\u00e9tr\u00e9e pour ce type de pi\u00e8ce (Param\u00e8tres IMF).'; hint.style.color = '#c0392b'; }
+    else { hint.textContent = 'Validit\u00e9 : ' + months + ' mois \u00b7 expire le ' + (exp || '\u2014'); hint.style.color = ''; }
+  }
+  function buildIncomeSection(prof) {
+    var mount = $('cl-doc-income'); if (!mount) return;
+    var spec = (_docMeta && _docMeta.income_by_profession && prof) ? _docMeta.income_by_profession[prof] : null;
+    if (!spec) { mount.innerHTML = ''; return; }
+    var html = '<h4 style="margin:14px 0 6px">Activit\u00e9 &amp; revenu</h4>';
+    if (spec.kind_label) html += '<p class="hint">Nature : ' + esc(spec.kind_label) + '</p>';
+    if (spec.description_required) html += '<div class="fld"><label for="cl-doc-actdesc">' + esc(spec.description_label) + '</label><textarea id="cl-doc-actdesc" rows="3"></textarea></div>';
+    if (spec.school_required) html += '<div class="fld"><label for="cl-doc-school">' + esc(spec.school_label) + '</label><input id="cl-doc-school"></div>';
+    if (spec.types && spec.types.length) {
+      if (spec.proof_required) {
+        html += '<div class="fld"><label style="font-weight:400"><input type="checkbox" id="cl-doc-income-recu" checked> ' + esc(spec.proof_label) + '</label></div>';
+      } else {
+        html += '<div class="fld"><label>' + esc(spec.proof_label || 'Justificatif') + '</label>'
+          + '<div><label style="font-weight:400;margin-right:16px"><input type="radio" name="cl-doc-income-status" value="recu" checked> Re\u00e7u</label>'
+          + '<label style="font-weight:400"><input type="radio" name="cl-doc-income-status" value="non_recu"> Non re\u00e7u</label></div></div>';
+      }
+      html += '<div class="fld" id="cl-doc-income-type-wrap"><label for="cl-doc-income-type">Type de justificatif</label>'
+        + '<select id="cl-doc-income-type">' + optList(spec.types) + '</select></div>';
+    }
+    if (prof === 'salarie' || prof === 'retraite') {
+      var domLabel = prof === 'retraite' ? 'Domiciliation de la pension chez nous' : 'Domiciliation du salaire chez nous';
+      html += '<div class="fld"><label style="font-weight:400"><input type="checkbox" id="cl-doc-salary-dom"> Oui, ' + domLabel + '</label></div>';
+    }
+    mount.innerHTML = html;
+    function syncIncome() {
+      var recu = true;
+      if ($('cl-doc-income-recu')) recu = $('cl-doc-income-recu').checked;
+      else { var r = document.querySelector('input[name="cl-doc-income-status"]:checked'); recu = !r || r.value === 'recu'; }
+      var w = $('cl-doc-income-type-wrap'); if (w) w.style.display = recu ? '' : 'none';
+    }
+    if ($('cl-doc-income-recu')) $('cl-doc-income-recu').addEventListener('change', syncIncome);
+    Array.prototype.forEach.call(document.querySelectorAll('input[name="cl-doc-income-status"]'), function (el) { el.addEventListener('change', syncIncome); });
+    syncIncome();
+  }
+  // Rassemble tous les champs de pièces du particulier dans l'objet body.
+  function collectDocs(body) {
+    var g = function (id) { var e = $(id); return e ? (e.value || '').trim() : ''; };
+    body.id_doc_type = g('cl-doc-idtype') || undefined;
+    body.id_doc_received = $('cl-doc-idrecu') ? $('cl-doc-idrecu').checked : false;
+    body.birth_cert_status = g('cl-doc-birthcert') || undefined;
+    body.last_name = g('cl-doc-last') || undefined;
+    body.first_name = g('cl-doc-first') || undefined;
+    body.phone = g('cl-doc-phone') || undefined;
+    body.birth_date = g('cl-doc-birth') || undefined;
+    body.birth_place = g('cl-doc-birthplace') || undefined;
+    body.id_doc_number = g('cl-doc-idnum') || undefined;
+    body.id_doc_issue_date = g('cl-doc-issue') || undefined;
+    body.home_location_desc = g('cl-doc-homeloc') || undefined;
+    body.home_proof_status = g('cl-doc-homestatus') || undefined;
+    if (body.home_proof_status === 'recu') body.home_proof_type = g('cl-doc-hometype') || undefined;
+    body.activity_location_desc = g('cl-doc-actloc') || undefined;
+    body.activity_proof_status = g('cl-doc-actstatus') || undefined;
+    if (body.activity_proof_status === 'recu') body.activity_proof_type = g('cl-doc-acttype') || undefined;
+    if ($('cl-doc-actdesc')) body.activity_description = g('cl-doc-actdesc') || undefined;
+    if ($('cl-doc-school')) body.school_name = g('cl-doc-school') || undefined;
+    // Statut du justificatif de revenu / activité.
+    if ($('cl-doc-income-recu')) {
+      body.income_proof_status = $('cl-doc-income-recu').checked ? 'recu' : 'non_recu';
+    } else {
+      var r = document.querySelector('input[name="cl-doc-income-status"]:checked');
+      if (r) body.income_proof_status = r.value;
+    }
+    if (body.income_proof_status === 'recu' && $('cl-doc-income-type')) body.income_proof_type = g('cl-doc-income-type') || undefined;
+    // Ayant droit (facultatif).
+    if ($('cl-doc-ben-last')) body.beneficiary_last_name = g('cl-doc-ben-last') || undefined;
+    if ($('cl-doc-ben-first')) body.beneficiary_first_name = g('cl-doc-ben-first') || undefined;
+    if ($('cl-doc-ben-rel')) body.beneficiary_relation = g('cl-doc-ben-rel') || undefined;
+    // Domiciliation salaire / pension (salari\u00e9 / retrait\u00e9).
+    body.salary_domiciliation = $('cl-doc-salary-dom') ? $('cl-doc-salary-dom').checked : false;
+    // Compose le nom complet + le n\u00b0 de pi\u00e8ce pour la fiche / anti-doublon.
+    var fn = [body.last_name, body.first_name].filter(Boolean).join(' ').trim();
+    if (fn) body.full_name = fn;
+    if (body.id_doc_number && !body.id_number) body.id_number = body.id_doc_number;
+    return body;
+  }
+
+  function submitClientCreate(isScoop, nominal) {
+    var mode = (document.querySelector('input[name="cl-mode"]:checked') || {}).value;
+    var typo = collectTypology();
+    if (!typo.client_category) { notify('Choisissez le type de client (Particulier, Groupe ou Entreprise).', 'err'); return; }
+    var body = typo;
+    if (isScoop) {
+      var isMember = (document.querySelector('input[name="cl-member"]:checked') || {}).value === 'membre';
+      body.membership_type = isMember ? 'membre' : 'usager';
+      if (isMember) {
+        if (nominal == null) { notify('Fixez d\u2019abord la valeur nominale de la part sociale dans les Param\u00e8tres.', 'err'); return; }
+        var n = Number(digits($('cl-shares').value)) || 0;
+        if (n < 1) { notify('Un client membre doit souscrire au moins une part sociale.', 'err'); return; }
+        body.shares_count = n;
+      }
+    }
+    var btn = $('cl-c-save'); btn.disabled = true;
+    var done = function () { btn.disabled = false; };
+    var isPart = typo.client_category === 'particulier';
+    // Pour un particulier, l'identit\u00e9 + toutes les pi\u00e8ces sont saisies dans le
+    // bloc d\u00e9di\u00e9 (cl-docs) ; on les ajoute au corps de la requ\u00eate.
+    if (isPart) collectDocs(body);
+
+    if (mode === 'existant') {
+      var cid = $('cl-existing').value;
+      if (!cid) { notify('Choisissez un client existant.', 'err'); done(); return; }
+      api('/api/v1/clients/' + encodeURIComponent(cid), 'PATCH', body)
+        .then(function (r) { closeModal(); notify((r && r.note) || 'Fiche client mise \u00e0 jour.', 'ok'); loadClients(); })
+        .catch(function (e) { done(); if (!guard(e)) notify(srv(e), 'err'); });
+      return;
+    }
+    // Nouveau client.
+    if (isPart) {
+      if (!body.full_name) { notify('Le nom et le pr\u00e9nom sont obligatoires.', 'err'); done(); return; }
+    } else {
+      body.full_name = $('cl-c-name').value.trim();
+      if (!body.full_name) { notify('Le nom complet / la d\u00e9nomination est obligatoire.', 'err'); done(); return; }
+      body.phone = $('cl-c-phone').value.trim() || undefined;
+      body.id_number = $('cl-c-id').value.trim() || undefined;
+      body.address = $('cl-c-addr').value.trim() || undefined;
+      body.birth_date = $('cl-c-birth').value || undefined;
+    }
+    api('/api/v1/clients', 'POST', body)
+      .then(function (r) {
+        closeModal();
+        var cred = r && r.credentials ? r.credentials : null;
+        notify((r && r.note) || 'Client cr\u00e9\u00e9.', 'ok');
+        if (cred) showClientCredentials(cred, r);
+        loadClients();
+      })
+      .catch(function (e) {
+        done();
+        if (e && e.message === 'duplicate_client') { notify('Un client identique existe d\u00e9j\u00e0 \u2014 cr\u00e9ation bloqu\u00e9e.', 'err'); return; }
+        if (!guard(e)) notify(srv(e), 'err');
+      });
+  }
+
+  function showClientCredentials(cred, r) {
+    var mem = r && r.client && r.client.membership_type;
+    var memLine = mem ? '<p class="sub">Qualit\u00e9 : <b>' + (mem === 'membre' ? 'Client membre' : 'Client usager') + '</b>'
+      + (mem === 'membre' ? ' \u00b7 ' + (r.client.shares_count || 0) + ' part(s)' : '') + '</p>' : '';
+    openModal('<h3>Client cr\u00e9\u00e9</h3>'
+      + memLine
+      + '<div class="fld"><label>Code client</label><input readonly value="' + esc(cred.code_client || '') + '"></div>'
+      + '<div class="fld"><label>Compte</label><input readonly value="' + esc(cred.code_account || '') + '"></div>'
+      + '<div class="fld"><label>Mot de passe temporaire</label><input readonly value="' + esc(cred.temporary_password || '') + '"></div>'
+      + '<div class="modal__nav"><button class="btn btn--primary" id="cl-cred-ok" type="button">Fermer</button></div>');
+    $('cl-cred-ok').addEventListener('click', closeModal);
+  }
+
 /*BANKING_MODULE*/
   /* ----- CAISSE ----- */
   function loadCaisse() { loadOverruns(); loadClosings(); }
@@ -1006,19 +1779,100 @@
       var l = d.closings || [];
       if (!l.length) { $('closing-table').innerHTML = '<div class="empty">Aucun arr\u00eat\u00e9.</div>'; return; }
       var body = l.map(function (c) { var g = Number(c.gap_cents || 0);
-        return '<tr><td>' + esc(c.closing_date ? String(c.closing_date).slice(0, 10) : '\u2014') + '</td><td>' + money(c.theoretical_cents) + '</td><td>' + money(c.counted_cents) + '</td><td style="color:' + (g === 0 ? 'inherit' : (g > 0 ? '#1a7f37' : '#c0392b')) + '">' + (g > 0 ? '+' : '') + money(g) + '</td><td><span class="tag">' + (c.status === 'equilibre' ? '\u00c9quilibr\u00e9' : '\u00c9cart') + '</span></td><td>' + esc(c.user_name || '\u2014') + '</td></tr>';
+        var regul;
+        if (c.status === 'equilibre') { regul = '\u2014'; }
+        else if (c.gap_resolved) { regul = '<span class="tag" style="color:#1a7f37">R\u00e9gl\u00e9</span>'; }
+        else {
+          var due = c.gap_due_at ? dt(c.gap_due_at) : '\u2014';
+          regul = '<button class="btn btn--ghost cc-resolve" data-id="' + esc(c.id) + '" data-gap="' + g + '" type="button">R\u00e9gler</button>'
+            + '<br><small style="color:' + (c.gap_overdue ? '#c0392b' : 'var(--muted)') + '">\u00e9ch. ' + esc(due) + (c.gap_overdue ? ' (d\u00e9pass\u00e9e)' : '') + '</small>';
+        }
+        return '<tr><td>' + esc(c.closing_date ? String(c.closing_date).slice(0, 10) : '\u2014') + '</td><td>' + money(c.theoretical_cents) + '</td><td>' + money(c.counted_cents) + '</td><td style="color:' + (g === 0 ? 'inherit' : (g > 0 ? '#1a7f37' : '#c0392b')) + '">' + (g > 0 ? '+' : '') + money(g) + '</td><td><span class="tag">' + (c.status === 'equilibre' ? '\u00c9quilibr\u00e9' : '\u00c9cart') + '</span></td><td>' + regul + '</td><td>' + esc(c.user_name || '\u2014') + '</td></tr>';
       }).join('');
-      $('closing-table').innerHTML = '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>Th\u00e9orique</th><th>Compt\u00e9</th><th>\u00c9cart</th><th>Statut</th><th>Agent</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+      $('closing-table').innerHTML = '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>Th\u00e9orique</th><th>Compt\u00e9</th><th>\u00c9cart</th><th>Statut</th><th>R\u00e8glement</th><th>Agent</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+      $('closing-table').querySelectorAll('.cc-resolve').forEach(function (btn) {
+        btn.addEventListener('click', function () { openResolveModal(btn.getAttribute('data-id'), Number(btn.getAttribute('data-gap'))); });
+      });
     }).catch(function (e) { if (guard(e)) return; if (e.message === 'forbidden' || e.message === 'missing_permission') forbidden('closing-table', 'Acc\u00e8s non habilit\u00e9.'); else notify(fr(e), 'err'); });
   }
   function openClosingModal() {
-    openModal('<h3>Arr\u00eat\u00e9 de caisse</h3><div class="fld"><label for="cc-date">Date</label><input id="cc-date" type="date"></div><div class="fld"><label for="cc-th">Solde th\u00e9orique (FCFA)</label><input id="cc-th" inputmode="numeric"></div><div class="fld"><label for="cc-ct">Esp\u00e8ces compt\u00e9es (FCFA)</label><input id="cc-ct" inputmode="numeric"></div><div class="fld"><label for="cc-note">Note</label><textarea id="cc-note" rows="2"></textarea></div><div class="modal__nav"><button class="btn btn--ghost" id="cc-cancel" type="button">Annuler</button><button class="btn btn--primary" id="cc-save" type="button">Enregistrer</button></div>');
+    var DENOMS = [10000, 5000, 2000, 1000, 500, 250, 200, 100, 50, 25, 10, 5];
+    var today = new Date();
+    var todayStr = today.getFullYear() + '-' + ('0' + (today.getMonth() + 1)).slice(-2) + '-' + ('0' + today.getDate()).slice(-2);
+    var rows = DENOMS.map(function (d) {
+      return '<tr><td style="white-space:nowrap">' + fmtAmount(d) + ' FCFA</td>'
+        + '<td><input class="cc-den" data-face="' + d + '" inputmode="numeric" style="width:90px" value=""></td>'
+        + '<td style="text-align:right" id="cc-line-' + d + '">0</td></tr>';
+    }).join('');
+    openModal('<h3>Arr\u00eat\u00e9 de caisse</h3>'
+      + '<div class="fld"><label for="cc-date">Date</label><input id="cc-date" type="date" value="' + todayStr + '"></div>'
+      + '<div class="fld"><label>Solde th\u00e9orique (auto)</label><input id="cc-th" value="Calcul\u2026" readonly style="background:#f3f4f6"></div>'
+      + '<div class="fld"><label>Billetage \u2014 comptage des esp\u00e8ces (coupures XOF)</label>'
+      + '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Coupure</th><th>Quantit\u00e9</th><th style="text-align:right">Montant</th></tr></thead>'
+      + '<tbody>' + rows + '</tbody></table></div></div>'
+      + '<div class="fld"><label>Esp\u00e8ces compt\u00e9es (billetage)</label><input id="cc-ct" readonly style="background:#f3f4f6;font-weight:700" value="0 FCFA"></div>'
+      + '<div class="fld"><label>\u00c9cart (compt\u00e9 \u2212 th\u00e9orique)</label><input id="cc-gap" readonly style="background:#f3f4f6;font-weight:700" value="\u2014"></div>'
+      + '<div class="fld" id="cc-just-wrap" style="display:none"><label for="cc-just">Justification de l\u2019\u00e9cart (obligatoire \u2014 \u00e0 r\u00e9gler sous 24h)</label><textarea id="cc-just" rows="2"></textarea></div>'
+      + '<div class="fld"><label for="cc-note">Note</label><textarea id="cc-note" rows="2"></textarea></div>'
+      + '<div class="modal__nav"><button class="btn btn--ghost" id="cc-cancel" type="button">Annuler</button><button class="btn btn--primary" id="cc-save" type="button">Enregistrer</button></div>');
+    var theo = 0, theoReady = false;
+    function recompute() {
+      var counted = 0;
+      DENOMS.forEach(function (d) {
+        var inp = $('modal-root').querySelector('.cc-den[data-face="' + d + '"]');
+        var qty = Number(digits(inp.value)) || 0;
+        var line = d * qty;
+        counted += line;
+        $('cc-line-' + d).textContent = fmtAmount(line);
+      });
+      $('cc-ct').value = fmtAmount(counted) + ' FCFA';
+      if (theoReady) {
+        var gap = counted * 100 - theo;
+        var g = gap / 100;
+        $('cc-gap').value = (g > 0 ? '+' : '') + fmtAmount(g) + ' FCFA';
+        $('cc-gap').style.color = gap === 0 ? 'inherit' : (gap > 0 ? '#1a7f37' : '#c0392b');
+        $('cc-just-wrap').style.display = gap === 0 ? 'none' : '';
+      }
+      return counted;
+    }
+    $('modal-root').querySelectorAll('.cc-den').forEach(function (inp) {
+      inp.addEventListener('input', recompute);
+    });
     $('cc-cancel').addEventListener('click', closeModal);
+    api('/api/v1/cash/theoretical').then(function (d) {
+      theo = Number(d.theoretical_cents || 0); theoReady = true;
+      $('cc-th').value = money(theo);
+      recompute();
+    }).catch(function (e) { if (!guard(e)) $('cc-th').value = '\u2014 (indisponible)'; });
     $('cc-save').addEventListener('click', function () {
+      var counted = recompute();
+      var denoms = {};
+      DENOMS.forEach(function (d) {
+        var inp = $('modal-root').querySelector('.cc-den[data-face="' + d + '"]');
+        var qty = Number(digits(inp.value)) || 0;
+        if (qty > 0) denoms[d] = qty;
+      });
+      var gap = counted * 100 - theo;
+      var just = $('cc-just').value.trim();
+      if (theoReady && gap !== 0 && !just) { notify('Un \u00e9cart est constat\u00e9 : la justification est obligatoire.', 'err'); return; }
       $('cc-save').disabled = true;
-      api('/api/v1/cash/closings', 'POST', { closing_date: $('cc-date').value || undefined, theoretical_cents: cents($('cc-th').value), counted_cents: cents($('cc-ct').value), note: $('cc-note').value.trim() || undefined })
+      api('/api/v1/cash/closings', 'POST', { closing_date: $('cc-date').value || undefined, denominations: denoms, gap_justification: just || undefined, note: $('cc-note').value.trim() || undefined })
         .then(function (r) { closeModal(); notify(r.note || 'Arr\u00eat\u00e9 enregistr\u00e9.', 'ok'); loadClosings(); })
         .catch(function (e) { $('cc-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+  function openResolveModal(id, gap) {
+    openModal('<h3>R\u00e8glement de l\u2019\u00e9cart</h3><p style="color:var(--muted)">\u00c9cart de <b>' + money(gap) + '</b> \u00e0 r\u00e9gler d\u00e9finitivement.</p>'
+      + '<div class="fld"><label for="rs-note">Comment l\u2019\u00e9cart a-t-il \u00e9t\u00e9 r\u00e9gl\u00e9 ?</label><textarea id="rs-note" rows="3"></textarea></div>'
+      + '<div class="modal__nav"><button class="btn btn--ghost" id="rs-cancel" type="button">Annuler</button><button class="btn btn--primary" id="rs-save" type="button">Marquer r\u00e9gl\u00e9</button></div>');
+    $('rs-cancel').addEventListener('click', closeModal);
+    $('rs-save').addEventListener('click', function () {
+      var note = $('rs-note').value.trim();
+      if (!note) { notify('Pr\u00e9cisez le r\u00e8glement.', 'err'); return; }
+      $('rs-save').disabled = true;
+      api('/api/v1/cash/closings/' + id + '/resolve', 'POST', { resolution_note: note })
+        .then(function (r) { closeModal(); notify(r.note || '\u00c9cart r\u00e9gl\u00e9.', 'ok'); loadClosings(); })
+        .catch(function (e) { $('rs-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
     });
   }
   /* ----- COFFRE ----- */

@@ -152,13 +152,15 @@ router.get('/:id/proforma.pdf', async (req, res, next) => {
     const header = await getBranding(r.imf_id);
     const plan = (await q('SELECT * FROM plan WHERE code=$1', [r.plan_code])).rows[0];
     // Reconstitution du détail : licence + abonnement (+ remise si cycle annuel).
-    const licenceCents = r.licence_cents != null ? r.licence_cents : LICENCE_CENTS;
-    const subscriptionCents = r.subscription_cents != null
-      ? r.subscription_cents : (plan ? plan.price_cents : 0);
-    const discountCents = r.discount_cents || 0;
+    // Coercition NUMÉRIQUE : node-postgres renvoie les BIGINT en CHAÎNES, une
+    // addition sans Number() concaténerait les montants.
+    const licenceCents = Math.round(Number(r.licence_cents != null ? r.licence_cents : LICENCE_CENTS)) || 0;
+    const subscriptionCents = Math.round(Number(r.subscription_cents != null
+      ? r.subscription_cents : (plan ? plan.price_cents : 0))) || 0;
+    const discountCents = Math.round(Number(r.discount_cents || 0)) || 0;
     const subtotalCents = licenceCents + subscriptionCents;
     const totalCents = r.proforma_amount_cents != null
-      ? r.proforma_amount_cents : (subtotalCents - discountCents);
+      ? Math.round(Number(r.proforma_amount_cents)) : (subtotalCents - discountCents);
     const lines = buildInvoiceLines({
       planLabel: plan ? plan.label : (r.plan_code || ''),
       billing: r.billing_cycle, licenceCents, subscriptionCents });

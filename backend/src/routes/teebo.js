@@ -76,10 +76,13 @@ router.post('/requests/:id/approve', async (req, res, next) => {
       // et enregistrement de la facture émise au nom de l'IMF. On reprend le
       // détail tarifaire de la demande : licence (frais unique) + abonnement,
       // la remise éventuelle du cycle annuel, puis la TVA du tenant.
-      const licenceCents = r.licence_cents != null ? r.licence_cents : LICENCE_CENTS;
-      const subscriptionCents = r.subscription_cents != null
-        ? r.subscription_cents : (r.proforma_amount_cents || 0);
-      const discountCents = r.discount_cents || 0;
+      // Coercition NUMÉRIQUE obligatoire : node-postgres renvoie les BIGINT en
+      // CHAÎNES ; sans Number(), `licenceCents + subscriptionCents` ferait une
+      // CONCATÉNATION et stockerait un subtotal_cents/total_cents corrompu.
+      const licenceCents = Math.round(Number(r.licence_cents != null ? r.licence_cents : LICENCE_CENTS)) || 0;
+      const subscriptionCents = Math.round(Number(r.subscription_cents != null
+        ? r.subscription_cents : (r.proforma_amount_cents || 0))) || 0;
+      const discountCents = Math.round(Number(r.discount_cents || 0)) || 0;
       const subtotalCents = licenceCents + subscriptionCents;       // HT avant remise
       const netCents = Math.max(0, subtotalCents - discountCents);  // HT après remise
       const setRow = (await c.query(

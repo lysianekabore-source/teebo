@@ -32,22 +32,39 @@ export function normalizeClientFields(b = {}) {
   };
 }
 
-/** Cherche un doublon de client (n° de pièce OU nom+téléphone). */
+/**
+ * Cherche un doublon de client à CHAQUE création, en interrogeant la base sur
+ * les trois critères de la VAGUE 23 : n° de pièce, téléphone, nom/prénom.
+ * Chaque correspondance est renvoyée avec le motif qui l'a déclenchée, de la
+ * plus forte (n° de pièce) à la plus faible (nom seul).
+ */
 export async function findClientDuplicate(imfId, b = {}) {
   const f = normalizeClientFields(b);
   const out = { duplicate: false, matches: [] };
+  const add = (rows, reason) => {
+    for (const m of rows) {
+      const hit = out.matches.find(x => x.id === m.id);
+      if (hit) { if (!hit.reasons.includes(reason)) hit.reasons.push(reason); }
+      else out.matches.push({ ...m, reason, reasons: [reason] });
+    }
+  };
+  // 1) n° de pièce (critère le plus discriminant).
   if (f.id_number_norm) {
-    const r = (await q(
+    add((await q(
       `SELECT id, code_client, full_name, phone, id_number FROM client
-        WHERE imf_id=$1 AND id_number_norm=$2 LIMIT 5`, [imfId, f.id_number_norm])).rows;
-    for (const m of r) out.matches.push({ ...m, reason: 'id_number' });
+        WHERE imf_id=$1 AND id_number_norm=$2 LIMIT 5`, [imfId, f.id_number_norm])).rows, 'id_number');
   }
+  // 2) téléphone (même numéro domicilié sur une autre fiche).
   if (f.phone_norm) {
-    const r = (await q(
+    add((await q(
       `SELECT id, code_client, full_name, phone, id_number FROM client
-        WHERE imf_id=$1 AND name_norm=$2 AND phone_norm=$3 LIMIT 5`,
-      [imfId, f.name_norm, f.phone_norm])).rows;
-    for (const m of r) if (!out.matches.some(x => x.id === m.id)) out.matches.push({ ...m, reason: 'name_phone' });
+        WHERE imf_id=$1 AND phone_norm=$2 LIMIT 5`, [imfId, f.phone_norm])).rows, 'phone');
+  }
+  // 3) nom/prénom (homonyme potentiel à vérifier).
+  if (f.name_norm) {
+    add((await q(
+      `SELECT id, code_client, full_name, phone, id_number FROM client
+        WHERE imf_id=$1 AND name_norm=$2 LIMIT 5`, [imfId, f.name_norm])).rows, 'name');
   }
   out.duplicate = out.matches.length > 0;
   return out;

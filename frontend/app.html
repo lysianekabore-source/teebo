@@ -184,7 +184,17 @@
           <div class="fld"><label for="s-vat_number">N° contribuable / TVA</label><input id="s-vat_number" type="text" placeholder="Optionnel"></div>
           <div class="fld"><label for="s-bceao_agreement_no">N° d’agrément BCEAO</label><input id="s-bceao_agreement_no" type="text" placeholder="Ex : 2024-XXX-IM-001"></div>
           <div class="fld"><label for="s-share_capital">Capital social (FCFA)</label><input id="s-share_capital" type="text" inputmode="numeric" placeholder="Ex : 25 000 000"></div>
+          <div class="fld"><label for="s-part-sociale">Valeur nominale de la part sociale (FCFA)</label><input id="s-part-sociale" type="text" inputmode="numeric" placeholder="SCOOP uniquement — ex : 10 000"><p class="hint">IMF coopérative (SCOOP) : un client souscrivant ≥ 1 part est « membre », sinon « usager ».</p></div>
           <div class="fld"><label for="s-legal_address">Siège social</label><input id="s-legal_address" type="text" placeholder="Adresse complète du siège"></div>
+        </div>
+        <div class="fld"><label>Durée de validité par défaut des pièces d’identité (en mois)</label>
+          <p class="hint">Selon la localité de l’IMF. Sert au calcul automatique de la date d’expiration lors de la création d’un client particulier.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+            <div class="fld"><label for="s-valid-cni">CNI</label><input id="s-valid-cni" type="text" inputmode="numeric" placeholder="Ex : 120"></div>
+            <div class="fld"><label for="s-valid-passeport">Passeport</label><input id="s-valid-passeport" type="text" inputmode="numeric" placeholder="Ex : 60"></div>
+            <div class="fld"><label for="s-valid-cedeao">Carte CEDEAO</label><input id="s-valid-cedeao" type="text" inputmode="numeric" placeholder="Ex : 120"></div>
+            <div class="fld"><label for="s-valid-consulaire_sejour">Carte consulaire / séjour</label><input id="s-valid-consulaire_sejour" type="text" inputmode="numeric" placeholder="Ex : 12"></div>
+          </div>
         </div>
         <div class="fld"><label for="s-bank_details">Coordonnées bancaires de règlement</label><textarea id="s-bank_details" rows="2" placeholder="Banque, IBAN / RIB, Mobile Money…"></textarea></div>
         <div class="fld"><label for="s-footer_note">Note de pied de document</label><input id="s-footer_note" type="text" placeholder="Ex : Merci de votre confiance"></div>
@@ -281,7 +291,7 @@
           <h1>Clients</h1>
           <p>Consulter et modifier les fiches clients de votre institution. Réservé aux postes habilités à la gestion client.</p>
         </div>
-        <div class="topbar__actions"><button class="btn btn--ghost" id="btn-clients-refresh" type="button">↻ Actualiser</button></div>
+        <div class="topbar__actions"><button class="btn btn--primary" id="btn-client-new" type="button">+ Nouveau client</button> <button class="btn btn--ghost" id="btn-clients-refresh" type="button">↻ Actualiser</button></div>
       </div>
       <div class="card"><div id="clients-table"><div class="empty">Chargement…</div></div></div>
     </section>

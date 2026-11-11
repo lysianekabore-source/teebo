@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { q, tx } from '../db.js';
 import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken, userHasPermission, effectivePermissionKeys } from '../auth.js';
 import { notifyEmail, notifyWhatsApp, PUBLIC_SITE_URL } from '../notify.js';
+import { isCashierPosition } from '../org_structure.js';
 import { getStatus, is2faRequired, createChallenge, consumeChallenge, verifyForUser,
   verifyRecoveryCode, startEnrollment, confirmEnrollment, disable,
   createEnrollmentTicket, resolveEnrollmentTicket, consumeEnrollmentTicket } from '../twofa.js';
@@ -359,7 +360,9 @@ router.get('/me', authenticate, async (req, res, next) => {
     res.json({
       user: {
         id: req.user.id, email: req.user.email, full_name: req.user.full_name,
-        role: req.user.role, code_user: req.user.code_user, imf_id: req.user.imf_id
+        role: req.user.role, code_user: req.user.code_user, imf_id: req.user.imf_id,
+        position_code: req.user.position_code || null,
+        is_cashier: isCashierPosition(req.user.position_code)
       },
       imf_code: imf.code_imf || null,
       imf_name: imf.imf_name || null,

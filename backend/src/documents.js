@@ -1,4 +1,8 @@
 import { q } from './db.js';
+import {
+  ID_DOC_TYPES, BIRTH_CERT_STATUSES, PROOF_STATUSES, HOME_PROOF_TYPES,
+  ACTIVITY_PROOF_TYPES, INCOME_BY_PROFESSION, BENEFICIARY_RELATIONS,
+} from './client_documents.js';
 
 /**
  * teebo — Documents officiels de l'IMF
@@ -361,6 +365,115 @@ export function renderStatement({ header, client, account, operations, generated
   return wrap('Relevé de compte — ' + (client.full_name || ''), body);
 }
 
+/* ============================== FICHE CLIENT ============================ */
+// Libellé d'un code dans une liste { code, label }.
+function lbl(list, code) { const o = (list || []).find((x) => x.code === code); return o ? o.label : (code || '—'); }
+
+const PROFESSION_LABEL = {
+  salarie: 'Salarié', retraite: 'Retraité', informel: 'Activité informelle', etudiant: 'Étudiant',
+};
+
+/**
+ * FICHE CLIENT complète (particulier) imprimable / exportable en PDF, destinée
+ * à la signature du client et de l'utilisateur. Incruste les signatures
+ * numériques déjà capturées (stylet) ou présente des cadres à signer à la main.
+ */
+export function renderClientFiche({ header, client, account, signatures, conformity, generatedAt, generatedBy }) {
+  const c = client || {};
+  const sigOf = (role) => (signatures || []).find((s) => s.role === role) || null;
+  const prof = c.profession || null;
+  const spec = prof ? INCOME_BY_PROFESSION[prof] : null;
+  const incomeTypes = spec && spec.types ? spec.types : [];
+
+  const row = (label, value) => `<div><span>${esc(label)}</span><b>${esc(value == null || value === '' ? '—' : value)}</b></div>`;
+  const yn = (v) => (v === true || v === 't' || v === 'true') ? 'Oui' : 'Non';
+
+  const identite = [
+    row('Code client', c.code_client),
+    row('Nom', c.last_name || c.full_name),
+    row('Prénom', c.first_name),
+    row('Téléphone', c.phone),
+    row('Date de naissance', fmtDate(c.birth_date)),
+    row('Lieu de naissance', c.birth_place),
+  ].join('');
+
+  const piece = [
+    row('Document d’identité', lbl(ID_DOC_TYPES, c.id_doc_type)),
+    row('Document physique reçu', yn(c.id_doc_received)),
+    row('N° de la pièce', c.id_doc_number),
+    row('Date d’établissement', fmtDate(c.id_doc_issue_date)),
+    row('Date d’expiration (calculée)', fmtDate(c.id_doc_expiry_date)),
+    row('Acte de naissance', lbl(BIRTH_CERT_STATUSES, c.birth_cert_status)),
+  ].join('');
+
+  const ayant = [
+    row('Nom de l’ayant droit', c.beneficiary_last_name),
+    row('Prénom de l’ayant droit', c.beneficiary_first_name),
+    row('Lien', lbl(BENEFICIARY_RELATIONS, c.beneficiary_relation)),
+  ].join('');
+
+  const loc = [
+    row('Plan de localisation — domicile', c.home_location_desc),
+    row('Justificatif de domicile', lbl(PROOF_STATUSES, c.home_proof_status)
+      + (c.home_proof_type ? ' — ' + lbl(HOME_PROOF_TYPES, c.home_proof_type) : '')),
+    row('Plan de localisation — activité', c.activity_location_desc),
+    row('Justificatif d’activité', lbl(PROOF_STATUSES, c.activity_proof_status)
+      + (c.activity_proof_type ? ' — ' + lbl(ACTIVITY_PROOF_TYPES, c.activity_proof_type) : '')),
+  ].join('');
+
+  const revenuRows = [row('Profession', PROFESSION_LABEL[prof] || prof)];
+  if (prof === 'salarie' || prof === 'retraite') revenuRows.push(row('Domiciliation du salaire / de la pension', yn(c.salary_domiciliation)));
+  if (c.activity_description) revenuRows.push(row('Description de l’activité', c.activity_description));
+  if (c.school_name) revenuRows.push(row('École / université', c.school_name));
+  if (c.income_proof_status) revenuRows.push(row('Justificatif de revenu',
+    lbl(PROOF_STATUSES, c.income_proof_status) + (c.income_proof_type ? ' — ' + lbl(incomeTypes, c.income_proof_type) : '')));
+  const revenu = revenuRows.join('');
+
+  const conf = (conformity || []);
+  const confLine = conf.length
+    ? `<div class="sign">Conformité des pièces : ${esc(c.conformity_status === 'conforme' ? 'CONFORME' : (c.conformity_status === 'non_conforme' ? 'NON CONFORME' : 'EN ATTENTE'))}`
+      + (conf.some((x) => x.is_conform === false || x.is_conform === 'f')
+         ? ' — à corriger : ' + esc(conf.filter((x) => x.is_conform === false || x.is_conform === 'f').map((x) => x.field_label).join(', '))
+         : '') + '</div>'
+    : '';
+
+  const sigBox = (role, title) => {
+    const s = sigOf(role);
+    let inner;
+    if (s && s.method === 'stylet' && s.image_data_url) {
+      inner = `<img src="${esc(s.image_data_url)}" alt="signature" style="max-height:70px;max-width:100%">`;
+    } else if (s && s.method === 'empreinte') {
+      inner = `<div class="em">✓ Validé par empreinte digitale<br><small>${esc(fmtDateTime(s.captured_at))}</small></div>`;
+    } else {
+      inner = '<div class="em" style="color:#9a9db2">Signature manuscrite</div>';
+    }
+    return `<div class="sigb"><div class="sigt">${esc(title)}</div><div class="sigc">${inner}</div></div>`;
+  };
+
+  const body = `
+  ${docHead(header, 'Logo ' + (header.legal_name || ''))}
+  <div class="title">Fiche client — Particulier
+    <small>Éditée le ${esc(fmtDateTime(generatedAt))}${generatedBy ? ' par ' + esc(generatedBy) : ''}</small>
+  </div>
+  <h4 style="margin:14px 0 4px">Identité</h4><div class="docmeta">${identite}</div>
+  <h4 style="margin:14px 0 4px">Pièce d’identité</h4><div class="docmeta">${piece}</div>
+  <h4 style="margin:14px 0 4px">Ayant droit</h4><div class="docmeta">${ayant}</div>
+  <h4 style="margin:14px 0 4px">Localisation</h4><div class="docmeta">${loc}</div>
+  <h4 style="margin:14px 0 4px">Activité &amp; revenu</h4><div class="docmeta">${revenu}</div>
+  <h4 style="margin:14px 0 4px">Compte</h4><div class="docmeta">${row('N° de compte', account && account.code_account)}${row('Devise', (account && account.currency) || 'XOF')}</div>
+  ${confLine}
+  <style>.sigs{display:flex;gap:18px;margin-top:22px}.sigb{flex:1}
+  .sigt{font-size:12px;color:#5b6076;margin-bottom:4px}
+  .sigc{border:1px solid #c7c9d6;border-radius:8px;height:92px;display:flex;align-items:center;justify-content:center;text-align:center;padding:6px}
+  .sigc .em{font-size:12px}</style>
+  <div class="sigs">${sigBox('client', 'Signature du client')}${sigBox('user', 'Signature de l’agent')}</div>
+  <div class="sign">Je soussigné(e) certifie exactes les informations portées sur la présente fiche et reconnais avoir pris connaissance des conditions d’ouverture de compte.</div>
+  ${docLegal(header)}
+  ${docFoot(header, 'Fiche client générée par teebo')}`;
+
+  return wrap('Fiche client — ' + (c.full_name || ''), body);
+}
+
 /* ============================== FACTURES ================================= */
 export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, dueAt, periodLabel,
   plan, lines, subtotalCents, discountCents = 0, vatRateBp = 0, vatCents = 0, totalCents,
@@ -370,20 +483,35 @@ export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, 
   const title = isFinal ? 'Facture' : 'Facture proforma';
   const statusBadge = status ? `<span class="badge${status === 'payee' ? '' : ' badge--warn'}">${esc(statusLabel(status))}</span>` : '';
 
-  const vatLine = vatRateBp
-    ? `<div><span>TVA (${(Number(vatRateBp) / 100).toLocaleString('fr-FR')} %)</span><b>${esc(moneyFcfa(vatCents, cur))}</b></div>`
-    : `<div><span>TVA</span><b>Non applicable</b></div>`;
-  const discountLine = discountCents
-    ? `<div><span>Remise</span><b>− ${esc(moneyFcfa(discountCents, cur))}</b></div>` : '';
-  const paidLine = (isFinal && amountPaidCents)
-    ? `<div><span>Montant réglé</span><b>${esc(moneyFcfa(amountPaidCents, cur))}</b></div>
-       <div><span>Reste à payer</span><b>${esc(moneyFcfa(Math.max(0, Number(totalCents || 0) - Number(amountPaidCents || 0)), cur))}</b></div>` : '';
+  // Coercition NUMÉRIQUE : node-postgres renvoie les colonnes BIGINT sous
+  // forme de CHAÎNES. Une addition de chaînes devient une concaténation
+  // ("25000000" + "90000000" => "2500000090000000"), ce qui corrompt les
+  // totaux. On force donc tout en entier avant le moindre calcul.
+  const num = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? n : 0; };
+  const discountNum = num(discountCents);
+  const vatNum = num(vatCents);
+  const paidNum = num(amountPaidCents);
 
   const itemLines = (Array.isArray(lines) && lines.length)
-    ? lines
-    : [{ label: plan || 'Abonnement teebo', amountCents: subtotalCents }];
+    ? lines.map((l) => ({ label: l.label || '', amountCents: num(l.amountCents) }))
+    : [{ label: plan || 'Abonnement teebo', amountCents: num(subtotalCents) }];
   const rowsHtml = itemLines.map((l) =>
-    `<tr><td>${esc(l.label || '')}</td><td class="r">${esc(moneyFcfa(l.amountCents || 0, cur))}</td></tr>`).join('');
+    `<tr><td>${esc(l.label)}</td><td class="r">${esc(moneyFcfa(l.amountCents, cur))}</td></tr>`).join('');
+
+  // Source de vérité : le sous-total HT est la SOMME numérique des lignes ;
+  // le total est toujours recoupé (sous-total − remise + TVA). Ce recalcul
+  // répare aussi l'affichage des factures dont le total stocké était erroné.
+  const subtotalNum = itemLines.reduce((s, l) => s + l.amountCents, 0);
+  const totalNum = Math.max(0, subtotalNum - discountNum + vatNum);
+
+  const vatLine = vatRateBp
+    ? `<div><span>TVA (${(Number(vatRateBp) / 100).toLocaleString('fr-FR')} %)</span><b>${esc(moneyFcfa(vatNum, cur))}</b></div>`
+    : `<div><span>TVA</span><b>Non applicable</b></div>`;
+  const discountLine = discountNum
+    ? `<div><span>Remise</span><b>− ${esc(moneyFcfa(discountNum, cur))}</b></div>` : '';
+  const paidLine = (isFinal && paidNum)
+    ? `<div><span>Montant réglé</span><b>${esc(moneyFcfa(paidNum, cur))}</b></div>
+       <div><span>Reste à payer</span><b>${esc(moneyFcfa(Math.max(0, totalNum - paidNum), cur))}</b></div>` : '';
 
   const body = `
   ${docHeadInvoice()}
@@ -405,10 +533,10 @@ export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, 
     </tbody>
   </table>
   <div class="totals">
-    <div><span>Sous-total HT</span><b>${esc(moneyFcfa(subtotalCents, cur))}</b></div>
+    <div><span>Sous-total HT</span><b>${esc(moneyFcfa(subtotalNum, cur))}</b></div>
     ${discountLine}
     ${vatLine}
-    <div class="gt"><span>Total à payer</span><b>${esc(moneyFcfa(totalCents, cur))}</b></div>
+    <div class="gt"><span>Total à payer</span><b>${esc(moneyFcfa(totalNum, cur))}</b></div>
     ${paidLine}
   </div>
   ${notes ? `<div class="legal"><h4>Observations</h4>${esc(notes)}</div>` : ''}

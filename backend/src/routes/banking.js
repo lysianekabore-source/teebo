@@ -2,6 +2,9 @@ import express from 'express';
 import { q, tx } from '../db.js';
 import { authenticate, requireFreshPassword, requirePermission } from '../auth.js';
 import { auditEvent } from '../audit.js';
+import { isCashierPosition } from '../org_structure.js';
+import { validateTypology } from '../client_typology.js';
+import { validateParticulierDocs } from '../client_documents.js';
 
 /* ===========================================================================
  * teebo — VAGUE 15 : opérations bancaires fonctionnelles
@@ -28,6 +31,78 @@ router.use((req, res, next) => {
 function int(v) { const n = Math.round(Number(v)); return Number.isFinite(n) ? n : 0; }
 function fcfa(cents) { return Math.round(Number(cents || 0) / 100); } // affichage FCFA
 
+/* Coupures XOF (FCFA) de la BCEAO : billets puis pièces (valeur faciale). */
+const XOF_DENOMINATIONS = [10000, 5000, 2000, 1000, 500, 250, 200, 100, 50, 25, 10, 5];
+
+/* Billetage : à partir d'un objet { "10000": 3, ... } on ne garde que les
+ * coupures BCEAO valides, on normalise les quantités (>=0) et on calcule le
+ * total en "cents" (= valeur faciale FCFA × 100 × quantité). */
+function normalizeDenominations(raw) {
+  const clean = {};
+  let totalCents = 0;
+  if (raw && typeof raw === 'object') {
+    for (const face of XOF_DENOMINATIONS) {
+      const qty = Math.max(0, int(raw[face] != null ? raw[face] : raw[String(face)]));
+      if (qty > 0) { clean[String(face)] = qty; totalCents += face * 100 * qty; }
+    }
+  }
+  return { denominations: clean, countedCents: totalCents };
+}
+
+/* Solde théorique de caisse d'un utilisateur (caissier OU agent de collecte).
+ *
+ * MODÈLE : à CHAQUE arrêté, la caisse est VIDÉE (le caissier délesté tout le
+ * compté vers le coffre-fort ; l'agent de collecte reverse tout au caissier).
+ * La caisse repart donc de ZÉRO après un arrêté : carry = 0.
+ *
+ * Le théorique depuis le dernier arrêté =
+ *   - les DÉPÔTS encaissés qui impactent la caisse de l'agent (impacts_agent_cash) ;
+ *   - PLUS, pour le CAISSIER uniquement, les APPROVISIONNEMENTS de sa caisse
+ *     reçus du coffre (vault_movement delestage, counterpart « caisse »).
+ *
+ * Les RÉGULARISATIONS GUICHET (retrait_regul) n'impactent JAMAIS la caisse
+ * physique (impacts_agent_cash = false) : elles sont EXCLUES pour les 2 rôles.
+ * L'agent de collecte ne peut pas approvisionner sa sacoche : il n'a que des dépôts.
+ */
+async function computeTheoretical(imfId, userId, isCashier = false) {
+  // Dernier arrêté : la caisse a été vidée, on repart de zéro depuis cette date.
+  const last = (await q(
+    `SELECT created_at FROM cash_closing
+       WHERE imf_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 1`,
+    [imfId, userId])).rows[0];
+  const since = last ? last.created_at : null;
+  // Dépôts encaissés (impactant la caisse de l'agent) depuis l'arrêté.
+  const dep = (await q(
+    `SELECT COALESCE(SUM(amount_cents),0)::bigint AS s, COUNT(*)::int AS n
+       FROM operation
+      WHERE imf_id=$1 AND user_id=$2 AND status='valide'
+        AND kind='depot' AND impacts_agent_cash=true
+        AND ($3::timestamptz IS NULL OR created_at > $3)`,
+    [imfId, userId, since])).rows[0];
+  const deposits = Number(dep.s);
+  let provisions = 0, provCount = 0;
+  if (isCashier) {
+    // Approvisionnements de la caisse (coffre → caisse) reçus depuis l'arrêté.
+    const pr = (await q(
+      `SELECT COALESCE(SUM(amount_cents),0)::bigint AS s, COUNT(*)::int AS n
+         FROM vault_movement
+        WHERE imf_id=$1 AND user_id=$2 AND direction='delestage' AND counterpart='caisse'
+          AND ($3::timestamptz IS NULL OR created_at > $3)`,
+      [imfId, userId, since])).rows[0];
+    provisions = Number(pr.s); provCount = Number(pr.n);
+  }
+  return {
+    theoretical_cents: deposits + provisions,
+    carry_cents: 0,
+    deposits_cents: deposits,
+    provisions_cents: provisions,
+    movements_cents: deposits + provisions,
+    movements_count: Number(dep.n) + provCount,
+    previous_closing_at: since,
+    is_cashier: isCashier,
+  };
+}
+
 /* --------------------------------------------------------------------------
  * CLIENTS — Modifier une fiche client (le gel/dégel existe déjà : round.js)
  * ------------------------------------------------------------------------ */
@@ -42,10 +117,63 @@ router.patch('/clients/:id', requirePermission('clients.manage'), async (req, re
     const id_number = b.id_number !== undefined ? (String(b.id_number).trim() || null) : cur.id_number;
     const address = b.address !== undefined ? (String(b.address).trim() || null) : cur.address;
     const birth_date = b.birth_date !== undefined ? (b.birth_date || null) : cur.birth_date;
+    // Typologie + qualité de membre : mises à jour seulement si le formulaire
+    // de classification a été soumis (présence de client_category).
+    let typoSql = '', typoArgs = [];
+    if (b.client_category !== undefined && b.client_category !== null && b.client_category !== '') {
+      const typo = validateTypology(b);
+      if (!typo.ok) return res.status(422).json({ error: typo.error, field: typo.field,
+        message: 'Typologie incomplète ou invalide (champ « ' + (typo.field || '') + ' »).' });
+      const tv = typo.values;
+      const imfRow = (await q('SELECT type FROM imf WHERE id=$1', [req.user.imf_id])).rows[0];
+      const isScoop = imfRow && imfRow.type === 'SCOOP';
+      let membershipType = null, sharesCount = 0, sharesPaidCents = 0;
+      if (isScoop) {
+        const dsRow = (await q('SELECT part_sociale_nominal_cents FROM imf_document_settings WHERE imf_id=$1',
+          [req.user.imf_id])).rows[0];
+        const nominal = dsRow && dsRow.part_sociale_nominal_cents != null ? Number(dsRow.part_sociale_nominal_cents) : null;
+        if (b.membership_type === 'membre') {
+          if (!nominal || nominal <= 0) return res.status(422).json({ error: 'part_sociale_non_parametree',
+            message: 'La valeur nominale de la part sociale n\u2019est pas fixée dans les paramètres de l\u2019IMF.' });
+          sharesCount = Math.max(1, Math.trunc(Number(b.shares_count) || 1));
+          membershipType = 'membre'; sharesPaidCents = sharesCount * nominal;
+        } else { membershipType = 'usager'; }
+      }
+      typoArgs = [membershipType, sharesCount, sharesPaidCents, tv.client_category, tv.gender,
+        tv.profession, tv.profession_detail, tv.group_type, tv.enterprise_segment, tv.legal_form];
+      typoSql = `, membership_type=$8, shares_count=$9, shares_paid_cents=$10,
+        client_category=$11, gender=$12, profession=$13, profession_detail=$14,
+        group_type=$15, enterprise_segment=$16, legal_form=$17`;
+
+      // Pièces requises (PARTICULIER) : persistées si le dossier complet est soumis.
+      if (tv.client_category === 'particulier') {
+        const dsDoc = (await q('SELECT id_doc_validity_months FROM imf_document_settings WHERE imf_id=$1',
+          [req.user.imf_id])).rows[0];
+        const validity = dsDoc && dsDoc.id_doc_validity_months ? dsDoc.id_doc_validity_months : {};
+        const docBody = { ...b, phone, birth_date };
+        const docs = validateParticulierDocs(docBody, { profession: tv.profession, validityMonths: validity });
+        if (!docs.ok) return res.status(422).json({ error: docs.error, field: docs.field,
+          message: docs.message || 'Pièces requises incomplètes.' });
+        const dv = docs.values;
+        // Colonnes $18..$36 dans l'ordre de DOC_FIELDS.
+        typoArgs.push(dv.first_name, dv.last_name, dv.birth_place,
+          dv.id_doc_type, dv.id_doc_received, dv.id_doc_number, dv.id_doc_issue_date, dv.id_doc_expiry_date,
+          dv.birth_cert_status, dv.home_location_desc, dv.home_proof_status, dv.home_proof_type,
+          dv.activity_location_desc, dv.activity_proof_status, dv.activity_proof_type,
+          dv.activity_description, dv.school_name, dv.income_proof_status, dv.income_proof_type,
+          dv.beneficiary_last_name, dv.beneficiary_first_name, dv.beneficiary_relation, dv.salary_domiciliation);
+        typoSql += `, first_name=$18, last_name=$19, birth_place=$20,
+          id_doc_type=$21, id_doc_received=$22, id_doc_number=$23, id_doc_issue_date=$24, id_doc_expiry_date=$25,
+          birth_cert_status=$26, home_location_desc=$27, home_proof_status=$28, home_proof_type=$29,
+          activity_location_desc=$30, activity_proof_status=$31, activity_proof_type=$32,
+          activity_description=$33, school_name=$34, income_proof_status=$35, income_proof_type=$36,
+          beneficiary_last_name=$37, beneficiary_first_name=$38, beneficiary_relation=$39, salary_domiciliation=$40`;
+      }
+    }
     const row = (await q(
-      `UPDATE client SET full_name=$3, phone=$4, id_number=$5, address=$6, birth_date=$7
-        WHERE id=$1 AND imf_id=$2 RETURNING id, code_client, full_name, phone, id_number, address, birth_date`,
-      [req.params.id, req.user.imf_id, full_name, phone, id_number, address, birth_date])).rows[0];
+      `UPDATE client SET full_name=$3, phone=$4, id_number=$5, address=$6, birth_date=$7` + typoSql + `
+        WHERE id=$1 AND imf_id=$2 RETURNING *`,
+      [req.params.id, req.user.imf_id, full_name, phone, id_number, address, birth_date, ...typoArgs])).rows[0];
     await auditEvent(req.user, { action: 'client.update', entity: 'client', entityId: row.id,
       payload: { full_name: row.full_name } });
     res.json({ ok: true, client: row, note: 'Fiche client mise à jour.' });
@@ -112,31 +240,118 @@ router.post('/cash/overrun-requests/:id/decide', requirePermission('cash.approve
 
 /* --------------------------------------------------------------------------
  * CAISSE — Arrêté de caisse & rapprochement
+ * Habilitation cash.declare : le caissier ET l'agent de collecte arrêtent
+ * leur propre caisse (la validation/approbation d'un écart relève du supérieur).
  * ------------------------------------------------------------------------ */
-router.post('/cash/closings', requirePermission('cash.approve'), async (req, res, next) => {
+
+// Solde théorique auto-calculé de la caisse de l'utilisateur courant.
+// Sert à pré-remplir (lecture seule) le champ « Solde théorique » du modal.
+router.get('/cash/theoretical', requirePermission('cash.declare'), async (req, res, next) => {
+  try {
+    const t = await computeTheoretical(req.user.imf_id, req.user.id, isCashierPosition(req.user.position_code));
+    res.json({ ok: true, ...t, denominations: XOF_DENOMINATIONS });
+  } catch (e) { next(e); }
+});
+
+router.post('/cash/closings', requirePermission('cash.declare'), async (req, res, next) => {
   try {
     const b = req.body || {};
-    const theoretical = int(b.theoretical_cents);
-    const counted = int(b.counted_cents);
+    // 1) Solde théorique : TOUJOURS recalculé côté serveur (jamais saisi).
+    const t = await computeTheoretical(req.user.imf_id, req.user.id, isCashierPosition(req.user.position_code));
+    const theoretical = t.theoretical_cents;
+    // 2) Espèces comptées : issues du billetage par coupure XOF si fourni,
+    //    sinon repli sur counted_cents (compat).
+    const hasBilletage = b.denominations && typeof b.denominations === 'object'
+      && Object.keys(b.denominations).length > 0;
+    const { denominations, countedCents } = normalizeDenominations(b.denominations);
+    const counted = hasBilletage ? countedCents : int(b.counted_cents);
     const gap = counted - theoretical;
     const status = gap === 0 ? 'equilibre' : 'ecart';
-    const row = (await q(
-      `INSERT INTO cash_closing(imf_id, user_id, closing_date, theoretical_cents, counted_cents, gap_cents, status, note, created_by)
-       VALUES ($1,$2,COALESCE($3,CURRENT_DATE),$4,$5,$6,$7,$8,$2) RETURNING *`,
-      [req.user.imf_id, req.user.id, b.closing_date || null, theoretical, counted, gap, status,
-       (b.note || '').toString().slice(0, 500) || null])).rows[0];
+    // 3) Tout écart doit être justifié AVANT la clôture…
+    const justification = (b.gap_justification || '').toString().trim();
+    if (gap !== 0 && !justification)
+      return res.status(422).json({ error: 'justification_ecart_requise',
+        message: 'Un écart de ' + fcfa(gap) + ' FCFA est constaté : il doit être justifié avant la clôture.',
+        gap_cents: gap });
+    // …et réglé définitivement sous 24h (échéance tracée).
+    const isCashier = isCashierPosition(req.user.position_code);
+    const out = await tx(async (c) => {
+      const row = (await c.query(
+        `INSERT INTO cash_closing(imf_id, user_id, closing_date, theoretical_cents, counted_cents,
+                gap_cents, status, note, denominations, gap_justification, gap_due_at, created_by)
+         VALUES ($1,$2,COALESCE($3,CURRENT_DATE),$4,$5,$6,$7,$8,$9::jsonb,$10,
+                CASE WHEN $6 <> 0 THEN now() + interval '24 hours' ELSE NULL END,$2) RETURNING *`,
+        [req.user.imf_id, req.user.id, b.closing_date || null, theoretical, counted, gap, status,
+         (b.note || '').toString().slice(0, 500) || null, JSON.stringify(denominations),
+         gap !== 0 ? justification.slice(0, 1000) : null])).rows[0];
+      let sideEffect = null;
+      if (counted > 0) {
+        if (isCashier) {
+          // ARRÊTÉ CAISSIER : délestage de TOUT le compté vers le coffre-fort.
+          // (vault_movement « approvisionnement » : le coffre encaisse la caisse.)
+          const lastv = (await c.query(
+            `SELECT balance_after_cents FROM vault_movement WHERE imf_id=$1
+               ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [req.user.imf_id])).rows[0];
+          const curv = lastv ? Number(lastv.balance_after_cents) : 0;
+          const nextv = curv + counted;
+          const vm = (await c.query(
+            `INSERT INTO vault_movement(imf_id, direction, amount_cents, counterpart, reason,
+                    balance_after_cents, created_by, user_id)
+             VALUES ($1,'approvisionnement',$2,'caisse',$3,$4,$5,$5) RETURNING *`,
+            [req.user.imf_id, counted,
+             'Arr\u00eat\u00e9 caissier \u2014 d\u00e9lestage de la caisse vers le coffre-fort',
+             nextv, req.user.id])).rows[0];
+          sideEffect = { type: 'delestage_coffre', vault_movement: vm, vault_balance_cents: nextv };
+        } else {
+          // ARRÊTÉ SACOCHE (agent de collecte) : reversement de TOUT le compté au
+          // caissier (versement à valider par la caissière).
+          const dep = (await c.query(
+            `INSERT INTO cash_deposit(imf_id, collectrice_user_id, channel, amount_cents, status, proof_note)
+             VALUES ($1,$2,'caisse_caissiere',$3,'declare',$4) RETURNING *`,
+            [req.user.imf_id, req.user.id, counted,
+             'Reversement issu de l\u2019arr\u00eat\u00e9 de sacoche'])).rows[0];
+          sideEffect = { type: 'reversement_caissier', cash_deposit: dep };
+        }
+      }
+      return { row, sideEffect };
+    });
+    const row = out.row;
     await auditEvent(req.user, { action: 'cash.closing', entity: 'cash_closing', entityId: row.id,
-      payload: { gap_cents: gap, status } });
-    res.status(201).json({ ok: true, closing: row,
-      note: status === 'equilibre' ? 'Caisse équilibrée — arrêté enregistré.'
-        : 'Écart de ' + fcfa(gap) + ' FCFA constaté — arrêté enregistré pour rapprochement.' });
+      payload: { gap_cents: gap, status, side_effect: out.sideEffect ? out.sideEffect.type : null } });
+    const flow = isCashier
+      ? ' Le compt\u00e9 a \u00e9t\u00e9 d\u00e9lest\u00e9 vers le coffre-fort.'
+      : ' Le compt\u00e9 a \u00e9t\u00e9 revers\u00e9 au caissier (\u00e0 valider).';
+    res.status(201).json({ ok: true, closing: row, side_effect: out.sideEffect,
+      note: (status === 'equilibre' ? 'Caisse \u00e9quilibr\u00e9e \u2014 arr\u00eat\u00e9 enregistr\u00e9.'
+        : '\u00c9cart de ' + fcfa(gap) + ' FCFA constat\u00e9 \u2014 \u00e0 r\u00e9gler d\u00e9finitivement avant le '
+          + new Date(row.gap_due_at).toLocaleString('fr-FR') + '.') + flow });
+  } catch (e) { next(e); }
+});
+
+// Règlement définitif d'un écart (sous 24h) : trace la résolution.
+router.post('/cash/closings/:id/resolve', requirePermission('cash.declare'), async (req, res, next) => {
+  try {
+    const note = (req.body && req.body.resolution_note || '').toString().trim();
+    if (!note) return res.status(422).json({ error: 'note_reglement_requise',
+      message: 'Précisez comment l\u2019écart a été réglé.' });
+    const row = (await q(
+      `UPDATE cash_closing
+          SET gap_resolved=true, gap_resolved_at=now(), gap_resolution_note=$3
+        WHERE id=$1 AND imf_id=$2 AND status='ecart' AND gap_resolved=false RETURNING *`,
+      [req.params.id, req.user.imf_id, note.slice(0, 1000)])).rows[0];
+    if (!row) return res.status(409).json({ error: 'ecart_introuvable_ou_deja_regle' });
+    await auditEvent(req.user, { action: 'cash.closing.resolve', entity: 'cash_closing', entityId: row.id,
+      payload: { gap_cents: Number(row.gap_cents) } });
+    res.json({ ok: true, closing: row, note: 'Écart réglé — rapprochement clôturé.' });
   } catch (e) { next(e); }
 });
 
 router.get('/cash/closings', requirePermission('operations.read'), async (req, res, next) => {
   try {
     const { rows } = await q(
-      `SELECT cc.*, u.full_name AS user_name FROM cash_closing cc
+      `SELECT cc.*, u.full_name AS user_name,
+              (cc.status='ecart' AND cc.gap_resolved=false AND cc.gap_due_at < now()) AS gap_overdue
+         FROM cash_closing cc
          LEFT JOIN app_user u ON u.id=cc.user_id
         WHERE cc.imf_id=$1 ORDER BY cc.closing_date DESC, cc.created_at DESC LIMIT 200`,
       [req.user.imf_id]);
@@ -185,6 +400,48 @@ router.post('/vault/movements', requirePermission('vault.manage'), async (req, r
       note: (direction === 'approvisionnement' ? 'Coffre approvisionné' : 'Coffre délesté') +
         ' — nouveau solde : ' + fcfa(out.balance_after_cents) + ' FCFA.' });
   } catch (e) { next(e); }
+});
+
+/* --------------------------------------------------------------------------
+ * CAISSE — Approvisionnement de la caisse (coffre → caisse)
+ * RÉSERVÉ AU CAISSIER : seul le caissier peut demander un approvisionnement de
+ * sa caisse. L'agent de collecte NE PEUT PAS approvisionner sa sacoche.
+ * Le mouvement est tracé côté coffre (vault_movement « delestage », le coffre
+ * se vide au profit de la caisse) et alimente le solde théorique du caissier.
+ * ------------------------------------------------------------------------ */
+router.post('/cash/provision', requirePermission('cash.declare'), async (req, res, next) => {
+  try {
+    if (!isCashierPosition(req.user.position_code))
+      return res.status(403).json({ error: 'reserve_caissier',
+        message: 'Seul le caissier peut approvisionner sa caisse. '
+          + 'L\u2019agent de collecte ne peut pas approvisionner sa sacoche.' });
+    const amount = int((req.body || {}).amount_cents);
+    if (!(amount > 0)) return res.status(422).json({ error: 'montant_invalide' });
+    const out = await tx(async (c) => {
+      const last = (await c.query(
+        `SELECT balance_after_cents FROM vault_movement WHERE imf_id=$1
+           ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [req.user.imf_id])).rows[0];
+      const current = last ? Number(last.balance_after_cents) : 0;
+      const next = current - amount;
+      if (next < 0) { const e = new Error('coffre_insuffisant'); e.status = 409; throw e; }
+      return (await c.query(
+        `INSERT INTO vault_movement(imf_id, direction, amount_cents, counterpart, reason,
+                balance_after_cents, created_by, user_id)
+         VALUES ($1,'delestage',$2,'caisse',$3,$4,$5,$5) RETURNING *`,
+        [req.user.imf_id, amount,
+         (req.body.reason || '').toString().slice(0, 500) || 'Approvisionnement de la caisse (coffre \u2192 caisse)',
+         next, req.user.id])).rows[0];
+    });
+    await auditEvent(req.user, { action: 'cash.provision', entity: 'vault_movement', entityId: out.id,
+      payload: { amount_cents: amount, balance_after_cents: Number(out.balance_after_cents) } });
+    res.status(201).json({ ok: true, movement: out, vault_balance_cents: Number(out.balance_after_cents),
+      note: 'Caisse approvisionnée de ' + fcfa(amount) + ' FCFA depuis le coffre-fort — '
+        + 'solde du coffre : ' + fcfa(out.balance_after_cents) + ' FCFA.' });
+  } catch (e) {
+    if (e.status === 409) return res.status(409).json({ error: 'coffre_insuffisant',
+      message: 'Solde du coffre-fort insuffisant pour cet approvisionnement.' });
+    next(e);
+  }
 });
 
 /* --------------------------------------------------------------------------
