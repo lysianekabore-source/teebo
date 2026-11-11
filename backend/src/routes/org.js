@@ -24,10 +24,24 @@ router.use((req, res, next) => {
 const KIND_ORDER = { direction: 1, department: 2, service: 3, agency: 4 };
 
 // --- Arborescence des unités ------------------------------------------------
+// Si l'IMF n'a encore AUCUNE unité (tenant créé après la dernière migration),
+// on matérialise automatiquement la structure par défaut (Direction Générale +
+// départements + services, cohérente kind=parent+1) via fn_seed_org_structure.
+// Le semis est idempotent et best-effort : un échec ne doit jamais casser la
+// simple lecture de l'arbre.
 router.get('/units', async (req, res, next) => {
   try {
-    const { rows } = await q(
+    let { rows } = await q(
       'SELECT * FROM org_unit WHERE imf_id=$1 ORDER BY kind, name', [req.user.imf_id]);
+    if (!rows.length) {
+      try {
+        await q('SELECT fn_seed_org_structure($1)', [req.user.imf_id]);
+        rows = (await q(
+          'SELECT * FROM org_unit WHERE imf_id=$1 ORDER BY kind, name', [req.user.imf_id])).rows;
+      } catch (seedErr) {
+        console.error('seed org_unit:', seedErr.message);
+      }
+    }
     res.json({ units: rows });
   } catch (e) { next(e); }
 });
@@ -49,6 +63,54 @@ router.post('/units', requireRole('admin_imf','direction'), async (req, res, nex
         `INSERT INTO org_unit(imf_id,parent_id,kind,code_unit,name,city)
          VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
         [req.user.imf_id, parent_id || null, kind, code, name, city || null])).rows[0];
+      return r;
+    });
+    res.json({ ok: true, unit: out });
+  } catch (e) { next(e); }
+});
+
+// --- Modification d'une unité (type / nom / ville) --------------------------
+// L'admin IMF peut renommer une unité, changer sa ville, ou changer son TYPE
+// (direction/département/service/agence) à condition de préserver la cohérence
+// hiérarchique : le type doit rester égal à (type du parent + 1) et être
+// égal à (type de chaque enfant − 1). Le code d'unité est régénéré si le type
+// change, pour refléter la nouvelle nature (DIR/DEP/SRV/AGC).
+router.patch('/units/:id', requireRole('admin_imf','direction'), async (req, res, next) => {
+  try {
+    const { kind, name, city } = req.body || {};
+    if (kind !== undefined && !KIND_ORDER[kind]) return res.status(422).json({ error: 'invalid_kind' });
+    if (name !== undefined && !String(name).trim()) return res.status(422).json({ error: 'missing_name' });
+    const out = await tx(async (c) => {
+      const u = (await c.query('SELECT * FROM org_unit WHERE id=$1', [req.params.id])).rows[0];
+      if (!u) { const e=new Error('not_found'); e.status=404; throw e; }
+      if (u.imf_id !== req.user.imf_id) { const e=new Error('forbidden'); e.status=403; throw e; }
+      let newKind = u.kind, newCode = u.code_unit;
+      if (kind !== undefined && kind !== u.kind) {
+        // Cohérence avec le parent.
+        if (u.parent_id) {
+          const p = (await c.query('SELECT kind FROM org_unit WHERE id=$1', [u.parent_id])).rows[0];
+          if (!p || KIND_ORDER[kind] !== KIND_ORDER[p.kind] + 1) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
+        } else if (kind !== 'direction' && KIND_ORDER[kind] !== 1) {
+          // Une unité racine sans parent ne peut être qu'une direction.
+          const e=new Error('bad_hierarchy'); e.status=422; throw e;
+        }
+        // Cohérence avec les enfants existants.
+        const kids = (await c.query('SELECT kind FROM org_unit WHERE parent_id=$1', [u.id])).rows;
+        for (const k of kids) {
+          if (KIND_ORDER[k.kind] !== KIND_ORDER[kind] + 1) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
+        }
+        newKind = kind;
+        newCode = (await c.query('SELECT fn_gen_unit_code($1,$2) AS c', [req.user.imf_id, kind])).rows[0].c;
+      }
+      const r = (await c.query(
+        `UPDATE org_unit
+            SET kind=$1, code_unit=$2,
+                name = COALESCE($3, name),
+                city = CASE WHEN $4::boolean THEN $5 ELSE city END
+          WHERE id=$6 AND imf_id=$7 RETURNING *`,
+        [newKind, newCode, (name !== undefined ? String(name).trim() : null),
+         city !== undefined, (city !== undefined ? (String(city).trim() || null) : null),
+         u.id, req.user.imf_id])).rows[0];
       return r;
     });
     res.json({ ok: true, unit: out });

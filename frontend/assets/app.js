@@ -61,6 +61,7 @@
   }
   var MSG = { forbidden: 'Action non autorisée.', bad_hierarchy: 'Ordre hiérarchique invalide (direction → département → service → agence).',
     bad_parent: 'Unité parente invalide.', bad_unit: 'Unité invalide.', missing_fields: 'Champs obligatoires manquants.',
+    invalid_kind: 'Type d’unité invalide.', missing_name: 'Le nom de l’unité est requis.', not_found: 'Élément introuvable.',
     weak_password: 'Mot de passe trop faible (10 car., majuscule, minuscule, chiffre).', invalid_current_password: 'Mot de passe actuel incorrect.',
     password_change_required: 'Votre mot de passe doit être changé.', idle_timeout: 'Session expirée (30 min d’inactivité).',
     session_expired: 'Session expirée.', invalid_session: 'Session invalide.', not_authenticated: 'Non connecté.',
@@ -139,7 +140,11 @@
   function loadUnits() {
     return api('/api/v1/units').then(function (d) {
       units = d.units || [];
-      renderTree(); renderDash();
+      renderTree();
+      // Le tableau de bord est secondaire : une erreur de rendu ne doit jamais
+      // transformer l'ouverture de l'onglet Organisation en « Une erreur est
+      // survenue ».
+      try { renderDash(); } catch (e) { /* dash non bloquant */ }
     }).catch(function (e) { if (!guard(e)) { renderUnitsError(e); notify(fr(e), 'err'); } });
   }
   // Au lieu de laisser le libellé « Chargement… » tourner indéfiniment lorsque
@@ -159,15 +164,18 @@
     if (!units.length) { root.innerHTML = '<div class="empty">Aucune unité. Créez d’abord la direction, puis les départements, services et agences.</div>'; return; }
     var byParent = {};
     units.forEach(function (u) { var k = u.parent_id || 'root'; (byParent[k] = byParent[k] || []).push(u); });
+    function meta(u) { return KIND_META[u.kind] || { label: u.kind, short: String(u.kind || '?').slice(0, 3).toUpperCase() }; }
     function branch(parentKey) {
       var list = (byParent[parentKey] || []).sort(function (a, b) { return a.name.localeCompare(b.name); });
       return list.map(function (u) {
         var kids = branch(u.id);
+        var m = meta(u);
         return '<div class="node"><div class="node__head">' +
-          '<div class="node__title"><span class="node__kind">' + KIND_META[u.kind].short + '</span>' +
-          '<div><b>' + esc(u.name) + '</b><small>' + esc(KIND_META[u.kind].label) + (u.city ? ' · ' + esc(u.city) : '') + ' · ' + esc(u.code_unit) + '</small></div></div>' +
+          '<div class="node__title"><span class="node__kind">' + m.short + '</span>' +
+          '<div><b>' + esc(u.name) + '</b><small>' + esc(m.label) + (u.city ? ' · ' + esc(u.city) : '') + ' · ' + esc(u.code_unit) + '</small></div></div>' +
           '<div style="display:flex;gap:8px">' +
             (u.kind !== 'agency' ? '<button class="btn btn--ghost btn--sm" data-add="' + u.id + '">+ Sous-unité</button>' : '') +
+            '<button class="btn btn--ghost btn--sm" data-edit="' + u.id + '">Modifier</button>' +
             '<button class="btn btn--ghost btn--sm" data-del="' + u.id + '">Supprimer</button>' +
           '</div></div>' + (kids.length ? '<div class="children">' + kids.join('') + '</div>' : '') + '</div>';
       }).join('');
@@ -175,6 +183,9 @@
     root.innerHTML = branch('root');
     root.querySelectorAll('[data-add]').forEach(function (b) {
       b.addEventListener('click', function () { unitModal(units.find(function (u) { return u.id === b.dataset.add; })); });
+    });
+    root.querySelectorAll('[data-edit]').forEach(function (b) {
+      b.addEventListener('click', function () { editUnitModal(units.find(function (u) { return u.id === b.dataset.edit; })); });
     });
     root.querySelectorAll('[data-del]').forEach(function (b) {
       b.addEventListener('click', function () { var u = units.find(function (x) { return x.id === b.dataset.del; }); if (u) askDeleteUnit(u); });
@@ -202,6 +213,39 @@
       var self = this;
       api('/api/v1/units', 'POST', body).then(function (d) {
         closeModal(); notify('Unité créée — code ' + d.unit.code_unit, 'ok'); return loadUnits();
+      }).catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+  // Modifier une unité existante : nom, ville et éventuellement le TYPE, en
+  // ne proposant que les types qui préservent la cohérence hiérarchique
+  // (= type du parent + 1, et type de chaque enfant − 1).
+  function editUnitModal(u) {
+    if (!u) return;
+    var parent = u.parent_id ? units.find(function (x) { return x.id === u.parent_id; }) : null;
+    var children = units.filter(function (x) { return x.parent_id === u.id; });
+    var allowed = Object.keys(KIND_META).filter(function (k) {
+      if (parent) { if (KIND_ORDER[k] !== KIND_ORDER[parent.kind] + 1) return false; }
+      else if (KIND_ORDER[k] !== 1) return false; // racine => direction uniquement
+      return children.every(function (ch) { return KIND_ORDER[ch.kind] === KIND_ORDER[k] + 1; });
+    });
+    if (allowed.indexOf(u.kind) < 0) allowed.unshift(u.kind);
+    openModal(
+      '<h3>Modifier l’unité</h3><p class="sub">' + esc(u.code_unit) + (parent ? ' · rattachée à ' + esc(parent.name) : ' · unité racine') + '</p>' +
+      '<div class="fld"><label for="e-kind">Type d’unité</label><select id="e-kind"' + (allowed.length <= 1 ? ' disabled' : '') + '>' +
+        allowed.map(function (k) { return '<option value="' + k + '"' + (k === u.kind ? ' selected' : '') + '>' + KIND_META[k].label + '</option>'; }).join('') + '</select>' +
+        (allowed.length <= 1 ? '<small style="color:var(--muted)">Le type ne peut pas changer sans rompre la hiérarchie (parent/sous-unités).</small>' : '') + '</div>' +
+      '<div class="fld"><label for="e-name">Nom</label><input id="e-name" value="' + esc(u.name) + '"></div>' +
+      '<div class="fld"><label for="e-city">Ville (optionnel)</label><input id="e-city" value="' + esc(u.city || '') + '"></div>' +
+      '<p class="hint">Si vous changez le type, un nouveau code d’unité est généré automatiquement.</p>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="e-cancel">Annuler</button><button class="btn btn--primary" id="e-ok">Enregistrer</button></div>'
+    );
+    $('e-cancel').addEventListener('click', closeModal);
+    $('e-ok').addEventListener('click', function () {
+      var body = { kind: $('e-kind').value, name: $('e-name').value.trim(), city: $('e-city').value.trim() };
+      if (!body.name) { notify('Le nom est requis.', 'err'); return; }
+      var self = this; self.disabled = true;
+      api('/api/v1/units/' + u.id, 'PATCH', body).then(function (d) {
+        closeModal(); notify('Unité modifiée — code ' + d.unit.code_unit, 'ok'); return loadUnits();
       }).catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
     });
   }
@@ -299,7 +343,9 @@
   function supervisorCandidates(p) {
     if (!p) return [];
     if (p.needsSupervisor) return eligibleSupervisors();
-    return users.filter(function (u) {
+    // 1) Priorité : un manager du MÊME département, de niveau supérieur (même
+    //    service d'abord, puis niveau le plus proche au-dessus).
+    var sameDept = users.filter(function (u) {
       var up = posByCode[u.position_code];
       return up && up.manager && up.dept === p.dept && (up.level || 0) > (p.level || 0);
     }).sort(function (a, b) {
@@ -307,6 +353,17 @@
       var sa = (pa.service === p.service) ? 0 : 1, sb = (pb.service === p.service) ? 0 : 1;
       if (sa !== sb) return sa - sb;
       return (pa.level || 0) - (pb.level || 0);
+    });
+    if (sameDept.length) return sameDept;
+    // 2) Repli : à défaut de manager dans le département, tout manager de niveau
+    //    supérieur dans l'IMF (ex. la Direction Générale) pour que le champ se
+    //    pré-remplisse par défaut comme l'unité de rattachement. Le plus proche
+    //    niveau au-dessus est proposé en premier.
+    return users.filter(function (u) {
+      var up = posByCode[u.position_code];
+      return up && up.manager && (up.level || 0) > (p.level || 0);
+    }).sort(function (a, b) {
+      return (posByCode[a.position_code].level || 0) - (posByCode[b.position_code].level || 0);
     });
   }
   function supOption(u) {
@@ -341,10 +398,11 @@
             sel.innerHTML = cands.length
               ? cands.map(supOption).join('')
               : '<option value="">Aucun superviseur disponible — créez d’abord un Chef d’agence ou un Agent de crédit</option>';
+            if (cands.length) sel.value = cands[0].id; // superviseur pré-sélectionné
             wrap.hidden = false;
           } else if (cands.length) {
             sel.innerHTML = '<option value="">— Aucun —</option>' + cands.map(supOption).join('');
-            sel.value = cands[0].id; // responsable hiérarchique proposé
+            sel.value = cands[0].id; // responsable hiérarchique pré-rempli par défaut
             wrap.hidden = false;
           } else { wrap.hidden = true; sel.innerHTML = ''; }
           var uid = autoUnitForPosition(p);
@@ -1117,105 +1175,6 @@
       api('/api/v1/clients/' + encodeURIComponent(c.id), 'PATCH', body)
         .then(function () { closeModal(); notify('Fiche client mise \u00e0 jour.', 'ok'); loadClients(); })
         .catch(function (e) { $('cl-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
-    });
-  }
-
-  // Ouverture du compte (bloqu\u00e9e si non conforme c\u00f4t\u00e9 serveur).
-  function openAccountFor(c) {
-    if (!c) return;
-    api('/api/v1/clients/' + encodeURIComponent(c.id) + '/open-account', 'POST', {})
-      .then(function (r) { notify((r && r.message) || 'Compte ouvert.', 'ok'); loadClients(); })
-      .catch(function (e) {
-        if (guard(e)) return;
-        if (e && e.serverMessage) notify(e.serverMessage, 'err');
-        else notify(srv(e), 'err');
-      });
-  }
-
-  // --- Signatures num\u00e9riques : stylet (canvas) ou empreinte (WebAuthn) ---
-  function bindPad(canvas) {
-    var ctx = canvas.getContext('2d'); ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = '#111';
-    var drawing = false, dirty = false, last = null;
-    function pos(ev) { var r = canvas.getBoundingClientRect(); var t = ev.touches ? ev.touches[0] : ev; return { x: t.clientX - r.left, y: t.clientY - r.top }; }
-    function start(ev) { ev.preventDefault(); drawing = true; last = pos(ev); }
-    function move(ev) { if (!drawing) return; ev.preventDefault(); var p = pos(ev); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; dirty = true; }
-    function end() { drawing = false; }
-    canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', end);
-    canvas.addEventListener('touchstart', start, { passive: false }); canvas.addEventListener('touchmove', move, { passive: false }); canvas.addEventListener('touchend', end);
-    return { clear: function () { ctx.clearRect(0, 0, canvas.width, canvas.height); dirty = false; }, isDirty: function () { return dirty; }, dataUrl: function () { return dirty ? canvas.toDataURL('image/png') : null; } };
-  }
-  function webauthnAttest(label) {
-    if (!window.PublicKeyCredential || !navigator.credentials) {
-      return Promise.reject(new Error('non_supporte'));
-    }
-    var ch = new Uint8Array(32); window.crypto && window.crypto.getRandomValues && window.crypto.getRandomValues(ch);
-    var uid = new Uint8Array(16); window.crypto && window.crypto.getRandomValues && window.crypto.getRandomValues(uid);
-    return navigator.credentials.create({ publicKey: {
-      challenge: ch, rp: { name: 'TEEBO' },
-      user: { id: uid, name: label || 'signataire', displayName: label || 'signataire' },
-      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
-      authenticatorSelection: { userVerification: 'required' }, timeout: 60000
-    } }).then(function (cred) {
-      return 'webauthn:' + (cred && cred.id ? cred.id : 'ok') + ':' + new Date().toISOString();
-    });
-  }
-  function openSignatures(c) {
-    if (!c) return;
-    var roles = [{ role: 'client', label: 'Signature du client' }, { role: 'user', label: 'Signature de l\u2019agent' }];
-    var html = '<h3>Signatures num\u00e9riques</h3><p class="sub">' + esc(c.full_name || '') + '</p>'
-      + '<p class="hint">Faites signer au stylet directement \u00e0 l\u2019\u00e9cran, ou validez par empreinte digitale (via l\u2019authentification biom\u00e9trique de l\u2019appareil).</p>';
-    roles.forEach(function (r) {
-      html += '<div class="fld"><label>' + esc(r.label) + '</label>'
-        + '<div><label style="font-weight:400;margin-right:14px"><input type="radio" name="sig-m-' + r.role + '" value="stylet" checked> Stylet</label>'
-        + '<label style="font-weight:400"><input type="radio" name="sig-m-' + r.role + '" value="empreinte"> Empreinte digitale</label></div>'
-        + '<div id="sig-pad-wrap-' + r.role + '"><canvas id="sig-pad-' + r.role + '" width="320" height="120" style="border:1px solid #ccc;border-radius:6px;touch-action:none;width:100%;max-width:340px"></canvas>'
-        + '<div><button class="btn btn--sm btn--ghost" type="button" id="sig-clear-' + r.role + '">Effacer</button></div></div>'
-        + '<div id="sig-fp-wrap-' + r.role + '" style="display:none"><button class="btn btn--sm" type="button" id="sig-fp-' + r.role + '">Valider par empreinte</button>'
-        + ' <span class="hint" id="sig-fp-st-' + r.role + '"></span></div></div>';
-    });
-    html += '<div class="modal__nav"><button class="btn btn--ghost" id="sig-cancel" type="button">Fermer</button>'
-      + '<button class="btn btn--primary" id="sig-save" type="button">Enregistrer les signatures</button></div>';
-    openModal(html);
-    var state = {};
-    roles.forEach(function (r) {
-      var pad = bindPad($('sig-pad-' + r.role));
-      state[r.role] = { pad: pad, att: null };
-      $('sig-clear-' + r.role).addEventListener('click', function () { pad.clear(); });
-      Array.prototype.forEach.call(document.querySelectorAll('input[name="sig-m-' + r.role + '"]'), function (el) {
-        el.addEventListener('change', function () {
-          var fp = this.value === 'empreinte';
-          $('sig-pad-wrap-' + r.role).style.display = fp ? 'none' : '';
-          $('sig-fp-wrap-' + r.role).style.display = fp ? '' : 'none';
-        });
-      });
-      $('sig-fp-' + r.role).addEventListener('click', function () {
-        $('sig-fp-st-' + r.role).textContent = 'V\u00e9rification\u2026';
-        webauthnAttest(c.full_name + ' / ' + r.role).then(function (att) {
-          state[r.role].att = att; $('sig-fp-st-' + r.role).textContent = '\u2713 Empreinte valid\u00e9e.'; $('sig-fp-st-' + r.role).style.color = '#1a7f37';
-        }).catch(function () {
-          state[r.role].att = null; $('sig-fp-st-' + r.role).textContent = '\u26a0 Empreinte non support\u00e9e sur cet appareil.'; $('sig-fp-st-' + r.role).style.color = '#c0392b';
-        });
-      });
-    });
-    $('sig-cancel').addEventListener('click', closeModal);
-    $('sig-save').addEventListener('click', function () {
-      var items = [];
-      for (var i = 0; i < roles.length; i++) {
-        var r = roles[i];
-        var m = (document.querySelector('input[name="sig-m-' + r.role + '"]:checked') || {}).value;
-        if (m === 'stylet') {
-          var url = state[r.role].pad.dataUrl();
-          if (url) items.push({ role: r.role, method: 'stylet', image_data_url: url });
-        } else if (m === 'empreinte' && state[r.role].att) {
-          items.push({ role: r.role, method: 'empreinte', attestation: state[r.role].att });
-        }
-      }
-      if (!items.length) { notify('Faites signer au moins une partie (client ou agent).', 'err'); return; }
-      $('sig-save').disabled = true;
-      api('/api/v1/clients/' + encodeURIComponent(c.id) + '/signatures', 'POST', { signatures: items })
-        .then(function (rr) { closeModal(); notify((rr && rr.note) || 'Signatures enregistr\u00e9es.', 'ok'); })
-        .catch(function (e) { $('sig-save').disabled = false; if (!guard(e)) notify(srv(e), 'err'); });
     });
   }
   /* ----- Ouverture de compte (verrou de conformité côté serveur) ----- */

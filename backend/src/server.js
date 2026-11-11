@@ -49,7 +49,11 @@ app.use(helmet({
   crossOriginOpenerPolicy: { policy: 'same-origin' }
 }));
 app.use(cors({ origin: process.env.CORS_ORIGIN || true, credentials: true }));
-app.use(express.json({ limit: '1mb' }));
+// 12 Mo : les scans de pièces et les signatures tracées au stylet transitent
+// en data URL (base64) et dépassent largement 1 Mo ; une limite trop basse
+// renvoyait un 413 masqué en « Une erreur est survenue » lors de la
+// confrontation / signature. On autorise donc des corps plus volumineux.
+app.use(express.json({ limit: '12mb' }));
 app.use(cookieParser());
 
 // Limitation des tentatives (anti brute-force)
@@ -122,7 +126,12 @@ app.get('/documentation', (_req, res) => res.sendFile(path.join(pub, 'documentat
 // Gestion d'erreurs
 app.use((err, _req, res, _next) => {
   console.error(err);
-  res.status(err.status || 500).json({ error: err.code || 'server_error' });
+  // Les erreurs métier sont levées avec un statut (ex. 403/422) et un libellé
+  // de code via Error('bad_parent'). On expose ce code au front pour un message
+  // précis ; les erreurs non maîtrisées (sans statut) restent génériques.
+  const status = err.status || 500;
+  const code = err.code || (err.status ? err.message : null) || 'server_error';
+  res.status(status).json({ error: code });
 });
 
 const port = process.env.PORT || 3000;
