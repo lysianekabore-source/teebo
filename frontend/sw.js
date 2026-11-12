@@ -1,5 +1,5 @@
 /* teebo — service worker (installation de l'app + cache du socle) */
-var CACHE = 'teebo-v20';
+var CACHE = 'teebo-v23';
 var CORE = ['/', '/index.html', '/login.html', '/app.html', '/teebo.html', '/assets/app-icon-192.png', '/assets/app-icon-512.png', '/manifest.webmanifest'];
 self.addEventListener('install', function (e) {
   self.skipWaiting();

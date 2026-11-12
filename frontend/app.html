@@ -30,6 +30,7 @@
     <button class="nav-item" data-view="compta" id="nav-compta" hidden><span class="ic">∑</span> Comptabilité</button>
     <button class="nav-item" data-view="recouvrement" id="nav-recouvrement" hidden><span class="ic">⚑</span> Impayés &amp; recouvrement</button>
     <button class="nav-item" data-view="audit" id="nav-audit" hidden><span class="ic">☰</span> Journal d’audit</button>
+    <button class="nav-item" data-view="gouvernance" id="nav-gouvernance" hidden><span class="ic">⚖</span> Gouvernance</button>
     <button class="nav-item" data-view="settings" id="nav-settings" hidden><span class="ic">⚙</span> Paramètres IMF</button>
     <div class="side__label">Sécurité &amp; accès</div>
     <button class="nav-item" data-view="security"><span class="ic">⛨</span> Mon accès</button>
@@ -387,10 +388,48 @@
       </div>
       <div class="card"><div id="audit-table"><div class="empty">Chargement…</div></div></div>
     </section>
+
+    <!-- GOUVERNANCE & CONFORMITE (loi-cadre UMOA) -->
+    <section class="view" id="view-gouvernance" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Gouvernance &amp; conformité</h1>
+          <p>Fiche institution, organes, dirigeants, mandats, sessions et procès-verbaux, résolutions — avec le tableau de bord de conformité.</p>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--ghost" id="btn-gouv-refresh" type="button">↻ Actualiser</button>
+          <button class="btn btn--primary" id="btn-gouv-pdf" type="button">⭳ Exporter en PDF</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div id="gouv-kpis" class="kpi-grid"><div class="empty">Chargement…</div></div>
+        <div id="gouv-alerts" class="chips" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div class="gtabs" id="gouv-tabs">
+          <button class="gtab active" data-gtab="institution" type="button">Institution</button>
+          <button class="gtab" data-gtab="organes" type="button">Organes</button>
+          <button class="gtab" data-gtab="membres" type="button">Membres</button>
+          <button class="gtab" data-gtab="mandats" type="button">Mandats</button>
+          <button class="gtab" data-gtab="sessions" type="button">Sessions &amp; PV</button>
+          <button class="gtab" data-gtab="resolutions" type="button">Résolutions</button>
+        </div>
+        <div style="padding:20px">
+          <div id="gouv-pane-institution"></div>
+          <div id="gouv-pane-organes" hidden></div>
+          <div id="gouv-pane-membres" hidden></div>
+          <div id="gouv-pane-mandats" hidden></div>
+          <div id="gouv-pane-sessions" hidden></div>
+          <div id="gouv-pane-resolutions" hidden></div>
+        </div>
+      </div>
+    </section>
   </main>
 </div>
 
 <div id="modal-root"></div>
-<script src="assets/app.js" defer></script>
+<script src="assets/app.js?v=23" defer></script>
 </body>
 </html>
