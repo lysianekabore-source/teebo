@@ -224,12 +224,35 @@ aux passerelles externes, puis redéployer le serveur :
 - `SMTP_USER`, `SMTP_PASS` (mot de passe d'application)
 - `SMTP_FROM` (ex. `teebo <no-reply@votre-domaine.com>`)
 
+**Expéditeur vu par le destinataire.** L'adresse affichée dans la boîte de
+l'agent est celle saisie dans « Paramètres IMF → Envoi des codes d'accès →
+E-mail expéditeur » (repli : adresse officielle de l'IMF, puis `SMTP_FROM`).
+Le compte technique `SMTP_USER` reste l'enveloppe d'envoi, mais l'en-tête
+expéditeur et le « répondre à » portent l'adresse de l'IMF : les réponses
+reviennent donc à l'institution.
+
+Important : l'adresse expéditrice doit être **autorisée par votre fournisseur
+d'e-mail** (adresse du même domaine que `SMTP_USER`, ou expédition vérifiée
+chez OVH/Gmail/Google Workspace/Brevo…). Sinon le fournisseur refuse l'envoi
+(erreur « sender not allowed » / SPF-DKIM) — le test intégré le signale.
+
+**Vérifier en une minute :** Paramètres IMF → bouton « Envoyer un e-mail de
+test à moi-même ». Le verdict s'affiche immédiatement (envoyé, passerelle
+absente, ou motif exact du refus).
+
 Tant qu'une passerelle n'est pas renseignée, le canal correspondant reste en
 mode manuel : la modale « Code d'accès prêt à envoyer » l'indique clairement
 (« passerelle non configurée — envoi manuel ci-dessous ») et propose les
 boutons WhatsApp / e-mail. Vous pouvez y saisir ou corriger le numéro WhatsApp
 et l'e-mail du destinataire ; le contact est alors enregistré pour les envois
 suivants.
+
+**Alerte « agents sans responsable ».** L'onglet Personnel affiche un bandeau
+en haut de liste recensant les utilisateurs sans responsable hiérarchique
+(rouge pour les agents de collecte — cas bloquant —, orange pour les autres) ;
+la case « Non défini » de la colonne Responsable et le bouton « Définir »
+ouvrent directement la fenêtre de rattachement. Le tableau de bord reprend la
+même alerte.
 
 ## Contacts
 
