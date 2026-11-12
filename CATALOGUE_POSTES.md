@@ -111,3 +111,17 @@ serveur (validation à la création : `supervisor_required` / `invalid_superviso
 - **PWA** : Service Worker `teebo-v6` (zn + zr) — pensez à un rechargement forcé
   (Ctrl+Shift+R) après déploiement.
 - **Cloisonnement multi-tenant (`imf_id`) et pistes d'audit immuables inchangés.**
+
+## Poste 0 — Président du Conseil d'Administration (POS_PCA)
+
+| Champ | Valeur |
+|---|---|
+| Département / Service | Direction Générale / Pilotage |
+| Niveau hiérarchique | 100 (sommet de l'organisation) |
+| Responsable hiérarchique | aucun |
+| Autorité de validation | 0 (aucune validation financière) |
+| Peut encadrer la collecte | non |
+| Rôle technique | office_staff (consultation) |
+
+Le Directeur Général est rattaché à ce poste : c'est le seul changement de
+chaîne au sommet de l'organisation (le reste du référentiel est inchangé).
