@@ -72,7 +72,7 @@ export const ROLES = Object.freeze([
   { key: 'customer_agent',      label: 'Chargé de Clientèle',            dept: 'OPS',        service: 'OPS_CLIENTELE',  manager: false },
   { key: 'agency',              label: "Chef d'Agence",                    dept: 'OPS',        service: 'OPS_CAISSE',     manager: true },
   { key: 'collectrice',         label: 'Agent de collecte',               dept: 'OPS',        service: 'OPS_CLIENT',     manager: false },
-  { key: 'cfo',                 label: 'Directeur Financier (CFO)',       dept: 'FINANCE',    service: 'FIN_TRESORERIE', manager: true },
+  { key: 'cfo',                 label: 'Directeur Financier',       dept: 'FINANCE',    service: 'FIN_TRESORERIE', manager: true },
   { key: 'treasurer',           label: 'Trésorier',                      dept: 'FINANCE',    service: 'FIN_TRESORERIE', manager: false },
   { key: 'accountant',          label: 'Comptable',                       dept: 'FINANCE',    service: 'FIN_COMPTA',     manager: false },
   { key: 'auditor',             label: 'Auditeur Interne',                dept: 'AUDIT',      service: 'AUDIT_INSPECT',  manager: true },
@@ -88,8 +88,55 @@ export const ROLES = Object.freeze([
 // needsSupervisor      = doit être rattaché à un superviseur (Chef d'agence
 //                        OU Agent de crédit).
 // DOIT rester synchronisé avec db/schema_v12.sql (position_catalog).
+const _TREE = Object.freeze({
+  POS_PCA:         { parentLabel: null, parentCodes: [] },
+  POS_DG:          { parentLabel: "Président du Conseil d'Administration", parentCodes: ['POS_PCA'] },
+  POS_DGA:         { parentLabel: 'Directeur Général', parentCodes: ['POS_DG'] },
+  POS_ASSIST_DG:   { parentLabel: 'Directeur Général Adjoint', parentCodes: ['POS_DGA', 'POS_DG'] },
+  POS_RESP_CONF:   { parentLabel: 'Directeur Général', parentCodes: ['POS_DG', 'POS_DIR_AUDIT'] },
+  POS_JURISTE:     { parentLabel: 'Responsable Conformité', parentCodes: ['POS_RESP_CONF'] },
+  POS_LBAFT:       { parentLabel: 'Responsable Conformité', parentCodes: ['POS_RESP_CONF'] },
+  POS_DPO:         { parentLabel: 'Responsable Conformité', parentCodes: ['POS_RESP_CONF'] },
+  POS_ADMIN_SYS:   { parentLabel: 'Directeur Général', parentCodes: ['POS_DG'] },
+  POS_TECH_SUP:    { parentLabel: 'Administrateur Système & Réseau', parentCodes: ['POS_ADMIN_SYS'] },
+  POS_RSSI:        { parentLabel: 'Directeur Général', parentCodes: ['POS_DG'] },
+  POS_DATA_SCI:    { parentLabel: 'Responsable Sécurité des SI', parentCodes: ['POS_RSSI'] },
+  POS_DIR_CREDIT:  { parentLabel: 'Directeur Général', parentCodes: ['POS_DG', 'POS_DGA'] },
+  POS_CHEF_OCTROI: { parentLabel: 'Directeur du Crédit', parentCodes: ['POS_DIR_CREDIT'] },
+  POS_ANALYSTE_CR: { parentLabel: 'Chef de Service Octroi', parentCodes: ['POS_CHEF_OCTROI', 'POS_DIR_CREDIT'] },
+  POS_GEST_PORT:   { parentLabel: 'Chef de Service Octroi', parentCodes: ['POS_CHEF_OCTROI', 'POS_DIR_CREDIT'] },
+  POS_AGENT_CR:    { parentLabel: "Chef d'Agence", parentCodes: ['POS_CHEF_AGENCE', 'POS_CHEF_OCTROI'] },
+  POS_RESP_RECOUV: { parentLabel: 'Directeur du Crédit', parentCodes: ['POS_DIR_CREDIT'] },
+  POS_AGENT_RECOUV:{ parentLabel: 'Responsable Recouvrement', parentCodes: ['POS_RESP_RECOUV'] },
+  POS_CONTENTIEUX: { parentLabel: 'Responsable Recouvrement', parentCodes: ['POS_RESP_RECOUV'] },
+  POS_DIR_OPS:     { parentLabel: 'Directeur Général', parentCodes: ['POS_DG', 'POS_DGA'] },
+  POS_CHEF_AGENCE: { parentLabel: 'Directeur des Opérations / Réseau', parentCodes: ['POS_DIR_OPS'] },
+  POS_CHEF_CAISSE: { parentLabel: "Chef d'Agence", parentCodes: ['POS_CHEF_AGENCE'] },
+  POS_CAISSIER:    { parentLabel: 'Chef de Caisse', parentCodes: ['POS_CHEF_CAISSE', 'POS_CHEF_AGENCE'] },
+  POS_GEST_CLIENT: { parentLabel: "Chef d'Agence", parentCodes: ['POS_CHEF_AGENCE'] },
+  POS_AGENT_DIGITAL:{ parentLabel: "Chef d'Agence", parentCodes: ['POS_CHEF_AGENCE'] },
+  POS_AGENT_COLLECTE:{ parentLabel: "Chef d'Agence", parentCodes: ['POS_CHEF_AGENCE', 'POS_AGENT_CR'] },
+  POS_CFO:         { parentLabel: 'Directeur Général', parentCodes: ['POS_DG', 'POS_DGA'] },
+  POS_TRESORIER:   { parentLabel: 'Directeur Financier', parentCodes: ['POS_CFO'] },
+  POS_ANALYSTE_MM: { parentLabel: 'Directeur Financier', parentCodes: ['POS_CFO'] },
+  POS_CHEF_COMPTA: { parentLabel: 'Directeur Financier (CFO)', parentCodes: ['POS_CFO'] },
+  POS_COMPTABLE:   { parentLabel: 'Chef Comptable', parentCodes: ['POS_CHEF_COMPTA'] },
+  POS_DIR_AUDIT:   { parentLabel: 'Directeur Général', parentCodes: ['POS_DG'] },
+  POS_CTRL_PERM:   { parentLabel: "Directeur de l'Audit et des Risques", parentCodes: ['POS_DIR_AUDIT'] },
+  POS_AUDIT_INT:   { parentLabel: "Directeur de l'Audit et des Risques", parentCodes: ['POS_DIR_AUDIT'] },
+  POS_INSPECTEUR:  { parentLabel: "Directeur de l'Audit et des Risques", parentCodes: ['POS_DIR_AUDIT'] },
+  POS_FRAUDE:      { parentLabel: "Directeur de l'Audit et des Risques", parentCodes: ['POS_DIR_AUDIT'] },
+  POS_DRH:         { parentLabel: 'Directeur Général', parentCodes: ['POS_DG', 'POS_DGA'] },
+  POS_RESP_RH:     { parentLabel: 'Directeur RH & Logistique', parentCodes: ['POS_DRH'] },
+  POS_GEST_PAIE:   { parentLabel: 'Responsable RH', parentCodes: ['POS_RESP_RH'] },
+  POS_RESP_LOG:    { parentLabel: 'Directeur RH & Logistique', parentCodes: ['POS_DRH'] },
+  POS_GEST_STOCK:  { parentLabel: 'Responsable Logistique', parentCodes: ['POS_RESP_LOG'] },
+  POS_GEST_FLOTTE: { parentLabel: 'Responsable Logistique', parentCodes: ['POS_RESP_LOG'] }
+});
+
 export const POSITIONS = Object.freeze([
   // 1. Direction Générale
+  { code:'POS_PCA',         label:"Président du Conseil d'Administration", dept:'DG', service:'DG_PILOTAGE', role:'superadmin', level:100, validation:100, manager:true, supervisesCollectors:false, needsSupervisor:false },
   { code:'POS_DG',          label:'Directeur Général (DG)',            dept:'DG',        service:'DG_PILOTAGE',    role:'superadmin',          level:100, validation:100, manager:true,  supervisesCollectors:false, needsSupervisor:false },
   { code:'POS_DGA',         label:'Directeur Général Adjoint (DGA)',   dept:'DG',        service:'DG_PILOTAGE',    role:'superadmin',          level:95,  validation:95,  manager:true,  supervisesCollectors:false, needsSupervisor:false },
   { code:'POS_ASSIST_DG',   label:'Assistante de Direction',            dept:'DG',        service:'DG_PILOTAGE',    role:'office_staff',        level:20,  validation:0,   manager:false, supervisesCollectors:false, needsSupervisor:false },
@@ -139,7 +186,25 @@ export const POSITIONS = Object.freeze([
   { code:'POS_RESP_LOG',    label:'Responsable Logistique',             dept:'HR',        service:'HR_LOGISTIQUE',  role:'hr_logistics_manager',level:70,  validation:50,  manager:true,  supervisesCollectors:false, needsSupervisor:false },
   { code:'POS_GEST_STOCK',  label:'Gestionnaire de Stock',              dept:'HR',        service:'HR_LOGISTIQUE',  role:'hr_logistics_manager',level:45,  validation:0,   manager:false, supervisesCollectors:false, needsSupervisor:false },
   { code:'POS_GEST_FLOTTE', label:'Gestionnaire de la Flotte',          dept:'HR',        service:'HR_LOGISTIQUE',  role:'hr_logistics_manager',level:45,  validation:0,   manager:false, supervisesCollectors:false, needsSupervisor:false }
-]);
+].map((p) => Object.freeze(Object.assign({}, p, _TREE[p.code] || {}))));
+
+// --- Chaine hierarchique par APPELLATION ------------------------------------
+// Pour chaque poste : l'appellation de son responsable direct (parent) et les
+// codes de postes acceptes pour l'incarner (par ordre de priorite).
+// DOIT rester synchronise avec db/schema_v25.sql (position_catalog).
+
+
+// Appellation du responsable attendu pour un poste (null = sommet).
+export function expectedSupervisorLabel(code) {
+  const p = _posByCode.get(code);
+  if (!p) return null;
+  return p.parentLabel || null;
+}
+export function expectedSupervisorCodes(code) {
+  const p = _posByCode.get(code);
+  return (p && p.parentCodes) ? p.parentCodes.slice() : [];
+}
+
 
 export const VERBS = Object.freeze(['READ', 'WRITE', 'UPDATE', 'DELETE', 'VALIDATE']);
 export const RESOURCES = Object.freeze(['org', 'users', 'settings', 'clients',

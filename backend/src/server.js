@@ -26,6 +26,7 @@ import collecte6Routes from './routes/collecte6.js';
 import objectiveRoutes from './routes/objectives.js';
 import structureRoutes from './routes/structure.js';
 import accessRoutes from './routes/access.js';
+import governanceRoutes from './routes/governance.js';
 import bankingRoutes from './routes/banking.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -104,6 +105,9 @@ app.use('/api/v1', structureRoutes);
 // VAGUE 13 : habilitations éditables (catalogue custom, postes custom, toggles
 // par poste / par utilisateur) + garde de l'écran de validation finale crédit.
 app.use('/api/v1', accessRoutes);
+// VAGUE 27 : gouvernance & conformite (loi-cadre UMOA) — 6 registres
+// cloisonnes par IMF + tableau de bord et rapport imprimable.
+app.use('/api/v1', governanceRoutes);
 
 // ----------------------------- Frontend -----------------------------------
 const pub = path.resolve(__dirname, '../../frontend');
