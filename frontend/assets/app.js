@@ -21,14 +21,20 @@
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
-  function api(path, method, body) {
+  function api(path, method, body, onRetry) {
     method = method || 'GET';
     // On ne RE-ESSAIE automatiquement que les lectures (GET) : rejouer un POST
     // ou un DELETE pourrait dupliquer une opération. Les réponses 502/503/504 et
     // les coupures réseau correspondent au réveil du serveur (offre gratuite
     // Render) : on patiente puis on retente, au lieu de laisser tourner sans fin.
     var canRetry = method === 'GET';
+    var total = canRetry ? 4 : 0;
     function wait(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
+    // Notifie l'appelant à chaque nouvelle tentative (feedback « réveil serveur »)
+    // pour éviter l'impression d'un chargement infini.
+    function signalRetry(left) {
+      if (typeof onRetry === 'function') { try { onRetry(total - left + 1, total); } catch (_) {} }
+    }
     function attempt(left) {
       var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
       var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 30000) : null;
@@ -39,6 +45,7 @@
         .then(function (r) {
           if (timer) clearTimeout(timer);
           if ((r.status === 502 || r.status === 503 || r.status === 504) && canRetry && left > 0) {
+            signalRetry(left);
             return wait(1800).then(function () { return attempt(left - 1); });
           }
           return r.json().catch(function () { return {}; }).then(function (d) {
@@ -49,11 +56,11 @@
           if (timer) clearTimeout(timer);
           var net = !!(err && (err.name === 'AbortError' ||
             /Failed to fetch|NetworkError|network|load failed/i.test(err.message || '')));
-          if (net && canRetry && left > 0) { return wait(1800).then(function () { return attempt(left - 1); }); }
+          if (net && canRetry && left > 0) { signalRetry(left); return wait(1800).then(function () { return attempt(left - 1); }); }
           throw new Error(net ? 'network' : ((err && err.message) || 'error'));
         });
     }
-    return attempt(canRetry ? 2 : 0);
+    return attempt(total);
   }
   function notify(msg, type) {
     var a = $('global-alert'); a.textContent = msg; a.className = 'alert alert--' + (type || 'info'); a.hidden = false;
@@ -69,7 +76,14 @@
     invalid_supervisor: 'Le superviseur choisi doit être un Chef d’agence ou un Agent de crédit.',
     bad_supervisor: 'Superviseur invalide.',
     use_teebo_console: 'Ce compte est l’administrateur teebo (super-admin) et n’a pas d’espace IMF. Connectez-vous avec un compte administrateur de votre IMF.',
-    network: 'Connexion au serveur impossible pour le moment. Le serveur se réveille peut-être (quelques secondes sur l’offre gratuite). Patientez puis réessayez.' };
+    network: 'Connexion au serveur impossible pour le moment. Le serveur se réveille peut-être (quelques secondes sur l’offre gratuite). Patientez puis réessayez.',
+    server_error: 'Le serveur a rencontré un problème interne. Patientez quelques instants puis réessayez.',
+    http_500: 'Le serveur a rencontré un problème interne. Patientez quelques instants puis réessayez.',
+    http_502: 'Le serveur se réveille (offre gratuite). Patientez quelques secondes puis réessayez.',
+    http_503: 'Le serveur se réveille (offre gratuite). Patientez quelques secondes puis réessayez.',
+    http_504: 'Le serveur met trop de temps à répondre. Patientez quelques secondes puis réessayez.',
+    http_404: 'Service momentanément indisponible (route introuvable). Vérifiez que le serveur est bien déployé et à jour, puis réessayez.',
+    error: 'Une erreur est survenue. Réessayez dans quelques instants.' };
   function fr(e) { var k = (e && e.message) ? e.message : e; return MSG[k] || 'Une erreur est survenue.'; }
   // Message serveur explicite (validation métier) sinon libellé générique.
   function srv(e) { return (e && e.serverMessage) ? e.serverMessage : fr(e); }
@@ -138,7 +152,17 @@
 
   // ----- Organisation (arbre) -----
   function loadUnits() {
-    return api('/api/v1/units').then(function (d) {
+    var root = $('org-tree');
+    // État visible immédiat au premier chargement (arbre encore vide), pour ne
+    // pas laisser un « Chargement… » statique donner l'impression d'un blocage.
+    if (root && !units.length) root.innerHTML = '<div class="empty">Chargement de l’organisation…</div>';
+    function onRetry(n, total) {
+      if (root && !units.length) {
+        root.innerHTML = '<div class="empty">Connexion au serveur… réveil en cours (tentative ' + n + '/' + total + ').' +
+          '<br><small style="color:var(--muted)">L’offre gratuite met le serveur en veille ; cela peut prendre ~30 s.</small></div>';
+      }
+    }
+    return api('/api/v1/units', 'GET', null, onRetry).then(function (d) {
       units = d.units || [];
       renderTree();
       // Le tableau de bord est secondaire : une erreur de rendu ne doit jamais
@@ -151,7 +175,11 @@
   // l'appel échoue, on affiche la raison et un bouton « Réessayer ».
   function renderUnitsError(e) {
     var root = $('org-tree'); if (!root) return;
+    // Indice technique (code d'erreur brut) pour faciliter le diagnostic en cas
+    // de récidive : s'affiche discrètement sous le message lisible.
+    var code = (e && e.message) ? String(e.message) : 'error';
     root.innerHTML = '<div class="empty">' + esc(fr(e)) +
+      '<br><small style="color:var(--muted)">(code : ' + esc(code) + ')</small>' +
       '<br><button class="btn btn--ghost btn--sm" id="org-retry" type="button" style="margin-top:10px">Réessayer</button></div>';
     var b = $('org-retry');
     if (b) b.addEventListener('click', function () {
@@ -189,6 +217,51 @@
     });
     root.querySelectorAll('[data-del]').forEach(function (b) {
       b.addEventListener('click', function () { var u = units.find(function (x) { return x.id === b.dataset.del; }); if (u) askDeleteUnit(u); });
+    });
+  }
+  // Types d'unité autorisés sous un parent donné (ou à la racine => direction),
+  // en respectant la cohérence hiérarchique kind = parent + 1.
+  function childKinds(parent) {
+    return parent
+      ? Object.keys(KIND_META).filter(function (k) { return KIND_ORDER[k] === KIND_ORDER[parent.kind] + 1; })
+      : ['direction'];
+  }
+  // Modal « Nouvelle unité » du bouton principal : l'admin choisit D'ABORD le
+  // rattachement (racine ou n'importe quelle unité pouvant avoir un enfant),
+  // puis le type est contraint automatiquement pour garantir la cohérence.
+  function newUnitModal() {
+    var parents = units.filter(function (u) { return u.kind !== 'agency'; })
+      .sort(function (a, b) { return (KIND_ORDER[a.kind] - KIND_ORDER[b.kind]) || a.name.localeCompare(b.name); });
+    openModal(
+      '<h3>Nouvelle unité</h3><p class="sub">Choisissez le rattachement puis le type. La cohérence (direction › département › service › agence) est garantie automatiquement.</p>' +
+      '<div class="fld"><label for="m-parent">Rattachement</label><select id="m-parent">' +
+        '<option value="">— Racine (nouvelle direction) —</option>' +
+        parents.map(function (u) { return '<option value="' + u.id + '">' + esc(KIND_META[u.kind].label) + ' · ' + esc(u.name) + '</option>'; }).join('') +
+        '</select></div>' +
+      '<div class="fld"><label for="m-kind">Type d’unité</label><select id="m-kind"></select></div>' +
+      '<div class="fld"><label for="m-name">Nom</label><input id="m-name" placeholder="Ex : Agence de Bobo-Dioulasso"></div>' +
+      '<div class="fld"><label for="m-city">Ville (optionnel)</label><input id="m-city"></div>' +
+      '<p class="hint">Le code d’identification de l’unité est généré automatiquement.</p>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="m-cancel">Annuler</button><button class="btn btn--primary" id="m-ok">Créer</button></div>'
+    );
+    function refreshKinds() {
+      var pid = $('m-parent').value;
+      var parent = pid ? units.find(function (u) { return u.id === pid; }) : null;
+      var kinds = childKinds(parent);
+      $('m-kind').innerHTML = kinds.map(function (k) { return '<option value="' + k + '">' + KIND_META[k].label + '</option>'; }).join('');
+    }
+    refreshKinds();
+    $('m-parent').addEventListener('change', refreshKinds);
+    $('m-cancel').addEventListener('click', closeModal);
+    $('m-ok').addEventListener('click', function () {
+      var pid = $('m-parent').value;
+      var body = { kind: $('m-kind').value, name: $('m-name').value.trim(), city: $('m-city').value.trim(), parent_id: pid || null };
+      if (!body.kind) { notify('Sélectionnez un type d’unité.', 'err'); return; }
+      if (!body.name) { notify('Le nom est requis.', 'err'); return; }
+      var self = this; self.disabled = true;
+      api('/api/v1/units', 'POST', body).then(function (d) {
+        closeModal(); notify('Unité créée — code ' + d.unit.code_unit, 'ok'); return loadUnits();
+      }).catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
     });
   }
   function unitModal(parent) {
@@ -359,11 +432,19 @@
     //    supérieur dans l'IMF (ex. la Direction Générale) pour que le champ se
     //    pré-remplisse par défaut comme l'unité de rattachement. Le plus proche
     //    niveau au-dessus est proposé en premier.
-    return users.filter(function (u) {
+    var higher = users.filter(function (u) {
       var up = posByCode[u.position_code];
       return up && up.manager && (up.level || 0) > (p.level || 0);
     }).sort(function (a, b) {
-      return (posByCode[a.position_code].level || 0) - (posByCode[b.position_code].level || 0);
+      return ((posByCode[a.position_code] || {}).level || 0) - ((posByCode[b.position_code] || {}).level || 0);
+    });
+    if (higher.length) return higher;
+    // 3) Ultime repli : TOUT autre utilisateur déjà créé, du niveau le plus élevé
+    //    au plus bas. Le responsable hiérarchique n'est ainsi jamais figé/vide
+    //    dès lors qu'au moins un utilisateur existe : l'admin peut toujours en
+    //    choisir un (et le modifier), même avec un référentiel de postes partiel.
+    return users.slice().sort(function (a, b) {
+      return ((posByCode[b.position_code] || {}).level || 0) - ((posByCode[a.position_code] || {}).level || 0);
     });
   }
   function supOption(u) {
@@ -392,22 +473,25 @@
       function syncFromPosition() {
         var p = posByCode[$('u-pos').value];
         var wrap = $('u-sup-wrap'), sel = $('u-sup'), unitSel = $('u-unit');
-        if (p) {
-          var cands = supervisorCandidates(p);
-          if (p.needsSupervisor) {
-            sel.innerHTML = cands.length
-              ? cands.map(supOption).join('')
-              : '<option value="">Aucun superviseur disponible — créez d’abord un Chef d’agence ou un Agent de crédit</option>';
-            if (cands.length) sel.value = cands[0].id; // superviseur pré-sélectionné
-            wrap.hidden = false;
-          } else if (cands.length) {
-            sel.innerHTML = '<option value="">— Aucun —</option>' + cands.map(supOption).join('');
-            sel.value = cands[0].id; // responsable hiérarchique pré-rempli par défaut
-            wrap.hidden = false;
-          } else { wrap.hidden = true; sel.innerHTML = ''; }
-          var uid = autoUnitForPosition(p);
-          if (uid) unitSel.value = uid;
-        } else { wrap.hidden = true; sel.innerHTML = ''; }
+        if (!p) { wrap.hidden = true; sel.innerHTML = ''; return; }
+        var cands = supervisorCandidates(p);
+        if (p.needsSupervisor) {
+          // Agent de collecte : superviseur OBLIGATOIRE, uniquement les éligibles.
+          sel.innerHTML = cands.length
+            ? cands.map(supOption).join('')
+            : '<option value="">Aucun superviseur disponible — créez d’abord un Chef d’agence ou un Agent de crédit</option>';
+          sel.value = cands.length ? cands[0].id : '';
+        } else {
+          // Autres postes : responsable facultatif, pré-rempli par défaut sur le
+          // meilleur candidat, et toujours modifiable (« — Aucun — » inclus).
+          sel.innerHTML = '<option value="">— Aucun —</option>' + cands.map(supOption).join('');
+          sel.value = cands.length ? cands[0].id : '';
+        }
+        // Le champ reste TOUJOURS visible et modifiable une fois un poste choisi :
+        // plus de champ figé/vide sans possibilité de sélection.
+        wrap.hidden = false;
+        var uid = autoUnitForPosition(p);
+        if (uid) unitSel.value = uid;
       }
       $('u-pos').addEventListener('change', syncFromPosition);
       $('u-cancel').addEventListener('click', closeModal);
@@ -515,10 +599,7 @@
   });
 
   // ----- Boutons -----
-  $('btn-new-unit').addEventListener('click', function () {
-    if (!units.length) unitModal(null); else unitModal(units.filter(function (u) { return u.kind === 'direction'; })[0] || null);
-    if (units.length && !units.filter(function (u) { return u.kind === 'direction'; }).length) unitModal(null);
-  });
+  $('btn-new-unit').addEventListener('click', function () { newUnitModal(); });
   $('btn-new-user').addEventListener('click', function () { if (!units.length) { notify('Créez d’abord votre organisation.', 'err'); return; } userModal(); });
 
   // ----- Paramètres IMF (identité visuelle + mentions légales + TVA) -----
@@ -674,25 +755,83 @@
   function showSendCodeModal(d, name) {
     var s = d.send || {};
     var who = name ? esc(name) : 'l’utilisateur';
-    var waBtn = s.wa_link
-      ? '<a class="btn btn--primary" href="' + esc(s.wa_link) + '" target="_blank" rel="noopener">Envoyer par WhatsApp</a>'
-      : '<span class="hint">Aucun numéro WhatsApp renseigné pour cet utilisateur.</span>';
-    var mailBtn = s.mailto_link
-      ? '<a class="btn btn--dark" href="' + esc(s.mailto_link) + '">Envoyer par e-mail</a>'
-      : '<span class="hint">Aucune adresse e-mail renseignée pour cet utilisateur.</span>';
+    var uid = d.id || null;
+    var msg = s.message || ('Code d’accès : ' + (d.code_user || ''));
+    var subj = s.subject || 'Votre code d’accès';
+    var origPhone = s.to_phone || '';
+    var origEmail = s.to_email || '';
+
+    function waHref(phone) {
+      var dg = String(phone || '').replace(/[^0-9]/g, '');
+      return dg ? 'https://wa.me/' + dg + '?text=' + encodeURIComponent(msg) : '';
+    }
+    function mailHref(mail) {
+      var m = String(mail || '').trim();
+      return m ? 'mailto:' + encodeURIComponent(m) + '?subject=' + encodeURIComponent(subj) + '&body=' + encodeURIComponent(msg) : '';
+    }
+    function statut(mode, canal) {
+      if (mode === 'sent') return '<span class="tag tag--ok">✓ ' + canal + ' : envoyé automatiquement</span>';
+      if (mode === 'failed') return '<span class="tag tag--warn">' + canal + ' : échec de l’envoi automatique — utilisez l’envoi manuel ci-dessous</span>';
+      if (mode === 'dev') return '<span class="tag tag--warn">' + canal + ' : passerelle non configurée — envoi manuel ci-dessous</span>';
+      return '';
+    }
+
     var channels = [];
     if (s.sender_whatsapp) channels.push('WhatsApp : ' + esc(s.sender_whatsapp));
     if (s.sender_email) channels.push('e-mail : ' + esc(s.sender_email));
+    var statutHtml = '';
+    var st = [statut(s.whatsapp_mode, 'WhatsApp'), statut(s.email_mode, 'E-mail')].filter(function (x) { return x; });
+    if (st.length) statutHtml = '<p class="hint" style="display:flex;flex-wrap:wrap;gap:8px">' + st.join(' ') + '</p>';
+
     openModal(
       '<h3>Code d’accès prêt à envoyer</h3>' +
       '<p class="sub">Transmettez ce code à ' + who + '. Il devra créer son mot de passe à la première connexion.</p>' +
       '<div class="fld" style="text-align:center"><label>Code d’accès</label>' +
         '<div style="font-size:26px;font-weight:800;letter-spacing:3px"><code>' + esc(d.code_user || '') + '</code></div></div>' +
+      statutHtml +
       (channels.length ? '<p class="hint">Expéditeur : ' + channels.join(' · ') + '.</p>' : '') +
-      '<p class="hint">Cliquez sur un bouton pour ouvrir le message pré-rempli (WhatsApp ou votre messagerie), puis envoyez-le.</p>' +
-      '<div class="modal__nav" style="flex-wrap:wrap;gap:10px">' + waBtn + mailBtn +
+      '<div class="fld"><label for="sc-phone">Numéro WhatsApp du destinataire</label>' +
+        '<input id="sc-phone" type="tel" value="' + esc(origPhone) + '" placeholder="+226 70 00 00 00" autocomplete="off"></div>' +
+      '<div class="fld"><label for="sc-email">E-mail du destinataire</label>' +
+        '<input id="sc-email" type="email" value="' + esc(origEmail) + '" placeholder="prenom.nom@exemple.com" autocomplete="off"></div>' +
+      '<p class="hint">Renseignez / corrigez le contact puis cliquez sur un bouton : le message pré-rempli s’ouvre (WhatsApp ou votre messagerie), vous n’avez plus qu’à l’envoyer. Le contact saisi est enregistré pour les prochains envois.</p>' +
+      '<div class="modal__nav" style="flex-wrap:wrap;gap:10px">' +
+        '<a class="btn btn--primary" id="sc-wa" target="_blank" rel="noopener">Envoyer par WhatsApp</a>' +
+        '<a class="btn btn--dark" id="sc-mail">Envoyer par e-mail</a>' +
         '<button class="btn btn--ghost" id="sc-close">Fermer</button></div>'
     );
+
+    function toggle(el, href) {
+      if (!el) return;
+      if (href) { el.href = href; el.style.pointerEvents = ''; el.style.opacity = ''; el.removeAttribute('aria-disabled'); }
+      else { el.removeAttribute('href'); el.style.pointerEvents = 'none'; el.style.opacity = '.45'; el.setAttribute('aria-disabled', 'true'); }
+    }
+    function refresh() {
+      toggle($('sc-wa'), waHref($('sc-phone').value));
+      toggle($('sc-mail'), mailHref($('sc-email').value));
+    }
+    refresh();
+    var ph = $('sc-phone'), em = $('sc-email');
+    if (ph) ph.addEventListener('input', refresh);
+    if (em) em.addEventListener('input', refresh);
+
+    // Enregistrement best-effort du contact corrigé pour les prochains envois.
+    function persist() {
+      if (!uid) return;
+      var body = {};
+      var p = ph ? ph.value.trim() : '';
+      var e = em ? em.value.trim() : '';
+      if (p && p !== origPhone) body.phone = p;
+      if (e && e !== origEmail) body.email = e;
+      if (!Object.keys(body).length) return;
+      api('/api/v1/users/' + uid, 'PATCH', body).then(function () {
+        origPhone = p || origPhone; origEmail = e || origEmail;
+        loadUsers();
+      }).catch(function () { /* enregistrement secondaire : on n’interrompt pas l’envoi */ });
+    }
+    var wa = $('sc-wa'), ml = $('sc-mail');
+    if (wa) wa.addEventListener('click', persist);
+    if (ml) ml.addEventListener('click', persist);
     var c = $('sc-close'); if (c) c.addEventListener('click', closeModal);
   }
 

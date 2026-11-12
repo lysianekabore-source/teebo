@@ -206,6 +206,31 @@ de sécurité (CSP) stricte.
 
 ---
 
+## Activer l'envoi AUTOMATIQUE des codes (WhatsApp + e-mail)
+
+Par défaut, l'application n'envoie PAS les codes toute seule : elle ouvre un
+message pré-rempli (WhatsApp / messagerie) que l'administrateur n'a plus qu'à
+envoyer. C'est le mode « manuel », il fonctionne sans aucune configuration.
+
+Pour un envoi 100 % automatique (sans clic), il faut fournir à Render les accès
+aux passerelles externes, puis redéployer le serveur :
+
+**WhatsApp (API WhatsApp Business Cloud de Meta)**
+- `WHATSAPP_TOKEN` : jeton d'accès permanent de l'app Meta
+- `WHATSAPP_PHONE_ID` : identifiant du numéro expéditeur
+
+**E-mail (SMTP de votre fournisseur : Gmail pro, OVH, votre domaine…)**
+- `SMTP_HOST` (ex. `smtp.gmail.com`), `SMTP_PORT` (`587`)
+- `SMTP_USER`, `SMTP_PASS` (mot de passe d'application)
+- `SMTP_FROM` (ex. `teebo <no-reply@votre-domaine.com>`)
+
+Tant qu'une passerelle n'est pas renseignée, le canal correspondant reste en
+mode manuel : la modale « Code d'accès prêt à envoyer » l'indique clairement
+(« passerelle non configurée — envoi manuel ci-dessous ») et propose les
+boutons WhatsApp / e-mail. Vous pouvez y saisir ou corriger le numéro WhatsApp
+et l'e-mail du destinataire ; le contact est alors enregistré pour les envois
+suivants.
+
 ## Contacts
 
 - WhatsApp : **+226 50 32 14 32** (wa.me/22650321432)
