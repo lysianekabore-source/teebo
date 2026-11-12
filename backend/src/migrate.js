@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
   // Applique les schémas dans l'ordre : socle puis extensions (VAGUE 7).
-  const schemaFiles = ['schema.sql', 'schema_v3.sql', 'schema_v4.sql', 'schema_v5.sql', 'schema_v6.sql', 'schema_v7.sql', 'schema_v8.sql', 'schema_v9.sql', 'schema_v10.sql', 'schema_v11.sql', 'schema_v12.sql', 'schema_v13.sql', 'schema_v14.sql', 'schema_v15.sql', 'schema_v16.sql', 'schema_v17.sql', 'schema_v18.sql', 'schema_v19.sql', 'schema_v20.sql', 'schema_v21.sql', 'schema_v22.sql', 'schema_v23.sql'];
+  const schemaFiles = ['schema.sql', 'schema_v3.sql', 'schema_v4.sql', 'schema_v5.sql', 'schema_v6.sql', 'schema_v7.sql', 'schema_v8.sql', 'schema_v9.sql', 'schema_v10.sql', 'schema_v11.sql', 'schema_v12.sql', 'schema_v13.sql', 'schema_v14.sql', 'schema_v15.sql', 'schema_v16.sql', 'schema_v17.sql', 'schema_v18.sql', 'schema_v19.sql', 'schema_v20.sql', 'schema_v21.sql', 'schema_v22.sql', 'schema_v23.sql', 'schema_v24.sql'];
   for (const file of schemaFiles) {
     const schemaPath = path.resolve(__dirname, '../../db/' + file);
     if (!fs.existsSync(schemaPath)) {
@@ -65,10 +65,14 @@ async function main() {
   // Matérialise la structure organisationnelle (8 départements + services)
   // dans l'arbre org_unit de CHAQUE tenant existant. Idempotent.
   const tenants = await q('SELECT id FROM imf');
+  let seeded = 0;
   for (const t of tenants.rows) {
-    await q('SELECT fn_seed_org_structure($1)', [t.id]);
+    // Best-effort : un semis qui échoue (fonction absente dans un état
+    // intermédiaire) ne doit jamais faire échouer toute la migration.
+    try { await q('SELECT fn_seed_org_structure($1)', [t.id]); seeded++; }
+    catch (e) { console.error('seed structure (' + t.id + ') ignoré :', e.code || e.message); }
   }
-  console.log(`Structure org matérialisée pour ${tenants.rows.length} tenant(s).`);
+  console.log(`Structure org matérialisée pour ${seeded}/${tenants.rows.length} tenant(s).`);
 
   await pool.end();
   console.log('Migration terminée.');

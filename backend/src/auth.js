@@ -148,6 +148,10 @@ export function canViewTeamData(role) {
 /** RBAC : liste de profils autorisés (tolérant aux rôles-postes via alias). */
 export function requireRole(...roles) {
   return (req, res, next) => {
+    // L'administrateur plateforme (teebo_admin) dispose de l'accès complet,
+    // comme dans les helpers d'habilitation : on évite ainsi un 403 incohérent
+    // sur l'administration de la structure (ex. ajout/modification d'unité).
+    if (req.user.role === 'teebo_admin') return next();
     const mine = rolesOf(req.user.role);
     if (!mine.some((p) => roles.includes(p))) return res.status(403).json({ error: 'forbidden' });
     next();

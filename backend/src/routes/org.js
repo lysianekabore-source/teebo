@@ -23,27 +23,91 @@ router.use((req, res, next) => {
 // ---------------------------------------------------------------------------
 const KIND_ORDER = { direction: 1, department: 2, service: 3, agency: 4 };
 
+// ---------------------------------------------------------------------------
+// AUTO-RÉPARATION : si la base d'une IMF ne contient pas (ou plus) la table
+// org_unit, le type unit_kind ou la fonction de génération de code (migration
+// incomplète, base réinitialisée, etc.), l'ouverture de l'onglet Organisation
+// renvoyait une « server_error » traduite par « Une erreur est survenue ».
+// On recrée ici ces objets de façon idempotente pour que la lecture de l'arbre
+// réussisse TOUJOURS, sans dépendre d'une re-migration manuelle.
+let _orgSchemaEnsured = false;
+async function ensureOrgSchema() {
+  await q(`
+    DO $do$ BEGIN
+      CREATE TYPE unit_kind AS ENUM ('direction','department','service','agency');
+    EXCEPTION WHEN duplicate_object THEN NULL; END $do$;
+
+    CREATE TABLE IF NOT EXISTS org_unit (
+      id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      imf_id     UUID NOT NULL REFERENCES imf(id) ON DELETE CASCADE,
+      parent_id  UUID REFERENCES org_unit(id) ON DELETE CASCADE,
+      kind       unit_kind NOT NULL,
+      code_unit  TEXT NOT NULL UNIQUE,
+      name       TEXT NOT NULL,
+      city       TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE OR REPLACE FUNCTION fn_gen_unit_code(p_imf UUID, p_kind unit_kind) RETURNS TEXT
+    LANGUAGE plpgsql AS $fn$
+    DECLARE v_imf TEXT; v_seq INT; v_prefix TEXT; v_code TEXT;
+    BEGIN
+      SELECT code_imf INTO v_imf FROM imf WHERE id = p_imf;
+      v_prefix := CASE p_kind WHEN 'direction' THEN '-DIR-' WHEN 'department' THEN '-DEP-'
+                              WHEN 'service' THEN '-SRV-' WHEN 'agency' THEN '-AGC-' END;
+      SELECT COALESCE(MAX(NULLIF(regexp_replace(code_unit, '^.*' || v_prefix, ''), '')::int), 0)
+        INTO v_seq FROM org_unit
+       WHERE imf_id = p_imf AND kind = p_kind AND code_unit ~ (v_prefix || '[0-9]+$');
+      LOOP
+        v_seq := v_seq + 1;
+        v_code := v_imf || v_prefix || lpad(v_seq::text, 3, '0');
+        EXIT WHEN NOT EXISTS (SELECT 1 FROM org_unit WHERE code_unit = v_code);
+      END LOOP;
+      RETURN v_code;
+    END; $fn$;
+  `);
+  _orgSchemaEnsured = true;
+}
+
 // --- Arborescence des unités ------------------------------------------------
 // Si l'IMF n'a encore AUCUNE unité (tenant créé après la dernière migration),
 // on matérialise automatiquement la structure par défaut (Direction Générale +
 // départements + services, cohérente kind=parent+1) via fn_seed_org_structure.
 // Le semis est idempotent et best-effort : un échec ne doit jamais casser la
 // simple lecture de l'arbre.
-router.get('/units', async (req, res, next) => {
+router.get('/units', async (req, res) => {
+  const imf = req.user.imf_id;
+  const fetchUnits = () => q(
+    'SELECT * FROM org_unit WHERE imf_id=$1 ORDER BY kind, name', [imf]).then((r) => r.rows);
+  let rows = [];
+  let degraded = false;
+  // 1) Lecture normale. En cas d'échec (objets absents dans cette base),
+  //    on auto-répare le schéma puis on relit. On ne renvoie JAMAIS d'erreur
+  //    500 : au pire une liste vide, pour que l'onglet reste fonctionnel.
   try {
-    let { rows } = await q(
-      'SELECT * FROM org_unit WHERE imf_id=$1 ORDER BY kind, name', [req.user.imf_id]);
-    if (!rows.length) {
-      try {
-        await q('SELECT fn_seed_org_structure($1)', [req.user.imf_id]);
-        rows = (await q(
-          'SELECT * FROM org_unit WHERE imf_id=$1 ORDER BY kind, name', [req.user.imf_id])).rows;
-      } catch (seedErr) {
-        console.error('seed org_unit:', seedErr.message);
-      }
+    rows = await fetchUnits();
+  } catch (e1) {
+    console.error('units select échoué, auto-réparation:', e1.code || e1.message);
+    try {
+      await ensureOrgSchema();
+      rows = await fetchUnits();
+    } catch (e2) {
+      console.error('units auto-réparation échouée:', e2.code || e2.message);
+      degraded = true;
+      rows = [];
     }
-    res.json({ units: rows });
-  } catch (e) { next(e); }
+  }
+  // 2) Tenant sans aucune unité : on matérialise la structure par défaut
+  //    (Direction Générale + départements + services). Best-effort.
+  if (!rows.length && !degraded) {
+    try {
+      await q('SELECT fn_seed_org_structure($1)', [imf]);
+      rows = await fetchUnits();
+    } catch (seedErr) {
+      console.error('seed org_unit:', seedErr.code || seedErr.message);
+    }
+  }
+  res.json({ units: rows, degraded: degraded || undefined });
 });
 
 router.post('/units', requireRole('admin_imf','direction'), async (req, res, next) => {
@@ -51,6 +115,7 @@ router.post('/units', requireRole('admin_imf','direction'), async (req, res, nex
     const { kind, name, city, parent_id } = req.body || {};
     if (!KIND_ORDER[kind]) return res.status(422).json({ error: 'invalid_kind' });
     if (!name) return res.status(422).json({ error: 'missing_name' });
+    if (!_orgSchemaEnsured) { try { await ensureOrgSchema(); } catch (_) {} }
     const out = await tx(async (c) => {
       // Contrainte hiérarchique : department > direction, etc.
       if (parent_id) {
@@ -80,6 +145,7 @@ router.patch('/units/:id', requireRole('admin_imf','direction'), async (req, res
     const { kind, name, city } = req.body || {};
     if (kind !== undefined && !KIND_ORDER[kind]) return res.status(422).json({ error: 'invalid_kind' });
     if (name !== undefined && !String(name).trim()) return res.status(422).json({ error: 'missing_name' });
+    if (!_orgSchemaEnsured) { try { await ensureOrgSchema(); } catch (_) {} }
     const out = await tx(async (c) => {
       const u = (await c.query('SELECT * FROM org_unit WHERE id=$1', [req.params.id])).rows[0];
       if (!u) { const e=new Error('not_found'); e.status=404; throw e; }
@@ -238,7 +304,7 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
     const send = await buildAccessCodeSend(req.user.imf_id, {
       id: out.id, full_name, email, phone, code_user: out.code_user
     }, { channel: 'creation', dispatchedBy: req.user.id });
-    res.json({ ok: true, code_user: out.code_user, send });
+    res.json({ ok: true, id: out.id, code_user: out.code_user, send });
   } catch (e) { next(e); }
 });
 
@@ -253,7 +319,7 @@ router.post('/users/:id/resend-code', requireRole('admin_imf','direction'), asyn
     const send = await buildAccessCodeSend(req.user.imf_id, {
       id: u.id, full_name: u.full_name, email: u.email, phone: u.phone, code_user: u.code_user
     }, { channel: 'resend', dispatchedBy: req.user.id });
-    res.json({ ok: true, code_user: u.code_user, send });
+    res.json({ ok: true, id: u.id, code_user: u.code_user, send });
   } catch (e) { next(e); }
 });
 
@@ -330,7 +396,7 @@ async function buildAccessCodeSend(imfId, user, ctx = {}) {
 // dépend d'un superviseur, un superviseur d'un DG. Anti-cycle garanti.
 router.patch('/users/:id', requireRole('admin_imf','direction'), async (req, res, next) => {
   try {
-    const { parent_id, position, full_name, phone } = req.body || {};
+    const { parent_id, position, full_name, phone, email } = req.body || {};
     const u = (await q('SELECT id, imf_id FROM app_user WHERE id=$1', [req.params.id])).rows[0];
     if (!u) return res.status(404).json({ error: 'not_found' });
     // Cloisonnement : on ne modifie que dans sa propre IMF.
@@ -356,11 +422,12 @@ router.patch('/users/:id', requireRole('admin_imf','direction'), async (req, res
             SET parent_id = CASE WHEN $1::boolean THEN $2::uuid ELSE parent_id END,
                 position  = COALESCE($3, position),
                 full_name = COALESCE($4, full_name),
-                phone     = COALESCE($5, phone)
+                phone     = COALESCE($5, phone),
+                email     = COALESCE($8, email)
           WHERE id=$6 AND imf_id=$7
-          RETURNING id, code_user, full_name, role, parent_id, position, phone`,
+          RETURNING id, code_user, full_name, role, parent_id, position, phone, email`,
         [parent_id !== undefined, parent_id ?? null, position ?? null, full_name ?? null, phone ?? null,
-         req.params.id, req.user.imf_id])).rows[0];
+         req.params.id, req.user.imf_id, email ?? null])).rows[0];
       return r;
     });
     res.json({ ok: true, user: out });
