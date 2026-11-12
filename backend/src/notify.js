@@ -59,6 +59,11 @@ export function invoicePublicUrl(invoiceId) {
   return `${PUBLIC_API_URL}/api/v1/requests/invoices/${invoiceId}.pdf?t=${signDocToken(invoiceId)}`;
 }
 
+/** Indique si une passerelle e-mail (SMTP) est réellement configurée. */
+export function emailGatewayReady() {
+  return Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+}
+
 let transporter = null;
 function getTransporter() {
   if (transporter) return transporter;
@@ -98,24 +103,60 @@ export async function notifyWhatsApp(toPhone, message) {
     { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' });
 }
 
-export async function notifyEmail(toEmail, subject, text) {
+/**
+ * Envoi d'e-mail.
+ * opts.fromName / opts.fromEmail : expéditeur propre à l'IMF (paramètres IMF).
+ *   L'enveloppe technique reste celle du compte SMTP (obligatoire), mais
+ *   l'en-tête « De : » et le « Répondre à : » portent l'identité de l'IMF :
+ *   le destinataire voit donc l'institution comme expéditeur et ses
+ *   réponses reviennent à l'adresse de l'IMF.
+ */
+export async function notifyEmail(toEmail, subject, text, opts = {}) {
+  const dest = String(toEmail || '').trim();
+  if (!dest || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(dest)) {
+    return { ok: false, mode: 'invalid_recipient',
+      error: 'Adresse e-mail du destinataire absente ou invalide.' };
+  }
   const t = getTransporter();
   if (!t) {
-    console.log(`[email:DEV] -> ${toEmail} | ${subject}\n${text}`);
-    // Mode dégradé (SMTP non configuré) : lien mailto pour envoi manuel.
-    return { ok: true, mode: 'dev', link: mailtoLink(toEmail, subject, text) };
+    console.log(`[email:NOT_CONFIGURED] -> ${dest} | ${subject}\n${text}`);
+    // Passerelle non configurée : rien n'est envoyé, on renvoie un lien
+    // mailto pour un envoi manuel depuis la messagerie de l'admin.
+    return { ok: false, mode: 'not_configured',
+      error: 'Passerelle e-mail non configurée sur le serveur (SMTP).',
+      link: mailtoLink(dest, subject, text) };
   }
-  const from = process.env.SMTP_FROM || 'teebo <no-reply@teebo.africa>';
+  // Mode démonstration volontairement simulé (aucune passerelle réelle) :
+  // à utiliser uniquement pour les environnements de test.
+  if (String(process.env.EMAIL_SIMULATION || '') === 'true') {
+    console.log(`[email:SIMULATED] -> ${dest} | ${subject}`);
+    return { ok: true, mode: 'sent_simulated', id: 'simulated' };
+  }
+  const fallbackFrom = process.env.SMTP_FROM || 'teebo <no-reply@teebo.africa>';
+  const senderEmail = String(opts.fromEmail || '').trim();
+  const senderName = String(opts.fromName || '').trim();
+  const from = senderEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(senderEmail)
+    ? { name: senderName || senderEmail, address: senderEmail }
+    : fallbackFrom;
+  const replyTo = senderEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(senderEmail) ? senderEmail : undefined;
   try {
     const info = await t.sendMail({
-      from, to: toEmail, subject, text,
-      html: `<div style="font-family:system-ui,Segoe UI,Arial;font-size:14px;line-height:1.6;color:#0b0c26">${text.replace(/\n/g, '<br>')}</div>`
+      from, to: dest, subject, text, replyTo,
+      html: `<div style="font-family:system-ui,Segoe UI,Arial;font-size:14px;line-height:1.6;color:#0b0c26">${escapeHtml(text).replace(/\n/g, '<br>')}</div>`
     });
-    return { ok: true, id: info.messageId };
+    return { ok: true, mode: 'sent', id: info && info.messageId,
+      accepted: info && info.accepted ? info.accepted.length : null,
+      from: typeof from === 'string' ? from : `${from.name} <${from.address}>` };
   } catch (e) {
     console.error('[email] echec envoi :', e.message);
-    return { ok: false, error: e.message };
+    return { ok: false, mode: 'failed', error: e.message,
+      link: mailtoLink(dest, subject, text) };
   }
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function httpPost(url, body, headers) {

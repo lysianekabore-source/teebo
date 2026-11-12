@@ -2,7 +2,7 @@ import express from 'express';
 import crypto from 'crypto';
 import { q, tx } from '../db.js';
 import { authenticate, requireFreshPassword, requireRole } from '../auth.js';
-import { notifyWhatsApp, notifyEmail, waLink, mailtoLink, PUBLIC_SITE_URL } from '../notify.js';
+import { notifyWhatsApp, notifyEmail, waLink, mailtoLink, PUBLIC_SITE_URL, emailGatewayReady } from '../notify.js';
 import { getBranding } from '../documents.js';
 import { defaultPermissionKeysForRole, buildProfilesMatrix } from '../permissions.js';
 import { positionInfo } from '../org_structure.js';
@@ -209,6 +209,21 @@ router.get('/users', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/** Le poste indiqué peut-il superviser un agent de collecte ?
+ *  Deux sources de postes coexistent (socle teebo + postes personnalisés de
+ *  l'IMF, table position_catalog) : on interroge les deux, sinon un Chef
+ *  d'agence personnalisé serait refusé à tort (ou l'inverse). */
+async function maySuperviseCollectors(c, positionCode, imfId) {
+  if (!positionCode) return false;
+  const known = positionInfo(positionCode);
+  if (known) return Boolean(known.supervisesCollectors);
+  const row = (await c.query(
+    `SELECT can_supervise_collectors FROM position_catalog
+      WHERE code=$1 AND (imf_id=$2 OR imf_id IS NULL) LIMIT 1`, [positionCode, imfId])).rows[0];
+  if (row) return Boolean(row.can_supervise_collectors);
+  return false;
+}
+
 router.post('/users', requireRole('admin_imf','direction'), async (req, res, next) => {
   try {
     const { full_name, position, email, phone, org_unit_id } = req.body || {};
@@ -239,6 +254,11 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
       posService = pos.service;
       posLabel = pos.label;
     }
+    // RÈGLE DE BLOCAGE — auto-assignation : un créateur ne peut pas désigner
+    // son propre compte comme responsable hiérarchique du compte créé.
+    if (supervisor_id && String(supervisor_id) === String(req.user.id)) {
+      return res.status(422).json({ error: 'self_supervisor' });
+    }
     if (!role) return res.status(422).json({ error: 'missing_fields' });
     if (role === 'teebo_admin') return res.status(422).json({ error: 'invalid_role' });
 
@@ -255,8 +275,7 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
         const sup = (await c.query(
           'SELECT imf_id, position_code, is_active FROM app_user WHERE id=$1', [supervisor_id])).rows[0];
         if (!sup || sup.imf_id !== req.user.imf_id) { const e=new Error('bad_supervisor'); e.status=403; throw e; }
-        const supPos = positionInfo(sup.position_code);
-        if (!supPos || !supPos.supervisesCollectors) {
+        if (!(await maySuperviseCollectors(c, sup.position_code, req.user.imf_id))) {
           const e=new Error('invalid_supervisor'); e.status=422; throw e; }
       } else {
         // Autres postes : le responsable hiérarchique est facultatif. S'il est
@@ -266,6 +285,7 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
           const sup = (await c.query(
             'SELECT imf_id FROM app_user WHERE id=$1', [supervisor_id])).rows[0];
           if (!sup || sup.imf_id !== req.user.imf_id) { const e=new Error('bad_supervisor'); e.status=403; throw e; }
+          if (String(supervisor_id) === String(req.user.id)) { const e=new Error('self_supervisor'); e.status=422; throw e; }
         } else {
           supervisor_id = null;
         }
@@ -309,6 +329,9 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
 });
 
 // --- Renvoyer le code d'accès à un utilisateur existant ---------------------
+// Corps facultatif : { channel: 'both' | 'email' | 'whatsapp', email, phone }.
+// L'administrateur peut donc corriger l'adresse du destinataire et déclencher
+// un envoi immédiat depuis le serveur (expéditeur = e-mail de l'IMF).
 router.post('/users/:id/resend-code', requireRole('admin_imf','direction'), async (req, res, next) => {
   try {
     const u = (await q(
@@ -316,9 +339,28 @@ router.post('/users/:id/resend-code', requireRole('admin_imf','direction'), asyn
          FROM app_user WHERE id=$1`, [req.params.id])).rows[0];
     if (!u) return res.status(404).json({ error: 'not_found' });
     if (u.imf_id !== req.user.imf_id) return res.status(403).json({ error: 'forbidden' });
+
+    const b = req.body || {};
+    const ch = ['email', 'whatsapp', 'both'].includes(b.channel) ? b.channel : 'both';
+    const newEmail = typeof b.email === 'string' && b.email.trim() ? b.email.trim() : null;
+    const newPhone = typeof b.phone === 'string' && b.phone.trim() ? b.phone.trim() : null;
+    if (newEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) {
+      return res.status(422).json({ error: 'invalid_email',
+        message: 'Adresse e-mail invalide.' });
+    }
+    // Le contact corrigé est enregistré pour les envois suivants.
+    if (newEmail || newPhone) {
+      try {
+        await q(`UPDATE app_user SET email = COALESCE($2, email), phone = COALESCE($3, phone),
+                        updated_at = now() WHERE id=$1 AND imf_id=$4`,
+          [u.id, newEmail, newPhone, req.user.imf_id]);
+      } catch (e) { /* enregistrement secondaire */ }
+    }
+
     const send = await buildAccessCodeSend(req.user.imf_id, {
-      id: u.id, full_name: u.full_name, email: u.email, phone: u.phone, code_user: u.code_user
-    }, { channel: 'resend', dispatchedBy: req.user.id });
+      id: u.id, full_name: u.full_name, email: newEmail || u.email,
+      phone: newPhone || u.phone, code_user: u.code_user
+    }, { channel: ch, dispatchedBy: req.user.id });
     res.json({ ok: true, id: u.id, code_user: u.code_user, send });
   } catch (e) { next(e); }
 });
@@ -337,8 +379,8 @@ router.post('/users/:id/resend-code', requireRole('admin_imf','direction'), asyn
 async function buildAccessCodeSend(imfId, user, ctx = {}) {
   const br = await getBranding(imfId);
   const imfName = br.legal_name || (br.imf && br.imf.name) || 'votre institution';
-  const senderWa = br.notify_whatsapp || '';
-  const senderEmail = br.notify_email || '';
+  const senderWa = br.notify_whatsapp || (br.imf && br.imf.whatsapp) || '';
+  const senderEmail = br.notify_email || (br.imf && br.imf.email) || '';
   const greeting = user.full_name ? `Bonjour ${user.full_name},` : 'Bonjour,';
   const subject = `Votre accès ${imfName} — code ${user.code_user}`;
   const lines = [
@@ -346,7 +388,7 @@ async function buildAccessCodeSend(imfId, user, ctx = {}) {
     '',
     `Votre accès à l'application ${imfName} (via teebo) est créé.`,
     `Code d'accès : ${user.code_user}`,
-    `Connexion : https://teebo-imf.netlify.app/login`,
+    `Connexion : ${PUBLIC_SITE_URL}/login`,
     `Dès votre première connexion, créez immédiatement votre mot de passe.`,
     '',
     `-- ${imfName}`,
@@ -355,13 +397,32 @@ async function buildAccessCodeSend(imfId, user, ctx = {}) {
   ].filter((l) => l !== null);
   const message = lines.join('\n');
 
-  // Envoi automatique best-effort (ne bloque jamais la création).
-  let wa_auto = null, mail_auto = null;
-  try { if (user.phone) wa_auto = await notifyWhatsApp(user.phone, message); } catch (e) { wa_auto = { ok: false, error: e.message }; }
-  try { mail_auto = await notifyEmail(user.email, subject, message); } catch (e) { mail_auto = { ok: false, error: e.message }; }
+  // Canaux demandés : par défaut les deux ; l'admin peut cibler un seul canal
+  // (ex. « renvoyer par e-mail uniquement »).
+  const wantWa = ctx.channel !== 'email' && Boolean(user.phone);
+  const wantMail = ctx.channel !== 'whatsapp' && Boolean(user.email);
 
-  const whatsappMode = wa_auto ? (wa_auto.mode || (wa_auto.ok ? 'sent' : 'failed')) : 'skipped';
-  const emailMode = mail_auto ? (mail_auto.mode || (mail_auto.ok ? 'sent' : 'failed')) : 'skipped';
+  // Envoi automatique (ne bloque jamais la création / l'enregistrement).
+  let wa_auto = null, mail_auto = null;
+  if (wantWa) {
+    try { wa_auto = await notifyWhatsApp(user.phone, message); }
+    catch (e) { wa_auto = { ok: false, error: e.message }; }
+  }
+  if (wantMail) {
+    try {
+      mail_auto = await notifyEmail(user.email, subject, message, {
+        fromName: imfName, fromEmail: senderEmail
+      });
+    } catch (e) { mail_auto = { ok: false, error: e.message }; }
+  }
+
+  const modeOf = (r) => {
+    if (!r) return 'skipped';
+    if (r.mode) return r.mode;
+    return r.ok ? 'sent' : 'failed';
+  };
+  const whatsappMode = modeOf(wa_auto);
+  let emailMode = modeOf(mail_auto);
 
   // Journalisation de l'envoi (best-effort : ne bloque jamais la diffusion).
   try {
@@ -370,9 +431,16 @@ async function buildAccessCodeSend(imfId, user, ctx = {}) {
            to_phone, to_email, channel, whatsapp_mode, email_mode, dispatched_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [imfId, user.id || null, user.full_name || null, user.code_user || null,
-       user.phone || null, user.email || null, ctx.channel || 'creation',
+       user.phone || null, user.email || null,
+       ctx.channel === 'email' || ctx.channel === 'whatsapp' ? 'resend' : (ctx.channel || 'creation'),
        whatsappMode, emailMode, ctx.dispatchedBy || null]);
   } catch (e) { /* le journal est secondaire : on n'interrompt pas l'envoi */ }
+
+  // Motifs lisibles, à afficher tels quels à l'administrateur.
+  const emailReason = emailMode === 'sent' ? null
+    : (mail_auto && mail_auto.error) || (wantMail ? 'Envoi impossible.' : 'Aucune adresse e-mail pour ce destinataire.');
+  const waReason = whatsappMode === 'sent' ? null
+    : (wa_auto && wa_auto.error) || (wantWa ? 'Envoi impossible.' : 'Aucun numéro WhatsApp pour ce destinataire.');
 
   return {
     message,
@@ -380,30 +448,96 @@ async function buildAccessCodeSend(imfId, user, ctx = {}) {
     imf_name: imfName,
     sender_whatsapp: senderWa || null,
     sender_email: senderEmail || null,
+    receiver_resolved: Boolean(senderEmail),
     // Liens prêts à cliquer vers le DESTINATAIRE (l'utilisateur).
     wa_link: user.phone ? waLink(user.phone, message) : null,
     mailto_link: user.email ? mailtoLink(user.email, subject, message) : null,
     to_phone: user.phone || null,
     to_email: user.email || null,
-    // Mode d'envoi réel (dev = journalisé + lien manuel ; prod = passerelle).
     whatsapp_mode: whatsappMode,
-    email_mode: emailMode
+    email_mode: emailMode,
+    email_reason: emailReason,
+    whatsapp_reason: waReason,
+    email_id: mail_auto && mail_auto.id ? mail_auto.id : null,
+    email_from: mail_auto && mail_auto.from ? mail_auto.from : null,
+    email_gateway: emailGatewayReady(),
+    // Verdict immédiat, déjà rédigé en français pour l'écran d'envoi.
+    email_status: emailMode === 'sent'
+      ? { ok: true, text: `E-mail envoyé à ${user.email} (expéditeur : ${senderEmail || 'adresse technique'}).` }
+      : { ok: false, text: emailReason || 'E-mail non envoyé.' }
   };
 }
+
+// --- Test d'envoi d'e-mail (bouton « Envoyer un e-mail de test ») ----------
+// Vérifie la chaîne complète : passerelle serveur + adresse expéditrice de
+// l'IMF. Renvoie un verdict en français, sans jargon.
+router.post('/notify-test', requireRole('admin_imf','direction'), async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const to = (b.to || (req.user && req.user.email) || '').trim();
+    const br = await getBranding(req.user.imf_id);
+    const senderEmail = (b.email || br.notify_email || (br.imf && br.imf.email) || '').trim();
+    const imfName = br.legal_name || (br.imf && br.imf.name) || 'votre institution';
+    if (!to) return res.status(422).json({ ok: false, text: 'Aucune adresse de destination : renseignez votre e-mail dans « Mon accès ».' });
+    if (!emailGatewayReady()) {
+      return res.json({ ok: false, mode: 'not_configured',
+        text: 'La passerelle d’envoi n’est pas configurée sur le serveur. Les variables SMTP (serveur, port, identifiant, mot de passe) doivent être ajoutées sur Render, puis le service redéployé.' });
+    }
+    const subject = `[Test] Envoi d’e-mails ${imfName} via teebo`;
+    const body = [
+      'Ceci est un message de test.', '',
+      `Institution : ${imfName}`,
+      `Adresse expéditrice configurée : ${senderEmail || '(non définie — repli sur l’adresse technique)'}`,
+      `Destinataire : ${to}`, '',
+      'Si vous lisez ce message, l’envoi automatique des codes d’accès fonctionne.',
+      '(-- teebo)'
+    ].join('\n');
+    const r = await notifyEmail(to, subject, body, { fromName: imfName, fromEmail: senderEmail });
+    if (r.ok) {
+      return res.json({ ok: true, mode: 'sent', from: r.from || null, to,
+        text: `E-mail de test envoyé à ${to}. Expéditeur affiché chez le destinataire : ${senderEmail || 'adresse technique'}.` });
+    }
+    return res.json({ ok: false, mode: r.mode || 'failed', error: r.error || null,
+      text: `Envoi impossible : ${r.error || 'erreur inconnue'}. Vérifiez l’adresse expéditrice (elle doit être autorisée par votre fournisseur d’e-mail) et les réglages du serveur d’envoi.` });
+  } catch (e) { next(e); }
+});
 
 // --- Rattachement hiérarchique (module Objectifs) ---------------------------
 // Définit le responsable direct (parent_id) d'un agent : une collectrice
 // dépend d'un superviseur, un superviseur d'un DG. Anti-cycle garanti.
 router.patch('/users/:id', requireRole('admin_imf','direction'), async (req, res, next) => {
   try {
-    const { parent_id, position, full_name, phone, email } = req.body || {};
-    const u = (await q('SELECT id, imf_id FROM app_user WHERE id=$1', [req.params.id])).rows[0];
+    const { parent_id, position, full_name, phone, email, org_unit_id } = req.body || {};
+    const u = (await q(
+      'SELECT id, imf_id, position_code FROM app_user WHERE id=$1', [req.params.id])).rows[0];
     if (!u) return res.status(404).json({ error: 'not_found' });
     // Cloisonnement : on ne modifie que dans sa propre IMF.
     if (u.imf_id !== req.user.imf_id) return res.status(403).json({ error: 'forbidden' });
 
+    // Un agent de collecte doit garder un responsable habilité (Chef d'agence
+    // ou Agent de crédit) : on refuse un retrait ou un supérieur non habilité.
+    const loserSel = positionInfo(u.position_code);
+    let needsSup = Boolean(loserSel && loserSel.needsSupervisor);
+    if (!needsSup && u.position_code) {
+      const pr = (await q(
+        `SELECT needs_supervisor FROM position_catalog
+          WHERE code=$1 AND (imf_id=$2 OR imf_id IS NULL) LIMIT 1`,
+        [u.position_code, req.user.imf_id])).rows[0];
+      needsSup = Boolean(pr && pr.needs_supervisor);
+    }
+    if (needsSup && parent_id !== undefined) {
+      if (!parent_id) return res.status(422).json({ error: 'supervisor_required' });
+      const sup = (await q('SELECT id, imf_id, position_code FROM app_user WHERE id=$1', [parent_id])).rows[0];
+      if (!sup || sup.imf_id !== req.user.imf_id) return res.status(403).json({ error: 'bad_supervisor' });
+      if (!(await maySuperviseCollectors({ query: q }, sup.position_code, req.user.imf_id))) {
+        return res.status(422).json({ error: 'invalid_supervisor' });
+      }
+    }
+
     if (parent_id !== undefined && parent_id !== null) {
-      if (parent_id === req.params.id) return res.status(422).json({ error: 'self_parent' });
+      // RÈGLE DE BLOCAGE — auto-assignation : impossible d'être son propre
+      // responsable hiérarchique, y compris via un appel direct de l'API.
+      if (String(parent_id) === String(req.params.id)) return res.status(422).json({ error: 'self_parent' });
       const p = (await q('SELECT id, imf_id FROM app_user WHERE id=$1', [parent_id])).rows[0];
       if (!p || p.imf_id !== req.user.imf_id) return res.status(403).json({ error: 'bad_parent' });
       // Anti-cycle : le parent ne doit pas se trouver dans la descendance de u.
@@ -423,11 +557,13 @@ router.patch('/users/:id', requireRole('admin_imf','direction'), async (req, res
                 position  = COALESCE($3, position),
                 full_name = COALESCE($4, full_name),
                 phone     = COALESCE($5, phone),
-                email     = COALESCE($8, email)
+                email     = COALESCE($8, email),
+                org_unit_id = CASE WHEN $9::boolean THEN $10::uuid ELSE org_unit_id END
           WHERE id=$6 AND imf_id=$7
           RETURNING id, code_user, full_name, role, parent_id, position, phone, email`,
         [parent_id !== undefined, parent_id ?? null, position ?? null, full_name ?? null, phone ?? null,
-         req.params.id, req.user.imf_id, email ?? null])).rows[0];
+         req.params.id, req.user.imf_id, email ?? null,
+         org_unit_id !== undefined, org_unit_id || null])).rows[0];
       return r;
     });
     res.json({ ok: true, user: out });
