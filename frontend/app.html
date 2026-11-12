@@ -59,6 +59,7 @@
         </div>
         <div class="chips" id="dash-chips"></div>
       </div>
+      <div id="dash-alert"></div>
       <div class="grid grid--stats" id="dash-kpis"></div>
       <div class="grid grid--2" style="margin-top:16px">
         <div class="card">
@@ -99,6 +100,7 @@
         </div>
         <button class="btn btn--dark" id="btn-new-user">+ Nouvel utilisateur</button>
       </div>
+      <div id="users-alert"></div>
       <div id="users-table"><div class="empty">Chargement…</div></div>
     </section>
 
@@ -215,7 +217,9 @@
         <p class="hint">À la création d’un utilisateur (ou via « Renvoyer le code » dans l’onglet Personnel), le code est transmis par WhatsApp et e-mail. Si aucune passerelle automatique n’est configurée, un lien « prêt à envoyer » s’ouvre depuis votre compte.</p>
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
           <button class="btn btn--primary" id="btn-notify-save" type="button">Enregistrer ces canaux</button>
+          <button class="btn btn--ghost" id="btn-notify-test" type="button">Envoyer un e-mail de test à moi-même</button>
         </div>
+        <div id="notify-test-out" class="hint" style="margin-top:10px"></div>
       </div>
 
       <!-- Prévisualisation dynamique du PDF de facture -->

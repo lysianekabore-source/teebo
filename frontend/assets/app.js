@@ -19,6 +19,19 @@
     cfo: 'Direction Financière', treasurer: 'Trésorerie', accountant: 'Comptabilité', auditor: 'Audit',
     hr_logistics_manager: 'RH & Logistique', office_staff: 'Support administratif', collectrice: 'Collecte' };
 
+  // Libellé d'un rôle : on retombe d'abord sur le catalogue des postes, puis sur
+  // une mise en forme lisible, au lieu d'afficher un code brut « ops_caisse ».
+  function roleLabelForCode(code) {
+    if (!code) return '—';
+    var c = String(code);
+    if (ROLE_LABEL[c]) return ROLE_LABEL[c];
+    if (posByCode[c] && posByCode[c].label) return posByCode[c].label;
+    var p = positions.filter(function (x) { return x.role === c; })[0];
+    if (p && p.label) return p.label;
+    var t = c.replace(/[_.\-]+/g, ' ').trim();
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  }
+
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function api(path, method, body, onRetry) {
@@ -75,6 +88,9 @@
     invalid_position: 'Poste invalide.', supervisor_required: 'Un superviseur est requis pour ce poste.',
     invalid_supervisor: 'Le superviseur choisi doit être un Chef d’agence ou un Agent de crédit.',
     bad_supervisor: 'Superviseur invalide.',
+    self_supervisor: 'Vous ne pouvez pas désigner votre propre compte comme responsable hiérarchique.',
+    self_parent: 'Un agent ne peut pas être son propre responsable hiérarchique.',
+    cycle_detected: 'Rattachement impossible : cela créerait une boucle hiérarchique.',
     use_teebo_console: 'Ce compte est l’administrateur teebo (super-admin) et n’a pas d’espace IMF. Connectez-vous avec un compte administrateur de votre IMF.',
     network: 'Connexion au serveur impossible pour le moment. Le serveur se réveille peut-être (quelques secondes sur l’offre gratuite). Patientez puis réessayez.',
     server_error: 'Le serveur a rencontré un problème interne. Patientez quelques instants puis réessayez.',
@@ -99,7 +115,16 @@
   // ----- Navigation -----
   var VIEWS = ['dash', 'org', 'users', 'dispatches', 'profiles', 'credits', 'clients', 'caisse', 'coffre', 'compta', 'recouvrement', 'audit', 'settings', 'security'];
   document.querySelectorAll('.nav-item').forEach(function (b) {
-    b.addEventListener('click', function () { switchView(b.dataset.view); });
+    b.addEventListener('click', function () {
+      switchView(b.dataset.view);
+      // L'onglet courant est reflété dans l'adresse, ce qui permet de
+      // recharger la page ou de partager un lien (#org, #users, …).
+      try { if (location.hash !== '#' + b.dataset.view) history.replaceState(null, '', '#' + b.dataset.view); } catch (e) {}
+    });
+  });
+  window.addEventListener('hashchange', function () {
+    var v = String(location.hash || '').replace(/^#/, '');
+    if (VIEWS.indexOf(v) >= 0 && me) switchView(v);
   });
   function switchView(v) {
     VIEWS.forEach(function (x) { var n = $('view-' + x); if (n) n.hidden = x !== v; });
@@ -129,11 +154,19 @@
 
   // ----- Tableau de bord -----
   function renderDash() {
-    $('dash-chips').innerHTML =
+    // Sécurité : ce rendu est aussi appelé après le chargement des unités et des
+    // utilisateurs ; si le profil (/me) n'est pas encore arrivé, on affiche des
+    // valeurs neutres au lieu de provoquer une « erreur » à l'écran.
+    if (!me) me = { user: {}, permissions: [] };
+    var u0 = me.user || {};
+    var chips = $('dash-chips');
+    if (!chips) return;
+    chips.innerHTML =
       '<span class="chip">IMF <b>' + esc(me.imf_code || '—') + '</b></span>' +
       '<span class="chip ' + (me.trial_active ? 'chip--warn' : 'chip--ok') + '">' +
         (me.trial_active ? 'Essai gratuit — <b>' + esc(me.trial_days_left) + ' j restants</b>' : 'Accès actif') + '</span>' +
-      '<span class="chip">Rôle <b>' + esc(ROLE_LABEL[me.user.role] || me.user.role) + '</b></span>';
+      '<span class="chip">Rôle <b>' + esc(roleLabelForCode(u0.role)) + '</b></span>' +
+      (u0.position ? '<span class="chip">Poste <b>' + esc((posByCode[u0.position] && posByCode[u0.position].label) || roleLabelForCode(u0.position)) + '</b></span>' : '');
     var tiers = { direction: 0, department: 0, service: 0, agency: 0 };
     units.forEach(function (u) { tiers[u.kind] = (tiers[u.kind] || 0) + 1; });
     $('dash-kpis').innerHTML =
@@ -141,10 +174,25 @@
       kpi(units.filter(function (u) { return u.kind === 'agency'; }).length, 'Agences') +
       kpi(users.length, 'Utilisateurs') +
       kpi(users.filter(function (u) { return u.must_change_password; }).length, 'Mot de passe à créer');
+    // Alerte de synthèse : agents sans responsable hiérarchique.
+    var noSup = users.filter(function (x) { return !x.parent_id; });
+    var crit = noSup.filter(function (x) { var p = posOf(x) || {}; return Boolean(p.needsSupervisor || p.id === 'collectrice'); });
+    var alertBox = $('dash-alert');
+    if (alertBox) {
+      alertBox.innerHTML = noSup.length
+        ? '<div class="alert ' + (crit.length ? 'alert--err' : 'alert--warn') + '" style="margin-bottom:14px">' +
+            '<b>' + noSup.length + ' utilisateur' + (noSup.length > 1 ? 's' : '') + ' sans responsable hiérarchique' +
+            (crit.length ? ' (dont ' + crit.length + ' agent' + (crit.length > 1 ? 's' : '') + ' de collecte)' : '') +
+            '.</b> <a href="#users" data-goto-users style="font-weight:700">Ouvrir le personnel pour les rattacher →</a></div>'
+        : '';
+      var gl = alertBox.querySelector('[data-goto-users]');
+      if (gl) gl.addEventListener('click', function (ev) { ev.preventDefault(); switchView('users');
+        try { history.replaceState(null, '', '#users'); } catch (e) {} });
+    }
     var mini = units.slice().sort(function (a, b) { return KIND_ORDER[a.kind] - KIND_ORDER[b.kind]; }).slice(0, 6);
     $('dash-units-mini').innerHTML = mini.length
       ? '<table class="tbl"><tbody>' + mini.map(function (u) {
-          return '<tr><td><b>' + esc(u.name) + '</b><br><small style="color:var(--muted)">' + esc(KIND_META[u.kind].label) + '</small></td><td style="text-align:right"><code>' + esc(u.code_unit) + '</code></td></tr>';
+          return '<tr><td><b>' + esc(u.name) + '</b><br><small style="color:var(--muted)">' + esc((KIND_META[u.kind] || {}).label || u.kind) + '</small></td><td style="text-align:right"><code>' + esc(displayCode(u.code_unit)) + '</code></td></tr>';
         }).join('') + '</tbody></table>'
       : '<div class="empty">Aucune unité créée pour le moment. Rendez-vous dans « Organisation ».</div>';
   }
@@ -187,28 +235,119 @@
       loadUnits();
     });
   }
+  // Un code d'unité semé par la structure par défaut se présente sous la forme
+  // « OPS_CAISSE::<uuid-imf> » : la partie technique est masquée à l'écran.
+  function displayCode(c) {
+    var v = String(c == null ? '' : c);
+    return v.indexOf('::') >= 0 ? v.split('::')[0] : v;
+  }
+  // Libellé lisible d'une unité : jamais de code brut « OPS_CAISSE » à l'écran.
+  function unitLabel(u) {
+    var m = KIND_META[u.kind];
+    return (m ? m.label : String(u.kind || 'Unité')) + ' · ' + u.name;
+  }
+
+  var orgQuery = '';
+  var orgOpen = {};              // unités dont les sous-unités sont dépliées
+
   function renderTree() {
     var root = $('org-tree');
-    if (!units.length) { root.innerHTML = '<div class="empty">Aucune unité. Créez d’abord la direction, puis les départements, services et agences.</div>'; return; }
-    var byParent = {};
-    units.forEach(function (u) { var k = u.parent_id || 'root'; (byParent[k] = byParent[k] || []).push(u); });
-    function meta(u) { return KIND_META[u.kind] || { label: u.kind, short: String(u.kind || '?').slice(0, 3).toUpperCase() }; }
-    function branch(parentKey) {
-      var list = (byParent[parentKey] || []).sort(function (a, b) { return a.name.localeCompare(b.name); });
-      return list.map(function (u) {
-        var kids = branch(u.id);
-        var m = meta(u);
-        return '<div class="node"><div class="node__head">' +
-          '<div class="node__title"><span class="node__kind">' + m.short + '</span>' +
-          '<div><b>' + esc(u.name) + '</b><small>' + esc(m.label) + (u.city ? ' · ' + esc(u.city) : '') + ' · ' + esc(u.code_unit) + '</small></div></div>' +
-          '<div style="display:flex;gap:8px">' +
-            (u.kind !== 'agency' ? '<button class="btn btn--ghost btn--sm" data-add="' + u.id + '">+ Sous-unité</button>' : '') +
-            '<button class="btn btn--ghost btn--sm" data-edit="' + u.id + '">Modifier</button>' +
-            '<button class="btn btn--ghost btn--sm" data-del="' + u.id + '">Supprimer</button>' +
-          '</div></div>' + (kids.length ? '<div class="children">' + kids.join('') + '</div>' : '') + '</div>';
-      }).join('');
+    if (!root) return;
+    if (!units.length) {
+      root.classList.remove('tree--dense');
+      root.innerHTML = '<div class="empty">Aucune unité. Créez d’abord la direction, puis les départements, services et agences.</div>';
+      return;
     }
-    root.innerHTML = branch('root');
+    // Parcours robuste : une unité dont le parent est introuvable (parent
+    // supprimé, donnée importée) est TOUJOURS affichée à la racine — avant,
+    // elle disparaissait purement et simplement de l'écran.
+    var known = {};
+    units.forEach(function (u) { known[u.id] = true; });
+    var byParent = {};
+    units.forEach(function (u) {
+      var k = (u.parent_id && known[u.parent_id]) ? u.parent_id : 'root';
+      (byParent[k] = byParent[k] || []).push(u);
+    });
+    // Anti-cycle : on ne visite jamais deux fois la même unité.
+    var seen = {};
+    function kidsOf(id) {
+      return (byParent[id] || []).slice().sort(function (a, b) {
+        return (KIND_ORDER[a.kind] - KIND_ORDER[b.kind]) || a.name.localeCompare(b.name);
+      });
+    }
+    function matches(u) {
+      if (!orgQuery) return true;
+      var hay = (u.name + ' ' + (u.city || '') + ' ' + displayCode(u.code_unit)).toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return hay.indexOf(orgQuery) >= 0;
+    }
+    // Une unité est visible si elle correspond, ou si un de ses descendants correspond.
+    function subtreeMatches(u) {
+      if (matches(u)) return true;
+      return kidsOf(u.id).some(subtreeMatches);
+    }
+    function node(u, depth) {
+      if (seen[u.id]) return '';
+      seen[u.id] = true;
+      var kids = kidsOf(u.id);
+      var m = KIND_META[u.kind] || { label: u.kind || 'Unité', short: String(u.kind || '?').slice(0, 3).toUpperCase() };
+      var showKids = kids.length && (orgQuery ? true : (depth === 0 || orgOpen[u.id]));
+      var collapsed = kids.length && !showKids;
+      var canAdd = u.kind !== 'agency';
+      var sub = m.label + (u.city ? ' · ' + esc(u.city) : '') + ' · ' + esc(displayCode(u.code_unit));
+      return '<div class="node" data-unit="' + esc(u.id) + '">' +
+        '<div class="node__head">' +
+          '<div class="node__title">' +
+            '<span class="node__kind">' + esc(m.short) + '</span>' +
+            '<div><b>' + esc(u.name) + '</b><small>' + sub + '</small></div>' +
+          '</div>' +
+          '<div class="node__acts">' +
+            (kids.length ? '<button class="btn btn--ghost btn--sm" data-toggle="' + esc(u.id) + '" title="' +
+              (collapsed ? 'Déplier' : 'Replier') + '">' + (collapsed ? '▸ ' + kids.length : '▾ ' + kids.length) + '</button>' : '') +
+            (canAdd ? '<button class="btn btn--ghost btn--sm" data-add="' + esc(u.id) + '">+ Sous-unité</button>' : '') +
+            '<button class="btn btn--ghost btn--sm" data-edit="' + esc(u.id) + '">Modifier</button>' +
+            '<button class="btn btn--ghost btn--sm" data-del="' + esc(u.id) + '">Supprimer</button>' +
+          '</div>' +
+        '</div>' +
+        (showKids ? '<div class="children">' + kids.map(function (c) { return node(c, depth + 1); }).join('') + '</div>' : '') +
+      '</div>';
+    }
+    // En recherche, on n'affiche que les branches concernées.
+    var tops = kidsOf('root').filter(function (u) { return !orgQuery || subtreeMatches(u); });
+    var html = tops.map(function (u) { return node(u, 0); }).join('');
+    // Unités orphelines (parent introuvable) déjà remontées à la racine ci-dessus.
+    root.classList.toggle('tree--dense', units.length > 18);
+    root.innerHTML =
+      '<div class="org-bar">' +
+        '<span class="tag tag--muted">' + units.length + ' unité' + (units.length > 1 ? 's' : '') + '</span>' +
+        (orgQuery ? '<span class="tag">Filtre : ' + esc(orgQuery) + '</span>' : '') +
+        '<button class="btn btn--ghost btn--sm" id="org-expand">Tout déplier</button>' +
+        '<button class="btn btn--ghost btn--sm" id="org-collapse">Tout replier</button>' +
+        '<div class="org-search"><input id="org-filter" type="search" placeholder="Rechercher une unité, une ville…" value="' + esc(orgQuery) + '" autocomplete="off"></div>' +
+      '</div>' +
+      (html || '<div class="org-nomatch">Aucune unité ne correspond à « ' + esc(orgQuery) + ' ».</div>');
+
+    var f = $('org-filter');
+    if (f) f.addEventListener('input', function () {
+      orgQuery = this.value.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      // On restaure le focus et la position du curseur après re-rendu.
+      renderTree();
+      var nf = $('org-filter');
+      if (nf) { nf.focus(); try { nf.setSelectionRange(nf.value.length, nf.value.length); } catch (_) {} }
+    });
+    var ex = $('org-expand'); if (ex) ex.addEventListener('click', function () {
+      units.forEach(function (u) { orgOpen[u.id] = true; }); renderTree();
+    });
+    var co = $('org-collapse'); if (co) co.addEventListener('click', function () {
+      orgOpen = {}; renderTree();
+    });
+    root.querySelectorAll('[data-toggle]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var id = b.dataset.toggle;
+        orgOpen[id] = !orgOpen[id];
+        renderTree();
+      });
+    });
     root.querySelectorAll('[data-add]').forEach(function (b) {
       b.addEventListener('click', function () { unitModal(units.find(function (u) { return u.id === b.dataset.add; })); });
     });
@@ -219,6 +358,7 @@
       b.addEventListener('click', function () { var u = units.find(function (x) { return x.id === b.dataset.del; }); if (u) askDeleteUnit(u); });
     });
   }
+
   // Types d'unité autorisés sous un parent donné (ou à la racine => direction),
   // en respectant la cohérence hiérarchique kind = parent + 1.
   function childKinds(parent) {
@@ -338,21 +478,144 @@
     return api('/api/v1/users').then(function (d) { users = d.users || []; renderUsers(); renderDash(); })
       .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
   }
+  // Alerte visible : agents qui n'ont aucun responsable hiérarchique.
+  // Un agent de collecte SANS responsable est un cas bloquant (sa collecte ne
+  // remonte vers personne) : il est signalé en rouge. Les autres postes sont
+  // signalés en orange (rattachement hiérarchique incomplet).
+  function renderUsersAlert() {
+    var box = $('users-alert');
+    if (!box) return;
+    var missing = users.filter(function (u) { return !u.parent_id; });
+    window.__usersNoSup = missing.length;
+    if (!missing.length) {
+      box.innerHTML = '<div class="alert alert--ok" style="margin:0 0 14px"><b>Aucun agent isolé.</b> ' +
+        'Tous les utilisateurs ont un responsable hiérarchique défini.</div>';
+      return;
+    }
+    var critical = missing.filter(function (u) {
+      var p = posOf(u) || {};
+      return Boolean(p.needsSupervisor || p.id === 'collectrice');
+    });
+    var isCrit = critical.length > 0;
+    var list = missing.map(function (u) {
+      var p = posOf(u) || {};
+      var must = Boolean(p.needsSupervisor || p.id === 'collectrice');
+      return '<li style="margin:2px 0"><b>' + esc(u.full_name) + '</b> — ' + esc(posLabelOf(u)) +
+        (must ? ' <span class="tag tag--err">obligatoire</span>' : '') +
+        ' <button class="btn btn--ghost btn--sm" data-fixsup="' + u.id + '">Définir</button></li>';
+    }).join('');
+    box.innerHTML = '<div class="alert ' + (isCrit ? 'alert--err' : 'alert--warn') + '" style="margin:0 0 14px">' +
+      '<div style="display:flex;gap:10px;align-items:flex-start">' +
+        '<div style="font-size:20px;line-height:1">' + (isCrit ? '⛔' : '⚠️') + '</div>' +
+        '<div style="flex:1">' +
+          '<b>' + missing.length + ' utilisateur' + (missing.length > 1 ? 's' : '') +
+          ' sans responsable hiérarchique.</b>' +
+          (isCrit ? ' Dont ' + critical.length + ' agent' + (critical.length > 1 ? 's' : '') +
+            ' de collecte (cas bloquant : la collecte ne peut pas être validée).' : '') +
+          ' Ouvrez « Responsable » pour les rattacher.' +
+          '<ul style="margin:8px 0 0 16px;padding:0">' + list + '</ul>' +
+        '</div></div></div>';
+    box.querySelectorAll('button[data-fixsup]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var u = users.find(function (x) { return x.id === b.dataset.fixsup; });
+        if (u) supervisorModal(u);
+      });
+    });
+  }
+
   function renderUsers() {
     var box = $('users-table');
+    renderUsersAlert();
     if (!users.length) { box.innerHTML = '<div class="empty">Aucun utilisateur. Créez le premier accès.</div>'; return; }
-    box.innerHTML = '<table class="tbl"><thead><tr><th>Nom</th><th>Code d’accès</th><th>Rôle</th><th>Unité</th><th>Contact</th><th>Mot de passe</th><th>Actions</th></tr></thead><tbody>' +
+    // Colonne « Responsable » ajoutée : elle rend lisible le rattachement
+    // hiérarchique et permet de le corriger sans supprimer le compte.
+    var byId = {};
+    users.forEach(function (u) { byId[u.id] = u; });
+    box.innerHTML = '<table class="tbl"><thead><tr><th>Nom</th><th>Code d’accès</th><th>Rôle</th><th>Unité</th>' +
+      '<th>Responsable</th><th>Contact</th><th>Mot de passe</th><th>Actions</th></tr></thead><tbody>' +
       users.map(function (u) {
-        return '<tr><td><b>' + esc(u.full_name) + '</b>' + (u.position ? '<br><small style="color:var(--muted)">' + esc(u.position) + '</small>' : '') + '</td>' +
-          '<td><code>' + esc(u.code_user) + '</code></td><td>' + esc(ROLE_LABEL[u.role] || u.role) + '</td>' +
-          '<td>' + esc(u.unit_name || '—') + '</td><td>' + esc(u.email) + (u.phone ? '<br><small style="color:var(--muted)">' + esc(u.phone) + '</small>' : '') + '</td>' +
+        var pl = posLabelOf(u);
+        var sup = u.parent_id ? byId[u.parent_id] : null;
+        var supCell;
+        if (u.parent_id && !sup) supCell = '<span class="tag tag--warn">Introuvable</span>';
+        else if (!sup) supCell = '<button class="tag tag--warn" data-sup="' + u.id + '" title="Définir le responsable">⚠ Non défini</button>';
+        else supCell = esc(sup.full_name) + '<br><small style="color:var(--muted)">' + esc(posLabelOf(sup)) + '</small>';
+        return '<tr><td><b>' + esc(u.full_name) + '</b>' +
+            (pl ? '<br><small style="color:var(--muted)">' + esc(pl) + '</small>' : '') + '</td>' +
+          '<td><code>' + esc(u.code_user) + '</code></td><td>' + esc(roleLabelForCode(u.role)) + '</td>' +
+          '<td>' + (u.unit_name ? esc(u.unit_name) : '<span class="tag tag--warn">Non affecté</span>') + '</td>' +
+          '<td>' + supCell + '</td>' +
+          '<td>' + esc(u.email) + (u.phone ? '<br><small style="color:var(--muted)">' + esc(u.phone) + '</small>' : '') + '</td>' +
           '<td>' + (u.must_change_password ? '<span class="tag tag--warn">À créer</span>' : '<span class="tag tag--ok">Actif</span>') + '</td>' +
-          '<td><button class="btn btn--ghost btn--sm" data-resend="' + u.id + '">Renvoyer le code</button></td></tr>';
+          '<td style="white-space:nowrap"><button class="btn btn--ghost btn--sm" data-sup="' + u.id + '">Responsable</button> ' +
+            '<button class="btn btn--ghost btn--sm" data-resend="' + u.id + '">Renvoyer le code</button></td></tr>';
       }).join('') + '</tbody></table>';
     box.querySelectorAll('button[data-resend]').forEach(function (b) {
       b.addEventListener('click', function () { var u = users.find(function (x) { return x.id === b.dataset.resend; }); if (u) resendCode(u); });
     });
+    box.querySelectorAll('button[data-sup]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var u = users.find(function (x) { return x.id === b.dataset.sup; });
+        if (u) supervisorModal(u);
+      });
+    });
   }
+
+  // Changement du responsable hiérarchique d'un agent existant.
+  // Règles appliquées :
+  //  - l'agent ne peut pas être son propre responsable (auto-assignation bloquée) ;
+  //  - le responsable doit appartenir à la même institution ;
+  //  - un agent de collecte n'accepte qu'un Chef d'agence ou un Agent de crédit ;
+  //  - la modification est refusée si elle crée une boucle hiérarchique.
+  function supervisorModal(u) {
+    loadPositions().then(function () {
+      var p = posOf(u) || {};
+      p.selfId = u.id;
+      var cands = supervisorCandidates(p);
+      var opts = cands.map(function (c) {
+        return '<option value="' + esc(c.id) + '"' + (u.parent_id === c.id ? ' selected' : '') + '>' +
+          esc(c.full_name + ' — ' + posLabelOf(c)) + '</option>';
+      }).join('');
+      openModal(
+        '<h3>Responsable hiérarchique</h3><p class="sub">' + esc(u.full_name) + ' · ' + esc(posLabelOf(u)) + '</p>' +
+        '<div class="fld"><label for="sh-sup">Superviseur / Responsable hiérarchique</label>' +
+          '<select id="sh-sup"><option value="">— Aucun (pas de responsable) —</option>' + opts + '</select>' +
+          '<small style="color:var(--muted)">' + (p.needsSupervisor
+            ? 'Obligatoire pour un agent de collecte : Chef d’agence ou Agent de crédit.'
+            : 'Facultatif. Un agent ne peut jamais être son propre responsable.') + '</small></div>' +
+        '<div class="modal__nav"><button class="btn btn--ghost" id="sh-cancel">Annuler</button>' +
+          '<button class="btn btn--primary" id="sh-ok">Enregistrer</button></div>'
+      );
+      var sel = $('sh-sup');
+      if (u.parent_id) sel.value = u.parent_id;
+      $('sh-cancel').addEventListener('click', closeModal);
+      $('sh-ok').addEventListener('click', function () {
+        var val = sel.value || null;
+        // BLOCAGE 1 : auto-assignation (l'agent ne se choisit pas lui-même).
+        if (val && String(val) === String(u.id)) { notify('Un agent ne peut pas être son propre responsable hiérarchique.', 'err'); return; }
+        // BLOCAGE 2 : le responsable choisi ne doit pas être un subordonné de l'agent.
+        var cur = users.find(function (x) { return x.id === val; });
+        var chain = [], guardN = 0;
+        while (cur && guardN < 60) {
+          chain.push(cur.id);
+          cur = users.find(function (x) { return x.id === cur.parent_id; });
+          guardN += 1;
+        }
+        if (val && chain.indexOf(u.id) >= 0) { notify('Rattachement impossible : cela créerait une boucle hiérarchique.', 'err'); return; }
+        // BLOCAGE 3 : agent de collecte = responsable obligatoire et habilité.
+        if (p.needsSupervisor) {
+          if (!val) { notify('Un agent de collecte doit être rattaché à un superviseur.', 'err'); return; }
+          var sup = users.find(function (x) { return x.id === val; });
+          if (!sup || !posSupervisesCollectors(posOf(sup))) { notify('Le responsable d’un agent de collecte doit être un Chef d’agence ou un Agent de crédit.', 'err'); return; }
+        }
+        var self = this; self.disabled = true;
+        api('/api/v1/users/' + u.id, 'PATCH', { parent_id: val }).then(function () {
+          closeModal(); notify('Responsable hiérarchique mis à jour.', 'ok'); return loadUsers();
+        }).catch(function (e) { self.disabled = false; if (!guard(e)) notify(srv(e), 'err'); });
+      });
+    }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+  }
+
   function loadPositions() {
     if (positions.length) return Promise.resolve();
     return api('/api/v1/positions').then(function (d) {
@@ -377,11 +640,51 @@
       return '<optgroup label="' + esc(dp.label) + '">' + inner + '</optgroup>';
     }).join('');
   }
-  // Superviseurs éligibles pour un agent de collecte : Chef d'agence OU Agent de crédit.
-  function eligibleSupervisors() {
+  // ------------------------------------------------------------------
+  // Responsable hiérarchique : qui peut être proposé comme supérieur ?
+  //
+  // Cause des listes réduites à « — Aucun — » + l'administrateur : les postes
+  // proviennent de DEUX sources et n'utilisent pas les mêmes clés
+  // (supervisesCollectors pour les postes standards, can_supervise_collectors
+  // pour les postes personnalisés). On normalise donc chaque poste avant de
+  // décider s'il encadre.
+  // ------------------------------------------------------------------
+  function boolish(v) { return v === true || v === 1 || v === '1' || v === 'true'; }
+  function posOf(u) {
+    if (!u) return null;
+    return posByCode[u.position_code] || posByCode[u.position] || null;
+  }
+  function posManager(p) { return !!(p && (p.manager === true || boolish(p.manager))); }
+  function posLevel(p) { return p ? Number(p.level || 0) : 0; }
+  function posSupervisesCollectors(p) {
+    return !!(p && (p.supervisesCollectors || p.can_supervise_collectors || p.canSuperviseCollectors));
+  }
+  // Libellé du poste d'un agent (toujours lisible, jamais un code brut).
+  function posLabelOf(u) {
+    var p = posOf(u);
+    if (p && p.label) return p.label;
+    return u.position || roleLabelForCode(u.role);
+  }
+  // Rôles « encadrants » du socle : utilisés quand l'agent n'a pas de poste
+  // enregistré (cas fréquent des comptes créés avant la gestion des postes).
+  var MANAGER_ROLES = ['admin_imf', 'direction', 'department', 'service', 'agency',
+    'credit_director', 'operations_director', 'cfo', 'auditor', 'hr_logistics_manager',
+    'compliance_officer', 'it_admin', 'security_engineer', 'superadmin'];
+  // Un agent « encadre » s'il a un poste de manager, ou à défaut un rôle encadrant.
+  function canManage(u) {
+    var p = posOf(u);
+    if (p) return posManager(p) || posSupervisesCollectors(p);
+    return MANAGER_ROLES.indexOf(u.role) >= 0;
+  }
+  // Exclusion : le compte en cours de création et le compte connecté ne peuvent
+  // jamais être leur propre responsable (règle anti auto-assignation).
+  function currentUserId() { return (me && me.user && me.user.id) ? me.user.id : null; }
+  function eligibleSupervisors(p) {
     return users.filter(function (u) {
-      var p = posByCode[u.position_code];
-      return p && p.supervisesCollectors;
+      if (u.is_active === false) return false;
+      if (currentUserId() && u.id === currentUserId()) return false;
+      if (p && p.needsSupervisor) return posSupervisesCollectors(posOf(u));
+      return true;
     });
   }
   // Clé de rattachement d'une unité : préfixe du code d'unité posé par le
@@ -391,9 +694,6 @@
     return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9]+/g, ' ').trim();
   }
-  // Unité de rattachement déduite du poste : on relie le SERVICE du poste (puis,
-  // à défaut, son DÉPARTEMENT) à l'unité org correspondante. Repli par libellé
-  // pour les structures renommées ou les unités créées manuellement.
   function autoUnitForPosition(p) {
     if (!p) return '';
     var byKey = function (kind, key) {
@@ -408,48 +708,50 @@
     var m = units.find(function (x) { return targets.indexOf(normLabel(x.name)) >= 0; });
     return m ? m.id : '';
   }
-  // Responsable hiérarchique déduit du poste : pour un agent de collecte, un
-  // superviseur habilité (Chef d'agence / Agent de crédit) ; pour les autres
-  // postes, le manager du même service, à défaut du même département, de niveau
-  // hiérarchique supérieur. Trié : même service d'abord, puis niveau le plus
-  // proche au-dessus.
+  // Candidats, du plus pertinent au moins pertinent :
+  //   1. manager du même service       4. tout encadrant de l'IMF
+  //   2. manager du même département   5. tout autre agent (dernier recours)
+  //   3. manager d'un autre département (ex. Direction Générale)
+  // Le tout trié du niveau le plus proche au-dessus du poste choisi.
   function supervisorCandidates(p) {
-    if (!p) return [];
-    if (p.needsSupervisor) return eligibleSupervisors();
-    // 1) Priorité : un manager du MÊME département, de niveau supérieur (même
-    //    service d'abord, puis niveau le plus proche au-dessus).
-    var sameDept = users.filter(function (u) {
-      var up = posByCode[u.position_code];
-      return up && up.manager && up.dept === p.dept && (up.level || 0) > (p.level || 0);
-    }).sort(function (a, b) {
-      var pa = posByCode[a.position_code], pb = posByCode[b.position_code];
-      var sa = (pa.service === p.service) ? 0 : 1, sb = (pb.service === p.service) ? 0 : 1;
-      if (sa !== sb) return sa - sb;
-      return (pa.level || 0) - (pb.level || 0);
+    p = p || {};
+    var base = eligibleSupervisors(p);
+    // Un agent ne peut jamais être son propre responsable : le compte en cours
+    // de modification est écarté AVANT le classement.
+    if (p.selfId) base = base.filter(function (u) { return String(u.id) !== String(p.selfId); });
+    var rank = {};
+    base.forEach(function (u) {
+      var up = posOf(u);
+      var r = 5;
+      if (canManage(u)) {
+        r = 4;
+        if (posManager(up)) {
+          if (up.service && p.service && up.service === p.service) r = 1;
+          else if (up.dept && p.dept && up.dept === p.dept) r = 2;
+          else r = 3;
+        }
+      }
+      // Un supérieur doit être d'un niveau au moins égal ; sinon il descend.
+      if (posLevel(up) < posLevel(p)) r += 10;
+      if (up && up.dept === p.dept) r -= 0.5;   // même département = avantage
+      rank[u.id] = r;
     });
-    if (sameDept.length) return sameDept;
-    // 2) Repli : à défaut de manager dans le département, tout manager de niveau
-    //    supérieur dans l'IMF (ex. la Direction Générale) pour que le champ se
-    //    pré-remplisse par défaut comme l'unité de rattachement. Le plus proche
-    //    niveau au-dessus est proposé en premier.
-    var higher = users.filter(function (u) {
-      var up = posByCode[u.position_code];
-      return up && up.manager && (up.level || 0) > (p.level || 0);
-    }).sort(function (a, b) {
-      return ((posByCode[a.position_code] || {}).level || 0) - ((posByCode[b.position_code] || {}).level || 0);
-    });
-    if (higher.length) return higher;
-    // 3) Ultime repli : TOUT autre utilisateur déjà créé, du niveau le plus élevé
-    //    au plus bas. Le responsable hiérarchique n'est ainsi jamais figé/vide
-    //    dès lors qu'au moins un utilisateur existe : l'admin peut toujours en
-    //    choisir un (et le modifier), même avec un référentiel de postes partiel.
-    return users.slice().sort(function (a, b) {
-      return ((posByCode[b.position_code] || {}).level || 0) - ((posByCode[a.position_code] || {}).level || 0);
+    return base.slice().sort(function (a, b) {
+      if (rank[a.id] !== rank[b.id]) return rank[a.id] - rank[b.id];
+      var la = posLevel(posOf(a)), lb = posLevel(posOf(b));
+      if (la !== lb) return la - lb;              // niveau le plus proche d'abord
+      return String(a.full_name || '').localeCompare(String(b.full_name || ''));
     });
   }
   function supOption(u) {
-    var pp = posByCode[u.position_code];
-    return '<option value="' + u.id + '">' + esc(u.full_name + ' — ' + (pp ? pp.label : (ROLE_LABEL[u.role] || u.role))) + '</option>';
+    var p = posOf(u);
+    var lvl = p && p.level ? ' · niv. ' + p.level : '';
+    return '<option value="' + esc(u.id) + '">' + esc(u.full_name + ' — ' + posLabelOf(u) + lvl) + '</option>';
+  }
+  // Blocage anti auto-assignation : appliqué côté interface ET côté serveur.
+  function isSelfSupervisor(supId) {
+    var cid = currentUserId();
+    return !!(supId && cid && String(supId) === String(cid));
   }
   function userModal() {
     loadPositions().then(function () {
@@ -461,7 +763,7 @@
         '<small id="u-pos-hint" style="color:var(--muted)">Le poste détermine automatiquement le rôle et les permissions.</small></div>' +
       '<div class="fld" id="u-sup-wrap" hidden><label for="u-sup">Superviseur / Responsable hiérarchique</label>' +
         '<select id="u-sup"></select>' +
-        '<small style="color:var(--muted)">Pré-rempli d’après le poste ; vous pouvez le modifier.</small></div>' +
+        '<small id="u-sup-hint" style="color:var(--muted)">Pré-rempli d’après le poste ; vous pouvez le modifier.</small></div>' +
       '<div class="fld"><label for="u-unit">Unité de rattachement</label><select id="u-unit"><option value="">— Aucune —</option>' +
         units.map(function (u) { return '<option value="' + u.id + '">' + esc(KIND_META[u.kind].label + ' · ' + u.name) + '</option>'; }).join('') + '</select></div>' +
       '<div class="form-grid"><div class="fld"><label for="u-email">E-mail</label><input id="u-email" type="email"></div>' +
@@ -475,18 +777,29 @@
         var wrap = $('u-sup-wrap'), sel = $('u-sup'), unitSel = $('u-unit');
         if (!p) { wrap.hidden = true; sel.innerHTML = ''; return; }
         var cands = supervisorCandidates(p);
-        if (p.needsSupervisor) {
-          // Agent de collecte : superviseur OBLIGATOIRE, uniquement les éligibles.
-          sel.innerHTML = cands.length
-            ? cands.map(supOption).join('')
-            : '<option value="">Aucun superviseur disponible — créez d’abord un Chef d’agence ou un Agent de crédit</option>';
-          sel.value = cands.length ? cands[0].id : '';
-        } else {
-          // Autres postes : responsable facultatif, pré-rempli par défaut sur le
-          // meilleur candidat, et toujours modifiable (« — Aucun — » inclus).
-          sel.innerHTML = '<option value="">— Aucun —</option>' + cands.map(supOption).join('');
-          sel.value = cands.length ? cands[0].id : '';
+        // Aucun candidat exploitable : on l'explique au lieu de laisser une liste
+        // avec pour seul choix l'administrateur connecté (perçu comme « figé »).
+        if (!cands.length) {
+          sel.innerHTML = p.needsSupervisor
+            ? '<option value="">Aucun responsable disponible — créez d’abord un Chef d’agence ou un Agent de crédit</option>'
+            : '<option value="">— Aucun collaborateur encadrant disponible —</option>';
+          sel.value = '';
+          wrap.hidden = false;
+          var uid0 = autoUnitForPosition(p);
+          if (uid0) unitSel.value = uid0;
+          return;
         }
+        var opts = cands.map(supOption).join('');
+        // Dans les deux cas la liste commence par « — Aucun — » : le champ est
+        // donc TOUJOURS modifiable, y compris quand un seul candidat reste.
+        sel.innerHTML = '<option value="">— Aucun (pas de responsable) —</option>' + opts;
+        // Présélection sur le candidat le plus proche (obligatoire pour un agent
+        // de collecte, facultatif pour les autres postes).
+        sel.value = cands[0].id;
+        var hint = $('u-sup-hint');
+        if (hint) hint.textContent = p.needsSupervisor
+          ? 'Obligatoire pour ce poste. Choix limité aux Chefs d’agence et Agents de crédit — vous pouvez en changer.'
+          : 'Pré-rempli d’après le poste ; vous pouvez choisir un autre agent ou « — Aucun — ».';
         // Le champ reste TOUJOURS visible et modifiable une fois un poste choisi :
         // plus de champ figé/vide sans possibilité de sélection.
         wrap.hidden = false;
@@ -494,14 +807,26 @@
         if (uid) unitSel.value = uid;
       }
       $('u-pos').addEventListener('change', syncFromPosition);
+      // Garde-fou : si la liste ne contient qu'un seul choix, il reste
+      // modifiable (« — Aucun — ») — rien n'est jamais verrouillé.
+      $('u-sup').addEventListener('change', function () {
+        if (isSelfSupervisor($('u-sup').value)) {
+          $('u-sup').value = '';
+          notify('Vous ne pouvez pas vous désigner vous-même comme responsable hiérarchique.', 'err');
+        }
+      });
       $('u-cancel').addEventListener('click', closeModal);
       $('u-ok').addEventListener('click', function () {
         var pos = posByCode[$('u-pos').value];
         var body = { full_name: $('u-name').value.trim(), position_code: $('u-pos').value || null,
           org_unit_id: $('u-unit').value || null, email: $('u-email').value.trim(), phone: $('u-phone').value.trim() };
         var supId = (!$('u-sup-wrap').hidden && $('u-sup').value) ? $('u-sup').value : null;
+        // BLOCAGE anti auto-assignation : le nouveau compte est un nouveau
+        // collaborateur, il ne peut donc jamais être son propre responsable.
+        // On refuse aussi d'enregistrer le compte connecté comme responsable.
         if (supId) body.supervisor_id = supId;
         if (!body.full_name || !body.email || !body.position_code) { notify('Nom, e-mail et poste sont requis.', 'err'); return; }
+        if (isSelfSupervisor(supId)) { notify('Vous ne pouvez pas être votre propre responsable hiérarchique.', 'err'); return; }
         if (pos && pos.needsSupervisor && !supId) { notify('Un agent de collecte doit être rattaché à un superviseur (Chef d’agence ou Agent de crédit).', 'err'); return; }
         var self = this; self.disabled = true;
         api('/api/v1/users', 'POST', body).then(function (d) { closeModal(); return loadUsers().then(function () { notify('Utilisateur créé — code ' + d.code_user + '.', 'ok'); showSendCodeModal(d, body.full_name); }); })
@@ -752,6 +1077,27 @@
   }
 
   // Affiche le code d'accès créé + les liens d'envoi « prêts à cliquer ».
+  // Message d'état d'un canal d'envoi, en langage clair.
+  function sendStatusHtml(s) {
+    function one(mode, canal, reason) {
+      if (mode === 'sent') return '<span class="tag tag--ok">✓ ' + canal + ' : envoyé automatiquement à ' +
+        esc(canal === 'E-mail' ? (s.to_email || '') : (s.to_phone || '')) + '</span>';
+      if (mode === 'sent_simulated') return '<span class="tag tag--warn">' + canal + ' : simulé (mode démonstration) — vérifiez la réception, sinon utilisez le secours ci-dessous</span>';
+      if (mode === 'not_configured') return '<span class="tag tag--err">✗ ' + canal +
+        ' : envoi automatique indisponible — la passerelle d’envoi n’est pas configurée sur le serveur.</span>';
+      if (mode === 'failed') return '<span class="tag tag--err">✗ ' + canal + ' : échec de l’envoi — ' + esc(reason || 'adresse ou passerelle à vérifier') + '</span>';
+      if (mode === 'invalid_recipient') return '<span class="tag tag--err">✗ ' + canal + ' : ' + esc(reason || 'adresse manquante') + '</span>';
+      if (mode === 'skipped') return '<span class="tag tag--muted">' + canal + ' : non tenté — ' + esc(reason || 'contact manquant') + '</span>';
+      return '';
+    }
+    var st = [];
+    if (s.email_status) st.push('<span class="tag ' + (s.email_status.ok ? 'tag--ok' : 'tag--warn') + '">' +
+      esc(s.email_status.text || '') + '</span>');
+    if (s.email_mode) st.push(one(s.email_mode, 'E-mail', s.email_reason));
+    if (s.whatsapp_mode) st.push(one(s.whatsapp_mode, 'WhatsApp', s.whatsapp_reason));
+    return st.filter(Boolean).join(' ');
+  }
+
   function showSendCodeModal(d, name) {
     var s = d.send || {};
     var who = name ? esc(name) : 'l’utilisateur';
@@ -769,36 +1115,34 @@
       var m = String(mail || '').trim();
       return m ? 'mailto:' + encodeURIComponent(m) + '?subject=' + encodeURIComponent(subj) + '&body=' + encodeURIComponent(msg) : '';
     }
-    function statut(mode, canal) {
-      if (mode === 'sent') return '<span class="tag tag--ok">✓ ' + canal + ' : envoyé automatiquement</span>';
-      if (mode === 'failed') return '<span class="tag tag--warn">' + canal + ' : échec de l’envoi automatique — utilisez l’envoi manuel ci-dessous</span>';
-      if (mode === 'dev') return '<span class="tag tag--warn">' + canal + ' : passerelle non configurée — envoi manuel ci-dessous</span>';
-      return '';
-    }
 
-    var channels = [];
-    if (s.sender_whatsapp) channels.push('WhatsApp : ' + esc(s.sender_whatsapp));
-    if (s.sender_email) channels.push('e-mail : ' + esc(s.sender_email));
-    var statutHtml = '';
-    var st = [statut(s.whatsapp_mode, 'WhatsApp'), statut(s.email_mode, 'E-mail')].filter(function (x) { return x; });
-    if (st.length) statutHtml = '<p class="hint" style="display:flex;flex-wrap:wrap;gap:8px">' + st.join(' ') + '</p>';
+    var senderLine = [];
+    if (s.sender_email) senderLine.push('e-mail : <b>' + esc(s.sender_email) + '</b>');
+    if (s.sender_whatsapp) senderLine.push('WhatsApp : <b>' + esc(s.sender_whatsapp) + '</b>');
+    var senderHtml = senderLine.length
+      ? '<p class="hint">Expéditeur (défini dans Paramètres IMF) — ' + senderLine.join(' · ') + '</p>'
+      : '<p class="hint" style="color:var(--danger)">Aucun expéditeur n’est défini. Renseignez « E-mail expéditeur » dans Paramètres IMF : c’est cette adresse qui apparaîtra chez le destinataire.</p>';
 
     openModal(
       '<h3>Code d’accès prêt à envoyer</h3>' +
       '<p class="sub">Transmettez ce code à ' + who + '. Il devra créer son mot de passe à la première connexion.</p>' +
       '<div class="fld" style="text-align:center"><label>Code d’accès</label>' +
         '<div style="font-size:26px;font-weight:800;letter-spacing:3px"><code>' + esc(d.code_user || '') + '</code></div></div>' +
-      statutHtml +
-      (channels.length ? '<p class="hint">Expéditeur : ' + channels.join(' · ') + '.</p>' : '') +
-      '<div class="fld"><label for="sc-phone">Numéro WhatsApp du destinataire</label>' +
-        '<input id="sc-phone" type="tel" value="' + esc(origPhone) + '" placeholder="+226 70 00 00 00" autocomplete="off"></div>' +
+      '<div id="sc-status" class="hint" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px">' + sendStatusHtml(s) + '</div>' +
+      senderHtml +
       '<div class="fld"><label for="sc-email">E-mail du destinataire</label>' +
         '<input id="sc-email" type="email" value="' + esc(origEmail) + '" placeholder="prenom.nom@exemple.com" autocomplete="off"></div>' +
-      '<p class="hint">Renseignez / corrigez le contact puis cliquez sur un bouton : le message pré-rempli s’ouvre (WhatsApp ou votre messagerie), vous n’avez plus qu’à l’envoyer. Le contact saisi est enregistré pour les prochains envois.</p>' +
+      '<div class="fld"><label for="sc-phone">Numéro WhatsApp du destinataire</label>' +
+        '<input id="sc-phone" type="tel" value="' + esc(origPhone) + '" placeholder="+226 70 00 00 00" autocomplete="off"></div>' +
       '<div class="modal__nav" style="flex-wrap:wrap;gap:10px">' +
-        '<a class="btn btn--primary" id="sc-wa" target="_blank" rel="noopener">Envoyer par WhatsApp</a>' +
-        '<a class="btn btn--dark" id="sc-mail">Envoyer par e-mail</a>' +
-        '<button class="btn btn--ghost" id="sc-close">Fermer</button></div>'
+        '<button class="btn btn--primary" id="sc-send-mail">Envoyer par e-mail maintenant</button>' +
+        '<button class="btn btn--dark" id="sc-send-all">Envoyer par e-mail + WhatsApp</button>' +
+      '</div>' +
+      '<div class="modal__nav" style="flex-wrap:wrap;gap:10px;margin-top:10px">' +
+        '<a class="btn btn--ghost" id="sc-mail">Ouvrir ma messagerie</a>' +
+        '<a class="btn btn--ghost" id="sc-wa" target="_blank" rel="noopener">Ouvrir WhatsApp</a>' +
+        '<button class="btn btn--ghost" id="sc-close">Fermer</button></div>' +
+      '<p class="hint">« Envoyer par e-mail maintenant » fait partir le message depuis le serveur, avec l’adresse expéditrice de votre IMF : c’est l’utilisateur qui le reçoit, dans sa propre boîte. Les deux boutons du bas ouvrent simplement votre messagerie / WhatsApp avec le message déjà rédigé (secours si l’envoi automatique est indisponible).</p>'
     );
 
     function toggle(el, href) {
@@ -814,6 +1158,37 @@
     var ph = $('sc-phone'), em = $('sc-email');
     if (ph) ph.addEventListener('input', refresh);
     if (em) em.addEventListener('input', refresh);
+
+    // Envoi réel depuis le serveur (le contact saisi est enregistré).
+    function sendNow(channel, btn) {
+      if (!uid) { notify('Créez d’abord l’utilisateur.', 'err'); return; }
+      var email = em ? em.value.trim() : '';
+      if ((channel === 'email' || channel === 'both') && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        notify('Saisissez une adresse e-mail valide pour le destinataire.', 'err'); return;
+      }
+      var label = btn.textContent; btn.disabled = true; btn.textContent = 'Envoi en cours…';
+      api('/api/v1/users/' + uid + '/resend-code', 'POST', {
+        channel: channel, email: email, phone: ph ? ph.value.trim() : ''
+      }).then(function (r) {
+        var ns = (r && r.send) || {};
+        var stEl = $('sc-status');
+        if (stEl) stEl.innerHTML = sendStatusHtml(ns);
+        btn.disabled = false; btn.textContent = label;
+        var okMail = ns.email_mode === 'sent' || ns.email_mode === 'sent_simulated';
+        var okWa = ns.whatsapp_mode === 'sent';
+        if ((channel === 'email' && okMail) || (channel === 'both' && (okMail || okWa)) || (channel === 'whatsapp' && okWa)) {
+          notify('Message envoyé à ' + (ns.to_email || ns.to_phone || '') + '.', 'ok');
+        } else {
+          notify('Envoi automatique impossible — utilisez les boutons « Ouvrir ma messagerie » / « Ouvrir WhatsApp ».', 'err');
+        }
+        loadUsers();
+      }).catch(function (e) {
+        btn.disabled = false; btn.textContent = label;
+        if (!guard(e)) notify(fr(e), 'err');
+      });
+    }
+    var bm = $('sc-send-mail'); if (bm) bm.addEventListener('click', function () { sendNow('email', bm); });
+    var ba = $('sc-send-all'); if (ba) ba.addEventListener('click', function () { sendNow('both', ba); });
 
     // Enregistrement best-effort du contact corrigé pour les prochains envois.
     function persist() {
@@ -857,6 +1232,7 @@
     $('btn-logo-remove').addEventListener('click', removeLogo);
     $('btn-settings-save').addEventListener('click', saveSettings);
     var bn = $('btn-notify-save'); if (bn) bn.addEventListener('click', saveNotify);
+    var bt = $('btn-notify-test'); if (bt) bt.addEventListener('click', testNotify);
     var ln = $('s-legal_name'); if (ln) ln.addEventListener('input', function () { if (!logoDraft) renderLogo(null); });
     // Prévisualisation : boutons pilotés par addEventListener (aucun on* inline).
     var ref = $('btn-preview-refresh'); if (ref) ref.addEventListener('click', function () { loadInvoicePreview(true); });
@@ -884,7 +1260,9 @@
   // ----- Suivi des envois de codes -----
   function modeBadge(m) {
     var map = { sent: ['Envoyé', 'tag--ok'], manual: ['Lien manuel', 'tag--warn'],
-      failed: ['Échec', 'tag--err'], skipped: ['Non tenté', 'tag--muted'] };
+      failed: ['Échec', 'tag--err'], skipped: ['Non tenté', 'tag--muted'],
+      not_configured: ['Passerelle absente', 'tag--err'], invalid_recipient: ['Adresse invalide', 'tag--err'],
+      dev: ['Lien manuel', 'tag--warn'], manual: ['Lien manuel', 'tag--warn'] };
     var v = map[m] || [m || '—', 'tag--muted'];
     return '<span class="tag ' + v[1] + '">' + esc(v[0]) + '</span>';
   }
@@ -1168,7 +1546,11 @@
       notify('Activation de la double authentification requise pour continuer.', 'info');
       return;
     }
-    switchView('dash');
+    // Lien direct (ex. « /app#org » depuis une autre page) : on ouvre
+    // l'onglet demandé au lieu de retomber systématiquement sur le tableau de bord.
+    var wanted = '';
+    try { wanted = String(location.hash || '').replace(/^#/, ''); } catch (e) {}
+    switchView(VIEWS.indexOf(wanted) >= 0 ? wanted : 'dash');
   })
     .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
 
