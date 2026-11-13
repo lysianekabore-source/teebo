@@ -1,0 +1,125 @@
+=====================================================================
+ teebo — CORRECTIF DU 13/11/2026 (version E bis)
+ Erreur corrigée : « sh: 0: cannot open ./start.sh: No such file »
+=====================================================================
+
+1) CE QUE DIT VOTRE JOURNAL RENDER
+---------------------------------------------------------------------
+   #14 [stage-0 8/8] COPY db ./db            DONE   (construction OK)
+   #15 exporting to image                    DONE
+   ==> Running command 'sh ./start.sh'
+   sh: 0: cannot open ./start.sh: No such file
+   Exited with status 2
+
+   À noter : la CONSTRUCTION a réussi. C'est seulement le DÉMARRAGE
+   qui échoue. La base, les scripts SQL et le code ne sont pas en cause.
+
+
+2) LA CAUSE RACINE (une seule, précise)
+---------------------------------------------------------------------
+   Le Dockerfile copiait dans l'image :
+        backend/package.json, package-lock.json, backend/src, db
+   Il ne copiait PAS backend/start.sh.
+
+   Or la commande de démarrage était : CMD ["sh", "./start.sh"]
+   exécutée depuis /app/backend.
+
+   Le fichier existait bien dans votre dépôt, mais il n'arrivait jamais
+   dans l'image : le conteneur le cherchait dans un dossier où il n'était
+   pas. D'où « No such file » à chaque déploiement, quelle que soit la
+   variable d'environnement ou le réglage Render.
+
+   Pourquoi mes correctifs précédents n'ont pas suffi : ils portaient sur
+   l'ordre de démarrage, la migration et la gestion d'erreurs — tous des
+   problèmes réels, mais situés APRÈS cette ligne. Le conteneur n'atteignait
+   jamais le code : il s'arrêtait deux lignes plus haut.
+
+
+3) LES DEUX CHANGEMENTS (Dockerfile)
+---------------------------------------------------------------------
+   a) Le fichier est enfin copié :
+        COPY backend/start.sh ./backend/start.sh
+        RUN chmod +x ./backend/start.sh
+
+   b) Le démarrage ne dépend plus d'un fichier shell :
+        CMD ["node", "src/server.js"]
+      -> même si un jour start.sh manquait, l'API démarrerait quand même.
+      -> start.sh reste fourni et fonctionnel (il lance la même chose),
+         pour vos essais en local.
+
+   Rien d'autre n'a été touché : ni le code, ni la base, ni les 29 scripts
+   SQL, ni render.yaml, ni le site Netlify.
+
+
+4) COMMENT REDÉPLOYER (numéroté, à suivre tel quel)
+---------------------------------------------------------------------
+   1. Décompressez teebo-SERVEUR-backend-13-11-2026-CORRIGE.zip
+      (ou teebo-COMPLET-13-11-2026-CORRIGE.zip si vous déployez tout).
+
+   2. Vérifiez ces deux points dans le dossier décompressé :
+        • Dockerfile              à la racine
+        • backend/start.sh        présent  <- c'était l'oubli
+
+   3. Poussez sur GitHub, branche main.
+      Sur GitHub, à la racine, vous devez voir « Dockerfile » et les
+      dossiers « backend » et « db » côte à côte.
+
+   4. Render → service teebo-api-p825 → Settings → Build & Deploy :
+        Root Directory     : VIDE (ne mettez pas « backend »)
+        Dockerfile Path    : Dockerfile
+
+   5. Render → Manual Deploy → « Clear build cache & deploy ».
+      Le vidage du cache est important : l'ancienne image est encore
+      mémorisée par Render.
+
+   6. Dans les journaux, l'ordre attendu est maintenant :
+        ==> Démarrage / teebo API en écoute sur 0.0.0.0:3000
+        (puis, en arrière-plan) Dossier des migrations : /app/db
+        Schéma appliqué : schema.sql … Migration terminée.
+
+   7. Ouvrez :  https://teebo-api-p825.onrender.com/healthz
+        attendu :  {"ok":true}
+      puis :     https://teebo-api-p825.onrender.com/ready
+        attendu :  pret:true, base:connectee, tables:34
+
+      Si /ready affiche base:injoignable pendant la 1re minute : la base
+      gratuite se réveille, attendez et rechargez. C'est normal.
+
+
+5) SI L'ERREUR RÉAPPARAÎT (plan de repli)
+---------------------------------------------------------------------
+   Cas 1 — le journal montre encore « cannot open ./start.sh »
+           -> Render a réutilisé l'ancienne image. Refaire l'étape 5
+              (vider le cache), puis vérifier dans l'onglet « Events » que
+              le commit déployé est bien le dernier.
+
+   Cas 2 — « Cannot find module '/app/backend/src/server.js' »
+           -> Root Directory n'est pas vide. Le remettre à vide (étape 4).
+
+   Cas 3 — « Dockerfile not found »
+           -> Le Dockerfile n'est pas à la racine du dépôt, ou
+              Dockerfile Path vaut backend/Dockerfile. Le remettre à
+              « Dockerfile ».
+
+   Cas 4 — l'image se construit mais le service s'arrête après quelques
+           secondes (« Application exited early »)
+           -> Ce n'est plus le même problème. Ouvrir /ready et envoyez-moi
+              le texte affiché : il indique précisément l'état de la base.
+
+
+6) CE QUI A ÉTÉ TESTÉ ICI, ET CE QUI NE L'A PAS ÉTÉ
+---------------------------------------------------------------------
+   Testé en simulant l'image (mêmes dossiers que le conteneur, sans base) :
+     • les 30 modules passent le contrôle de syntaxe (node --check) ;
+     • start.sh est valide (sh -n) et présent dans l'archive livrée ;
+     • le serveur démarre et répond : le port s'ouvre en quelques secondes ;
+     • /healthz -> 200 {"ok":true} ;
+     • / -> 302 vers le site Netlify (plus d'erreur de dossier absent) ;
+     • adresse inconnue -> 404 propre, aucune exception ;
+     • base absente -> migration « reportee » sans arrêter le service.
+
+   Non testé : la construction Docker elle-même et le déploiement Render
+   (je n'ai pas accès à Docker ni à votre compte). Le point qui cassait
+   est néanmoins vérifiable en 5 secondes sur GitHub : la présence de
+   backend/start.sh et la ligne CMD ["node", "src/server.js"].
+=====================================================================
