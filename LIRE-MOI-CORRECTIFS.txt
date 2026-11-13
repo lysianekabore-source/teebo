@@ -1,35 +1,53 @@
-teebo — MISE EN LIGNE DU 13/11/2026
+teebo — MISE EN LIGNE DU 13/11/2026 (version B)
 =========================================================================
-CORRECTIF DU DÉPLOIEMENT (Render) + ACTIONNARIAT / SOCIÉTARIAT + FEUILLE DE
-PRÉSENCE EN AG
+CORRECTIF DU DEPLOIEMENT (Render) + ACTIONNARIAT / SOCIETARIAT + FEUILLE DE
+PRESENCE EN AG
 
-Lisez ce fichier en entier avant de déposer quoi que ce soit.
+Lisez ce fichier en entier avant de deposer quoi que ce soit.
 L'ordre est IMPORTANT : on commence par le serveur (Render), on termine par
 le site (Netlify).
 
 -------------------------------------------------------------------------
-0) CE QUI A ÉTÉ CORRIGÉ — l'erreur « failed to calculate checksum »
+0) LA CONSTRUCTION PASSE — IL RESTAIT « Application exited early »
 -------------------------------------------------------------------------
-Message reçu sur Render :
+Apres le premier correctif, l'image se construisait correctement (dans vos
+journaux : COPY src, COPY db* ./db/ ... DONE). Un nouveau blocage apparaissait
+juste apres :
 
-   failed to calculate checksum of ref ...: /docs: not found
-   (idem pour /404.html, /assets, /_redirects)
+   teebo API en ecoute sur 0.0.0.0:3000
+   !! Dossier db/ illisible : ENOENT ... scandir '/db'
+   Schema absent, ignore : schema.sql ... schema_v33.sql
+   ==> Application exited early
 
-Cause exacte : l'image Docker du serveur recopiait, fichier par fichier, des
-pages du site web (docs/, 404.html, assets/, _redirects). Ces fichiers ne se
-trouvaient PAS dans le dossier envoyé à Render : la construction de l'image
-s'arrêtait donc avant même de compiler le serveur.
+Deux causes, deux corrections :
 
-Trois corrections :
-  1. Le serveur ne recopie PLUS aucun fichier du site. Il n'en a pas besoin :
-     c'est Netlify qui sert les pages. Le dossier envoyé à Render ne contient
-     que le serveur (backend/) et la base de données (db/).
-  2. Le fichier de déploiement (render.yaml) indique désormais explicitement
-     que le dossier de travail est « backend ». Même si l'ancienne valeur
-     traîne encore dans vos réglages Render, le déploiement passe.
-  3. La migration de la base devient INDESTRUCTIBLE : si le dossier des
-     scripts SQL n'est pas trouvé, le serveur démarre quand même et l'API
-     reste accessible (plus de mise en ligne bloquée).
+  A. « Application exited early »
+     L'image lancait la migration en ARRIERE-PLAN. Le serveur demarrait, mais
+     le processus principal du conteneur s'arretait aussitot : Render terminait
+     donc l'instance, et la migration, tuee avec elle, n'allait jamais au bout.
+     Desormais il n'y a plus qu'UN SEUL processus, au premier plan : migration
+     (bornee a 120 s, elle ne peut pas bloquer) puis serveur. Le conteneur ne
+     peut plus « sortir tot ».
+     Le serveur n'importe plus la migration en interne : ce module se terminait
+     par « process.exit(0) », ce qui pouvait arreter le service juste apres
+     son demarrage.
+
+  B. « Dossier db/ illisible : scandir '/db' »
+     Le programme cherchait le dossier des scripts SQL a partir d'un dossier de
+     travail mal resolu et retombait sur « /db » (inexistant). Il utilise
+     maintenant des chemins absolus fiables (dont /app/db, fixe par l'image) et
+     affiche en clair « Dossier des migrations : /app/db ». La liste des
+     migrations s'arretait a schema_v30 : elle lit desormais tout le dossier
+     (schema.sql puis v3 ... v33).
+
+  En plus : la migration verifie AVANT TOUT que la base repond. Si PostgreSQL
+  dort, elle abandonne en moins d'une seconde (« migration reportee, le serveur
+  demarre ») au lieu d'attendre deux minutes — l'API est donc en ligne
+  immediatement, et la migration est rejouee au deploiement suivant.
+
+  L'ancienne erreur « failed to calculate checksum ... /docs: not found » reste
+  corrigee : l'image ne recopie aucun fichier du site, et le dossier de travail
+  est explicitement « backend ».
 
 -------------------------------------------------------------------------
 1) CE QUE CONTIENT LE PAQUET « SERVEUR » (backend)
@@ -186,7 +204,11 @@ VÉRIFIÉ ici :
   - chaque appel de l'écran Actionnariat correspond à une route existante du
     serveur (chemins et champs vérifiés un par un) ;
   - les contrôles du moteur de capital (plafonds, seuils, quorum, voix) ont
-    été relus sur le code.
+    été relus sur le code ;
+  - la séquence exacte du conteneur a été rejouée ici : dossier des migrations
+    trouvé automatiquement, migration qui renonce proprement quand la base ne
+    répond pas, puis serveur qui reste en vie (il écoutait encore après le délai
+    d'observation, là où l'ancien montage s'arrêtait).
 
 PAS VÉRIFIÉ (impossible depuis mon environnement) :
   - un déploiement réel sur Render et sur Netlify ;
