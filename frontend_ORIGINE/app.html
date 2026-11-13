@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0b0c26">
+<meta name="robots" content="noindex,nofollow">
+<title>Espace IMF — teebo</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="side__brand">
+      <img src="assets/teebo-icon.png" width="34" height="34" alt="">
+      <span>tee<b>B</b>o</span>
+    </div>
+    <div class="side__label">Pilotage</div>
+    <button class="nav-item active" data-view="dash"><span class="ic">▤</span> Tableau de bord</button>
+    <button class="nav-item" data-view="org"><span class="ic">⛬</span> Organisation</button>
+    <button class="nav-item" data-view="users"><span class="ic">☺</span> Personnel</button>
+    <button class="nav-item" data-view="dispatches" id="nav-dispatches" hidden><span class="ic">✉</span> Suivi des envois</button>
+    <button class="nav-item" data-view="profiles" id="nav-profiles" hidden><span class="ic">▦</span> Habilitations</button>
+    <button class="nav-item" data-view="credits" id="nav-credits" hidden><span class="ic">✔</span> Validation crédit</button>
+    <button class="nav-item" data-view="clients" id="nav-clients" hidden><span class="ic">☷</span> Clients</button>
+    <button class="nav-item" data-view="caisse" id="nav-caisse" hidden><span class="ic">▣</span> Caisse</button>
+    <button class="nav-item" data-view="coffre" id="nav-coffre" hidden><span class="ic">▦</span> Coffre</button>
+    <button class="nav-item" data-view="compta" id="nav-compta" hidden><span class="ic">∑</span> Comptabilité</button>
+    <button class="nav-item" data-view="recouvrement" id="nav-recouvrement" hidden><span class="ic">⚑</span> Impayés &amp; recouvrement</button>
+    <button class="nav-item" data-view="audit" id="nav-audit" hidden><span class="ic">☰</span> Journal d’audit</button>
+    <button class="nav-item" data-view="gouvernance" id="nav-gouvernance" hidden><span class="ic">⚖</span> Gouvernance</button>
+    <button class="nav-item" data-view="settings" id="nav-settings" hidden><span class="ic">⚙</span> Paramètres IMF</button>
+    <div class="side__label">Sécurité &amp; accès</div>
+    <button class="nav-item" data-view="security"><span class="ic">⛨</span> Mon accès</button>
+    <a class="nav-item" href="/securite"><span class="ic">📱</span> Terminaux</a>
+    <a class="nav-item" href="/autorisations"><span class="ic">⇄</span> Autorisations</a>
+    <div class="side__label">Compte</div>
+    <a class="nav-item" href="/essai"><span class="ic">⏳</span> Essai &amp; échéances</a>
+    <a class="nav-item" href="/documentation"><span class="ic">📘</span> Documentation</a>
+    <div class="side__spacer"></div>
+    <div class="side__user">
+      <b id="u-name">…</b>
+      <small id="u-code">…</small>
+      <button class="btn btn--ghost btn--sm" id="btn-logout">Déconnexion</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div id="trial-banner" class="alert alert--warn" hidden></div>
+    <div id="global-alert" class="alert" hidden></div>
+
+    <!-- TABLEAU DE BORD -->
+    <section class="view" id="view-dash">
+      <div class="topbar">
+        <div>
+          <h1>Tableau de bord</h1>
+          <p>Vue d’ensemble de votre institution.</p>
+        </div>
+        <div class="chips" id="dash-chips"></div>
+      </div>
+      <div id="dash-alert"></div>
+      <div class="grid grid--stats" id="dash-kpis"></div>
+      <div class="grid grid--2" style="margin-top:16px">
+        <div class="card">
+          <div class="toolbar"><h2>Unités organisationnelles</h2></div>
+          <div id="dash-units-mini"><div class="empty">Chargement…</div></div>
+        </div>
+        <div class="card">
+          <h2 style="font-size:16px;margin-bottom:14px">Règles de sécurité appliquées</h2>
+          <ul class="checks" style="list-style:none;display:grid;gap:10px;font-size:13.5px">
+            <li>Mot de passe expiré automatiquement après 60 jours</li>
+            <li>Déconnexion automatique après 30 minutes d’inactivité</li>
+            <li>Code d’identification généré automatiquement pour l’IMF et chaque agence</li>
+            <li>Cloisonnement strict : aucune donnée partagée entre utilisateurs</li>
+            <li>Aucune donnée partagée entre entités sans autorisation de l’admin</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ORGANISATION -->
+    <section class="view" id="view-org" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Organisation</h1>
+          <p>Direction → départements → services → agences. Les codes sont générés automatiquement.</p>
+        </div>
+        <button class="btn btn--dark" id="btn-new-unit">+ Nouvelle unité</button>
+      </div>
+      <div id="org-tree" class="tree"><div class="empty">Chargement…</div></div>
+    </section>
+
+    <!-- PERSONNEL -->
+    <section class="view" id="view-users" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Personnel</h1>
+          <p>Chaque utilisateur reçoit un code d’accès, envoyé par e-mail et WhatsApp.</p>
+        </div>
+        <button class="btn btn--dark" id="btn-new-user">+ Nouvel utilisateur</button>
+      </div>
+      <div id="users-alert"></div>
+      <div id="users-table"><div class="empty">Chargement…</div></div>
+    </section>
+
+    <!-- SÉCURITÉ -->
+    <section class="view" id="view-security" hidden>
+      <div class="topbar"><div><h1>Mon accès</h1><p>Identifiant, session et mot de passe.</p></div></div>
+      <div class="grid grid--2">
+        <div class="card">
+          <h2 style="font-size:16px;margin-bottom:14px">Changer mon mot de passe</h2>
+          <form id="form-pwd" novalidate>
+            <div class="fld"><label for="pwd-cur">Mot de passe actuel</label><input id="pwd-cur" type="password" required></div>
+            <div class="fld"><label for="pwd-new">Nouveau mot de passe</label><input id="pwd-new" type="password" required>
+              <p class="hint">Au moins 10 caractères, avec majuscule, minuscule et chiffre. Expiration : 60 jours.</p></div>
+            <button class="btn btn--primary" type="submit">Mettre à jour</button>
+          </form>
+        </div>
+        <div class="card">
+          <h2 style="font-size:16px;margin-bottom:14px">Informations de session</h2>
+          <dl id="session-info" style="display:grid;gap:10px;font-size:13.5px"></dl>
+        </div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <h2 style="font-size:16px">Double authentification (2FA)</h2>
+          <span id="twofa-badge" class="tag">…</span>
+        </div>
+        <p class="hint" style="margin-bottom:14px">Obligatoire pour tous les comptes teebo. À chaque connexion, un <b>code à 6 chiffres</b> généré par votre application d'authentification (Google Authenticator, Authy, FreeOTP…) sera demandé en plus du mot de passe.</p>
+        <div id="twofa-body"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- PARAMÈTRES IMF -->
+    <section class="view" id="view-settings" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Paramètres IMF</h1>
+          <p>Identité visuelle et mentions légales reprises automatiquement sur les relevés et factures.</p>
+        </div>
+        <span id="settings-badge" class="tag tag--muted">…</span>
+      </div>
+
+      <div id="settings-readonly" class="alert alert--info" hidden>Ces paramètres sont consultables mais seuls l’administrateur IMF et la direction peuvent les modifier.</div>
+
+      <div class="grid grid--2">
+        <!-- Logo -->
+        <div class="card">
+          <h2 style="font-size:16px;margin-bottom:6px">Logo de l’IMF</h2>
+          <p class="hint" style="margin-bottom:14px">PNG, JPEG, WEBP ou SVG — 400 Ko maximum. Affiché sur l’en-tête des documents.</p>
+          <div class="logo-box">
+            <div class="logo-prev" id="logo-prev"><span class="logo-prev__ph" id="logo-ph">—</span></div>
+            <div class="logo-ctl">
+              <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden>
+              <button class="btn btn--dark btn--sm" id="btn-logo-pick" type="button">Choisir un fichier</button>
+              <button class="btn btn--ghost btn--sm" id="btn-logo-remove" type="button" hidden>Retirer le logo</button>
+              <p class="hint" id="logo-info"></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Prestataire + TVA -->
+        <div class="card">
+          <h2 style="font-size:16px;margin-bottom:6px">Facturation</h2>
+          <p class="hint" style="margin-bottom:14px">Prestataire de la solution et taux de TVA appliqué à vos factures.</p>
+          <dl id="supplier-info" style="display:grid;gap:8px;font-size:13px;margin-bottom:16px"></dl>
+          <div class="fld">
+            <label for="s-vat">Taux de TVA appliqué (%)</label>
+            <input id="s-vat" type="text" inputmode="decimal" placeholder="Laisser vide = TVA non applicable">
+            <p class="hint">Aucun taux par défaut : tant que ce champ est vide, les factures portent la mention « TVA non applicable ».</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mentions légales -->
+      <div class="card" style="margin-top:16px">
+        <h2 style="font-size:16px;margin-bottom:6px">Mentions légales obligatoires</h2>
+        <p class="hint" style="margin-bottom:16px">Reprises telles quelles sur le relevé de compte et les factures (proforma et définitive).</p>
+        <div class="grid grid--2">
+          <div class="fld"><label for="s-legal_name">Raison sociale</label><input id="s-legal_name" type="text" placeholder="Ex : Crédit Solidarité SA"></div>
+          <div class="fld"><label for="s-legal_form">Forme juridique</label>
+            <select id="s-legal_form"><option value="">Non précisée</option><option value="SA">SA — Société anonyme</option><option value="SCOOP">SCOOP — Coopérative</option></select></div>
+          <div class="fld"><label for="s-trade_register_no">RCCM</label><input id="s-trade_register_no" type="text" placeholder="Ex : BF-OUA-2024-B-1234"></div>
+          <div class="fld"><label for="s-tax_id">IFU / NIF</label><input id="s-tax_id" type="text" placeholder="Identifiant fiscal"></div>
+          <div class="fld"><label for="s-vat_number">N° contribuable / TVA</label><input id="s-vat_number" type="text" placeholder="Optionnel"></div>
+          <div class="fld"><label for="s-bceao_agreement_no">N° d’agrément BCEAO</label><input id="s-bceao_agreement_no" type="text" placeholder="Ex : 2024-XXX-IM-001"></div>
+          <div class="fld"><label for="s-share_capital">Capital social (FCFA)</label><input id="s-share_capital" type="text" inputmode="numeric" placeholder="Ex : 25 000 000"></div>
+          <div class="fld"><label for="s-part-sociale">Valeur nominale de la part sociale (FCFA)</label><input id="s-part-sociale" type="text" inputmode="numeric" placeholder="SCOOP uniquement — ex : 10 000"><p class="hint">IMF coopérative (SCOOP) : un client souscrivant ≥ 1 part est « membre », sinon « usager ».</p></div>
+          <div class="fld"><label for="s-legal_address">Siège social</label><input id="s-legal_address" type="text" placeholder="Adresse complète du siège"></div>
+        </div>
+        <div class="fld"><label>Durée de validité par défaut des pièces d’identité (en mois)</label>
+          <p class="hint">Selon la localité de l’IMF. Sert au calcul automatique de la date d’expiration lors de la création d’un client particulier.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+            <div class="fld"><label for="s-valid-cni">CNI</label><input id="s-valid-cni" type="text" inputmode="numeric" placeholder="Ex : 120"></div>
+            <div class="fld"><label for="s-valid-passeport">Passeport</label><input id="s-valid-passeport" type="text" inputmode="numeric" placeholder="Ex : 60"></div>
+            <div class="fld"><label for="s-valid-cedeao">Carte CEDEAO</label><input id="s-valid-cedeao" type="text" inputmode="numeric" placeholder="Ex : 120"></div>
+            <div class="fld"><label for="s-valid-consulaire_sejour">Carte consulaire / séjour</label><input id="s-valid-consulaire_sejour" type="text" inputmode="numeric" placeholder="Ex : 12"></div>
+          </div>
+        </div>
+        <div class="fld"><label for="s-bank_details">Coordonnées bancaires de règlement</label><textarea id="s-bank_details" rows="2" placeholder="Banque, IBAN / RIB, Mobile Money…"></textarea></div>
+        <div class="fld"><label for="s-footer_note">Note de pied de document</label><input id="s-footer_note" type="text" placeholder="Ex : Merci de votre confiance"></div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
+          <button class="btn btn--primary" id="btn-settings-save" type="button">Enregistrer les paramètres</button>
+          <a class="btn btn--ghost btn--sm" id="link-statement-demo" href="#" hidden>Aperçu d’un document</a>
+        </div>
+      </div>
+
+      <!-- Canaux d'envoi des codes d'accès -->
+      <div class="card" style="margin-top:16px">
+        <h2 style="font-size:16px;margin-bottom:6px">Envoi des codes d’accès</h2>
+        <p class="hint" style="margin-bottom:16px">Numéro WhatsApp et adresse e-mail « expéditeur » de votre IMF. Ils servent à transmettre les codes d’accès à votre personnel et signent les messages envoyés. À défaut, les coordonnées officielles de l’IMF sont utilisées.</p>
+        <div class="grid grid--2">
+          <div class="fld"><label for="s-notify_whatsapp">Numéro WhatsApp expéditeur</label><input id="s-notify_whatsapp" type="tel" placeholder="+226 00 00 00 00"></div>
+          <div class="fld"><label for="s-notify_email">E-mail expéditeur</label><input id="s-notify_email" type="email" placeholder="contact@votre-imf.africa"></div>
+        </div>
+        <p class="hint">À la création d’un utilisateur (ou via « Renvoyer le code » dans l’onglet Personnel), le code est transmis par WhatsApp et e-mail. Si aucune passerelle automatique n’est configurée, un lien « prêt à envoyer » s’ouvre depuis votre compte.</p>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
+          <button class="btn btn--primary" id="btn-notify-save" type="button">Enregistrer ces canaux</button>
+          <button class="btn btn--ghost" id="btn-notify-test" type="button">Envoyer un e-mail de test à moi-même</button>
+        </div>
+        <div id="notify-test-out" class="hint" style="margin-top:10px"></div>
+      </div>
+
+      <!-- Prévisualisation dynamique du PDF de facture -->
+      <div class="card" style="margin-top:16px">
+        <div class="prev-head">
+          <div>
+            <h2 style="font-size:16px;margin-bottom:4px">Prévisualisation de la facture</h2>
+            <p class="hint">Rendu réel de vos factures proforma avec le logo et les mentions légales <b>enregistrés</b>. Après « Enregistrer les paramètres », l’aperçu se met à jour automatiquement.</p>
+          </div>
+          <div class="prev-actions">
+            <button class="btn btn--ghost btn--sm" id="btn-preview-refresh" type="button">Actualiser l’aperçu</button>
+            <button class="btn btn--dark btn--sm" id="btn-preview-print" type="button">Ouvrir / Imprimer en PDF</button>
+          </div>
+        </div>
+        <div class="prev-frame">
+          <iframe id="invoice-preview" title="Prévisualisation de la facture" loading="lazy" sandbox="allow-same-origin"></iframe>
+        </div>
+      </div>
+    </section>
+
+    <!-- SUIVI DES ENVOIS DE CODES -->
+    <section class="view" id="view-dispatches" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Suivi des envois de codes</h1>
+          <p>Historique des codes d’accès transmis au personnel (création et renvois), avec le canal utilisé.</p>
+        </div>
+      </div>
+      <div class="grid grid--stats" id="dispatch-kpis"></div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Journal des envois</h2></div>
+        <div id="dispatches-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- GESTION DES HABILITATIONS (éditable) -->
+    <section class="view" id="view-profiles" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Habilitations &amp; profils</h1>
+          <p>Cochez / décochez les habilitations accordées par défaut à chaque poste. Créez de nouveaux postes et de nouvelles habilitations propres à votre IMF.</p>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--ghost" id="btn-new-perm" type="button">+ Habilitation</button>
+          <button class="btn" id="btn-new-position" type="button">+ Poste / profil</button>
+        </div>
+      </div>
+      <div class="card">
+        <div id="access-matrix"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- VALIDATION FINALE DES CRÉDITS -->
+    <section class="view" id="view-credits" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Validation finale des crédits</h1>
+          <p>Dossiers en attente d’octroi définitif. Réservé aux postes habilités (DG, DGA, Directeur Crédit, Chef Octroi par défaut).</p>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--ghost" id="btn-credits-refresh" type="button">↻ Actualiser</button>
+        </div>
+      </div>
+      <div class="card">
+        <div id="credits-queue"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- CLIENTS : modifier la fiche -->
+    <section class="view" id="view-clients" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Clients</h1>
+          <p>Consulter et modifier les fiches clients de votre institution. Réservé aux postes habilités à la gestion client.</p>
+        </div>
+        <div class="topbar__actions"><button class="btn btn--primary" id="btn-client-new" type="button">+ Nouveau client</button> <button class="btn btn--ghost" id="btn-clients-refresh" type="button">↻ Actualiser</button></div>
+      </div>
+      <div class="card"><div id="clients-table"><div class="empty">Chargement…</div></div></div>
+    </section>
+
+    <!-- CAISSE : dépassement de plafond + arrêté de caisse -->
+    <section class="view" id="view-caisse" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Caisse</h1>
+          <p>Valider les dépassements de plafond et enregistrer les arrêtés de caisse (rapprochement théorique / réel).</p>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--ghost" id="btn-overrun-new" type="button">+ Demande de dépassement</button>
+          <button class="btn btn--dark" id="btn-closing-new" type="button">+ Arrêté de caisse</button>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Dépassements de plafond</h2></div>
+        <div id="overrun-table"><div class="empty">Chargement…</div></div>
+      </div>
+      <div class="card">
+        <div class="toolbar"><h2 style="font-size:16px">Arrêtés de caisse &amp; rapprochement</h2></div>
+        <div id="closing-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- COFFRE : approvisionner / délester -->
+    <section class="view" id="view-coffre" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Coffre</h1>
+          <p>Approvisionner ou délester le coffre. Chaque mouvement est tracé et le solde est recalculé automatiquement.</p>
+        </div>
+        <div class="topbar__actions"><button class="btn btn--dark" id="btn-vault-new" type="button">+ Mouvement de coffre</button></div>
+      </div>
+      <div class="grid grid--stats" id="vault-kpis"></div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Mouvements du coffre</h2></div>
+        <div id="vault-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- COMPTABILITÉ : écritures, clôture, états -->
+    <section class="view" id="view-compta" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Comptabilité</h1>
+          <p>Saisir les écritures (charges, taxes, produits), clôturer une période et consulter les états financiers.</p>
+        </div>
+        <div class="topbar__actions">
+          <label style="font-size:13px;color:var(--muted)">Période
+            <input id="compta-period" type="month" style="margin-left:6px">
+          </label>
+          <button class="btn btn--ghost" id="btn-entry-new" type="button">+ Écriture</button>
+          <button class="btn btn--dark" id="btn-period-close" type="button">Clôturer la période</button>
+        </div>
+      </div>
+      <div class="grid grid--stats" id="compta-kpis"></div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Écritures comptables</h2></div>
+        <div id="entries-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- IMPAYÉS & RECOUVREMENT -->
+    <section class="view" id="view-recouvrement" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Impayés &amp; recouvrement</h1>
+          <p>Suivre les dossiers en retard et enregistrer les actions de recouvrement (relance, promesse, échéancier, encaissement).</p>
+        </div>
+        <div class="topbar__actions"><button class="btn btn--ghost" id="btn-arrears-refresh" type="button">↻ Actualiser</button></div>
+      </div>
+      <div class="grid grid--stats" id="arrears-kpis"></div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Dossiers en impayé</h2></div>
+        <div id="arrears-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- JOURNAL D'AUDIT -->
+    <section class="view" id="view-audit" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Journal d’audit</h1>
+          <p>Traçabilité des actions sensibles de l’institution. Réservé aux postes habilités à la lecture de l’audit.</p>
+        </div>
+        <div class="topbar__actions"><button class="btn btn--ghost" id="btn-audit-refresh" type="button">↻ Actualiser</button></div>
+      </div>
+      <div class="card"><div id="audit-table"><div class="empty">Chargement…</div></div></div>
+    </section>
+
+    <!-- GOUVERNANCE & CONFORMITE (loi-cadre UMOA) -->
+    <section class="view" id="view-gouvernance" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Gouvernance &amp; conformité</h1>
+          <p>Fiche institution, organes, dirigeants, mandats, sessions et procès-verbaux, résolutions — avec le tableau de bord de conformité.</p>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--ghost" id="btn-gouv-refresh" type="button">↻ Actualiser</button>
+          <button class="btn btn--primary" id="btn-gouv-pdf" type="button">⭳ Exporter en PDF</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div id="gouv-kpis" class="kpi-grid"><div class="empty">Chargement…</div></div>
+        <div id="gouv-alerts" class="chips" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div class="gtabs" id="gouv-tabs">
+          <button class="gtab active" data-gtab="institution" type="button">Institution</button>
+          <button class="gtab" data-gtab="organes" type="button">Organes</button>
+          <button class="gtab" data-gtab="membres" type="button">Membres</button>
+          <button class="gtab" data-gtab="mandats" type="button">Mandats</button>
+          <button class="gtab" data-gtab="sessions" type="button">Sessions &amp; PV</button>
+          <button class="gtab" data-gtab="resolutions" type="button">Résolutions</button>
+        </div>
+        <div style="padding:20px">
+          <div id="gouv-pane-institution"></div>
+          <div id="gouv-pane-organes" hidden></div>
+          <div id="gouv-pane-membres" hidden></div>
+          <div id="gouv-pane-mandats" hidden></div>
+          <div id="gouv-pane-sessions" hidden></div>
+          <div id="gouv-pane-resolutions" hidden></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<script src="assets/app.js?v=23" defer></script>
+</body>
+</html>

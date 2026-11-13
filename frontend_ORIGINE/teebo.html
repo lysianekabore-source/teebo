@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0b0c26">
+<meta name="robots" content="noindex,nofollow">
+<title>Console teebo — Approbations</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="assets/app-icon-180.png">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="side__brand">
+      <img src="assets/app-icon-192.png" width="34" height="34" alt="" style="border-radius:9px">
+      <span>tee<b>B</b>o</span>
+    </div>
+    <div class="side__label">Console teebo</div>
+    <button class="nav-item active" data-view="dashboard"><span class="ic">▦</span> Tableau de bord</button>
+    <button class="nav-item" data-view="requests"><span class="ic">▤</span> Demandes</button>
+    <button class="nav-item" data-view="imfs"><span class="ic">⌂</span> Institutions</button>
+    <button class="nav-item" data-view="admins"><span class="ic">☺</span> Administrateurs IMF</button>
+    <button class="nav-item" data-view="profiles"><span class="ic">▦</span> Habilitations</button>
+    <button class="nav-item" data-view="profile"><span class="ic">⛨</span> Mon profil</button>
+    <div class="side__spacer"></div>
+    <div class="side__user">
+      <b id="u-name">…</b>
+      <small id="u-email">…</small>
+      <button class="btn btn--ghost btn--sm" id="btn-logout">Déconnexion</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div id="global-alert" class="alert" hidden></div>
+
+    <!-- Vue : Tableau de bord -->
+    <section class="view" id="view-dashboard">
+      <div class="topbar"><div><h1>Tableau de bord</h1><p>Vue d’ensemble de la plateforme teebo : institutions, essais, abonnements actifs et demandes à traiter.</p></div></div>
+      <div id="stats-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px"><div class="empty">Chargement…</div></div>
+    </section>
+
+    <!-- Vue : Demandes -->
+    <section class="view" id="view-requests" hidden>
+      <div class="topbar">
+        <div><h1>Demandes d’accès</h1><p>Approuvez une demande pour déclencher l’essai gratuit de 30 jours et générer le code admin de l’IMF.</p></div>
+        <div class="chips" id="req-chips"></div>
+      </div>
+      <div id="requests-table"><div class="empty">Chargement…</div></div>
+    </section>
+
+    <!-- Vue : Institutions -->
+    <section class="view" id="view-imfs" hidden>
+      <div class="topbar"><div><h1>Institutions</h1><p>Toutes les IMF enregistrées — code d’accès administrateur, statut et essai.</p></div></div>
+      <div id="imfs-table"><div class="empty">Chargement…</div></div>
+    </section>
+
+    <!-- Vue : Administrateurs IMF -->
+    <section class="view" id="view-admins" hidden>
+      <div class="topbar"><div><h1>Administrateurs IMF</h1><p>Comptes d’accès créés pour chaque institution (code d’accès, e-mail, statut).</p></div></div>
+      <div id="admins-table"><div class="empty">Chargement…</div></div>
+    </section>
+
+    <!-- Vue : Habilitations -->
+    <section class="view" id="view-profiles" hidden>
+      <div class="topbar"><div><h1>Profils &amp; habilitations</h1><p>Référentiel appliqué à la création des utilisateurs de chaque IMF : habilitations accordées par défaut selon le profil.</p></div></div>
+      <div class="card"><div id="profiles-matrix"><div class="empty">Chargement…</div></div></div>
+    </section>
+
+    <!-- Vue : Mon profil -->
+    <section class="view" id="view-profile" hidden>
+      <div class="topbar"><div><h1>Mon profil éditeur</h1><p>Compte super-administrateur teebo.</p></div></div>
+      <dl id="profile-info" style="display:grid;gap:10px;font-size:13.5px;max-width:560px"></dl>
+      <div id="twofa-box" style="margin-top:22px;max-width:560px"></div>
+    </section>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<script src="assets/teebo.js" defer></script>
+</body>
+</html>

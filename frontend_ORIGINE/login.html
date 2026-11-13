@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0b0c26">
+<meta name="robots" content="noindex,nofollow">
+<title>Connexion — teebo</title>
+<link rel="icon" href="assets/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="assets/app-icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="assets/auth.css">
+</head>
+<body>
+<main class="card">
+  <div class="card__head">
+    <img class="brandmark" src="assets/app-icon-192.png" width="66" height="66" alt="teebo" style="border-radius:16px">
+  </div>
+  <div class="card__body">
+    <div class="tabs" id="auth-tabs">
+      <button type="button" class="tab active" data-tab="login">Connexion</button>
+      <button type="button" class="tab" data-tab="activate">Premier accès</button>
+    </div>
+    <div id="alert" class="alert" role="alert" aria-live="assertive" hidden></div>
+
+    <!-- Connexion -->
+    <form id="form-login" class="pane" novalidate>
+      <div class="field">
+        <label for="identifier">Identifiant ou e-mail</label>
+        <input id="identifier" name="identifier" type="text" autocomplete="username" autocapitalize="none" required>
+      </div>
+      <div class="field">
+        <label for="password">Mot de passe</label>
+        <div class="pwd"><input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button type="button" class="toggle" data-toggle="password" aria-label="Afficher">Afficher</button></div>
+      </div>
+      <button type="submit" class="btn btn--primary btn--block">Se connecter</button>
+      <p class="hint" style="text-align:center;margin-top:12px"><a href="#" id="link-forgot">Mot de passe oublié ?</a></p>
+    </form>
+    <form id="form-activate" class="pane" hidden novalidate>
+      <p class="hint">Saisissez le code d’accès reçu par WhatsApp ou e-mail, puis créez votre mot de passe.</p>
+      <div class="field">
+        <label for="code">Code d’accès</label>
+        <input id="code" name="code" type="text" autocapitalize="characters" required placeholder="TBO-XX-000000-U00001">
+      </div>
+      <div class="field">
+        <label for="new_password">Créer un mot de passe</label>
+        <div class="pwd"><input id="new_password" name="new_password" type="password" autocomplete="new-password" required>
+          <button type="button" class="toggle" data-toggle="new_password" aria-label="Afficher">Afficher</button></div>
+        <p class="req">Au moins 10 caractères, avec majuscule, minuscule et chiffre.</p>
+      </div>
+      <div class="field">
+        <label for="confirm">Confirmer le mot de passe</label>
+        <input id="confirm" type="password" autocomplete="new-password" required>
+      </div>
+      <button type="submit" class="btn btn--primary btn--block">Activer mon accès</button>
+    </form>
+
+    <!-- Changement de mot de passe (expiration 60j) -->
+    <form id="form-change" class="pane" hidden novalidate>
+      <p class="hint">Votre mot de passe doit être renouvelé (expiration après 60 jours).</p>
+      <div class="field"><label for="cur">Mot de passe actuel</label><input id="cur" type="password" required></div>
+      <div class="field"><label for="np">Nouveau mot de passe</label><input id="np" type="password" required></div>
+      <button type="submit" class="btn btn--primary btn--block">Mettre à jour</button>
+    </form>
+
+    <!-- Double authentification (2FA) : code à 6 chiffres de l'application -->
+    <form id="form-2fa" class="pane" hidden novalidate>
+      <p class="hint">Saisissez le <b>code à 6 chiffres</b> affiché dans votre application d'authentification (Google Authenticator, Authy, FreeOTP…).</p>
+      <div class="field">
+        <label for="otp">Code d'authentification</label>
+        <input id="otp" name="otp" class="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" required placeholder="••••••">
+      </div>
+      <button type="submit" class="btn btn--primary btn--block" id="btn-2fa">Valider le code</button>
+      <button type="button" class="btn btn--ghost btn--block" id="btn-recovery" style="margin-top:8px">Utiliser un code de secours</button>
+      <div class="field" id="recovery-wrap" hidden style="margin-top:12px">
+        <label for="recovery">Code de secours</label>
+        <input id="recovery" name="recovery" autocapitalize="characters" placeholder="XXXX-XXXX">
+        <button type="button" class="btn btn--dark btn--block" id="btn-recovery-go" style="margin-top:8px">Valider le code de secours</button>
+      </div>
+    </form>
+
+    <!-- Enrôlement 2FA obligatoire (premier accès avec double authentification) -->
+    <form id="form-enroll" class="pane" hidden novalidate>
+      <p class="hint">La <b>double authentification</b> est obligatoire. Étape 1 : scannez ce QR code avec votre application d'authentification (Google Authenticator, Authy, FreeOTP…), ou saisissez la clé manuellement.</p>
+      <div class="field enroll-qr-wrap">
+        <img id="enroll-qr" class="enroll-qr" alt="QR code d'enrôlement 2FA" width="200" height="200">
+      </div>
+      <div class="field">
+        <label for="enroll-secret">Clé à saisir manuellement (si le QR ne peut pas être scanné)</label>
+        <input id="enroll-secret" class="enroll-secret" type="text" readonly>
+      </div>
+      <p class="hint">Étape 2 : saisissez le <b>code à 6 chiffres</b> affiché par votre application pour confirmer.</p>
+      <div class="field">
+        <label for="enroll-otp">Code de confirmation</label>
+        <input id="enroll-otp" name="enroll-otp" class="pin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" required placeholder="••••••">
+      </div>
+      <button type="submit" class="btn btn--primary btn--block" id="btn-enroll">Activer la double authentification</button>
+    </form>
+
+    <!-- Codes de secours (affichés une seule fois après activation) -->
+    <div id="form-recovery-list" class="pane" hidden>
+      <p class="hint"><b>Double authentification activée.</b> Conservez ces <b>codes de secours</b> en lieu sûr : ils permettent de vous connecter si vous perdez l'accès à votre application. Chaque code ne sert qu'une fois.</p>
+      <ul id="recovery-codes" class="recovery-codes"></ul>
+      <button type="button" class="btn btn--primary btn--block" id="btn-enroll-done">J'ai noté mes codes, continuer</button>
+    </div>
+
+    <!-- Mot de passe oublié : demande d'un lien de réinitialisation -->
+    <form id="form-forgot" class="pane" hidden novalidate>
+      <p class="hint">Saisissez votre identifiant ou votre e-mail. Si un compte correspond, vous recevrez un lien de réinitialisation par e-mail et WhatsApp.</p>
+      <div class="field">
+        <label for="forgot-id">Identifiant ou e-mail</label>
+        <input id="forgot-id" name="forgot-id" type="text" autocomplete="username" autocapitalize="none" required>
+      </div>
+      <button type="submit" class="btn btn--primary btn--block">Envoyer le lien</button>
+      <button type="button" class="btn btn--ghost btn--block" id="btn-forgot-back" style="margin-top:8px">Retour à la connexion</button>
+      <div id="forgot-links" class="field" hidden style="margin-top:12px"></div>
+    </form>
+
+    <!-- Réinitialisation : choix d'un nouveau mot de passe via le lien reçu -->
+    <form id="form-reset" class="pane" hidden novalidate>
+      <p class="hint">Choisissez un nouveau mot de passe pour votre compte teebo.</p>
+      <div class="field">
+        <label for="reset-new">Nouveau mot de passe</label>
+        <div class="pwd"><input id="reset-new" type="password" autocomplete="new-password" required>
+          <button type="button" class="toggle" data-toggle="reset-new" aria-label="Afficher">Afficher</button></div>
+        <p class="req">Au moins 10 caractères, avec majuscule, minuscule et chiffre.</p>
+      </div>
+      <div class="field">
+        <label for="reset-confirm">Confirmer le mot de passe</label>
+        <input id="reset-confirm" type="password" autocomplete="new-password" required>
+      </div>
+      <button type="submit" class="btn btn--primary btn--block">Réinitialiser mon mot de passe</button>
+      <button type="button" class="btn btn--ghost btn--block" id="btn-reset-back" style="margin-top:8px">Retour à la connexion</button>
+    </form>
+
+    <p class="foot"><span class="brand">teeBo</span> — La finance à visage humain<br>Copyright © <span class="brand">teebo</span> 2026</p>
+  </div>
+</main>
+<script src="assets/auth.js" defer></script>
+<script>
+  /* Installation de l'application (PWA) : propose « Installer » au premier clic */
+  (function () {
+    if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js').catch(function () {}); }
+    var deferred = null;
+    window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); deferred = e; showInstallBar(); });
+    window.addEventListener('appinstalled', function () { var b = document.getElementById('install-bar'); if (b) b.parentNode.removeChild(b); });
+    function showInstallBar() {
+      if (document.getElementById('install-bar')) return;
+      var bar = document.createElement('div');
+      bar.id = 'install-bar';
+      bar.setAttribute('style', 'position:fixed;left:0;right:0;bottom:0;background:#0b0c26;color:#fff;padding:14px 16px;display:flex;gap:12px;align-items:center;justify-content:space-between;z-index:9999;font-family:inherit');
+      bar.innerHTML = '<span style="font-size:13.5px">📲 Installez teebo sur votre téléphone ou ordinateur pour un accès plus rapide.</span>' +
+        '<span style="display:flex;gap:8px"><button id="install-go" style="background:#d8f500;color:#0b0c26;border:0;border-radius:10px;padding:9px 16px;font-weight:700;cursor:pointer">Installer</button>' +
+        '<button id="install-no" style="background:transparent;color:#b9bbd4;border:1px solid #3a3c56;border-radius:10px;padding:9px 14px;cursor:pointer">Plus tard</button></span>';
+      document.body.appendChild(bar);
+      document.getElementById('install-no').addEventListener('click', function () { bar.parentNode.removeChild(bar); });
+      document.getElementById('install-go').addEventListener('click', function () {
+        if (!deferred) { bar.parentNode.removeChild(bar); return; }
+        deferred.prompt();
+        deferred.userChoice.then(function () { deferred = null; bar.parentNode.removeChild(bar); });
+      });
+    }
+  })();
+</script>
+</body>
+</html>
