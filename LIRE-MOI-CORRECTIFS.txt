@@ -1,4 +1,4 @@
-teebo — MISE EN LIGNE DU 13/11/2026 (version B)
+teebo — MISE EN LIGNE DU 13/11/2026 (version C)
 =========================================================================
 CORRECTIF DU DEPLOIEMENT (Render) + ACTIONNARIAT / SOCIETARIAT + FEUILLE DE
 PRESENCE EN AG
@@ -48,6 +48,55 @@ Deux causes, deux corrections :
   L'ancienne erreur « failed to calculate checksum ... /docs: not found » reste
   corrigee : l'image ne recopie aucun fichier du site, et le dossier de travail
   est explicitement « backend ».
+
+-------------------------------------------------------------------------
+0 bis) DEUXIEME VAGUE D'ERREURS — CORRIGEE AUSSI (version C)
+-------------------------------------------------------------------------
+Vos captures suivantes montraient un deploiement qui allait plus loin : la
+migration tournait, puis le serveur demarrait (« teebo API en ecoute sur
+0.0.0.0:3000 »). Deux erreurs apparaissaient ensuite, en boucle :
+
+   1. Error: ENOENT: no such file or directory, stat '/frontend/index.html'
+   2. ReferenceError: req is not defined  (src/server.js:167)
+
+Cause 1 — les pages web n'existent pas dans l'image du serveur.
+   L'API cherchait les pages du site dans un dossier interne « frontend »
+   present uniquement en developpement. Dans l'image de production, ce
+   dossier n'existe pas : chaque requete vers l'adresse du serveur
+   (xxxx.onrender.com) produisait donc une erreur « fichier introuvable ».
+   Correction : le serveur regarde d'abord si les pages sont reellement
+   presentes. Si oui, il les sert. Sinon, il REDIRIGE proprement vers votre
+   site public (variable PUBLIC_SITE_URL, deja reglee sur votre adresse
+   Netlify) et affiche, pour toute autre adresse, une petite page claire
+   « Serveur API teebo — en fonctionnement » avec un bouton vers
+   l'application. Plus aucune erreur de fichier introuvable.
+
+Cause 2 — « req is not defined », l'erreur qui tuait le service.
+   Le gestionnaire d'erreurs du serveur avait une faute de frappe : il
+   utilisaient une variable jamais definie. Des qu'une erreur survenait
+   (precisement l'erreur de fichier introuvable ci-dessus), ce gestionnaire
+   plantait a son tour, et c'est CE plantage qui arretait l'API. Le nom est
+   corrige, et une protection a ete ajoutee : si la reponse est deja partie,
+   on ne reecrit plus rien. Autre protection : une erreur isolee est
+   desormais affichee dans les journaux mais NE COUPE PLUS le service.
+
+Verifie sur ma machine (sans Render, sans votre base reelle) :
+   • le serveur demarre et reste actif ; « /healthz » repond {"ok":true} ;
+   • « / », « /login », « /app » renvoient une redirection vers le site
+     (code 302) au lieu d'une erreur ;
+   • une adresse inconnue renvoie 404 avec la page d'explication ;
+   • l'API repond normalement (401 « non authentifie » sur une route protegee) ;
+   • le serveur etait TOUJOURS actif apres ces appels, sans aucune erreur
+     « req is not defined » dans les journaux ;
+   • la migration, si la base ne repond pas, s'arrete en une seconde et
+     laisse demarrer le serveur.
+NON verifie : un deploiement reel sur Render (je n'ai pas acces a votre
+compte). C'est ce que nous verifions ensemble ci-dessous.
+
+Petite amelioration technique au passage : l'image utilise desormais
+node:20-bookworm-slim (plus stable au demarrage que la version alpine) et
+installe les dependances exactes du fichier de verrouillage (npm ci), pour
+eviter les differences entre deux constructions.
 
 -------------------------------------------------------------------------
 1) CE QUE CONTIENT LE PAQUET « SERVEUR » (backend)
