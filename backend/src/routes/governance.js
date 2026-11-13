@@ -808,4 +808,399 @@ ${esc(inst.siege_social || '')}</div></div><div class="tag">RAPPORT DE GOUVERNAN
   } catch (e) { next(e); }
 });
 
+// ===========================================================================
+// 9. CAPITAL & TITRES (VAGUE 29)
+//    Actionnaires SA / membres SCOOPS, registre des mouvements de titres,
+//    bénéficiaires effectifs (LBC/FT) et feuille de présence en AG avec
+//    calcul automatique du quorum et des droits de vote.
+//
+//    Règle SA / SCOOPS appliquée ici, pas dans l'interface :
+//      SA     : 1 action = 1 voix, quorum sur les ACTIONS représentées ;
+//      SCOOPS : 1 sociétaire = 1 voix, quorum sur les SOCIÉTAIRES représentés.
+//    Aucune écriture comptable n'est créée par ce module : il documente le
+//    capital et les droits de vote (séparation stricte des tâches).
+// ===========================================================================
+const FORMES_SCOOP = ['COOPERATIVE', 'SCOOPS'];
+
+/** Forme juridique de l'IMF (SA, SCOOPS…), lue dans la fiche de gouvernance. */
+async function formeJuridique(imfId) {
+  const { rows } = await q(
+    `SELECT forme_juridique FROM institution_gouvernance WHERE imf_id=$1`, [imfId]);
+  const f = (rows[0] && rows[0].forme_juridique) || 'SA';
+  return { forme: f, coop: FORMES_SCOOP.includes(String(f).toUpperCase()) };
+}
+
+/** Nombre de titres détenus par détenteur (mouvements, cessions déduites). */
+async function soldesTitres(imfId) {
+  const { rows } = await q(
+    `SELECT detenteur_id,
+            SUM(CASE WHEN type_operation='CESSION' OR type_operation='REMBOURSEMENT_SORTIE'
+                     THEN -nombre_titres ELSE nombre_titres END)::int AS titres,
+            SUM(CASE WHEN type_operation IN ('CESSION','REMBOURSEMENT_SORTIE') THEN 0
+                     ELSE montant_total END)::numeric AS souscrit,
+            SUM(CASE WHEN type_operation IN ('CESSION','REMBOURSEMENT_SORTIE') THEN 0
+                     ELSE montant_libere END)::numeric AS libere
+       FROM mouvements_titres WHERE imf_id=$1 GROUP BY detenteur_id`, [imfId]);
+  const map = {};
+  rows.forEach((x) => { map[x.detenteur_id] = { titres: x.titres || 0, souscrit: Number(x.souscrit || 0), libere: Number(x.libere || 0) }; });
+  return map;
+}
+
+// --- 9.1 Registre des détenteurs ------------------------------------------
+r.get('/governance/capital/detenteurs', async (req, res, next) => {
+  try {
+    const { rows } = await q(
+      `SELECT d.*, c.code_client, c.full_name AS client_nom,
+              COALESCE(s.titres,0) AS titres
+         FROM detenteurs_capital d
+         LEFT JOIN client c ON c.id=d.client_id AND c.imf_id=d.imf_id
+         LEFT JOIN (SELECT detenteur_id,
+                           SUM(CASE WHEN type_operation IN ('CESSION','REMBOURSEMENT_SORTIE')
+                                    THEN -nombre_titres ELSE nombre_titres END)::int AS titres
+                      FROM mouvements_titres WHERE imf_id=$1 GROUP BY detenteur_id) s
+                ON s.detenteur_id=d.id
+        WHERE d.imf_id=$1
+        ORDER BY d.categorie, d.nom_ou_raison_sociale`, [req.user.imf_id]);
+    const { rows: clients } = await q(
+      `SELECT id, code_client, full_name FROM client WHERE imf_id=$1 ORDER BY full_name LIMIT 1000`,
+      [req.user.imf_id]);
+    const { forme, coop } = await formeJuridique(req.user.imf_id);
+    res.json({ detenteurs: rows, clients, forme_juridique: forme, est_scoop: coop });
+  } catch (e) { next(e); }
+});
+
+r.post('/governance/capital/detenteurs', guardWrite, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const nom = txt(b.nom_ou_raison_sociale);
+    if (!nom) return res.status(400).json({ error: 'nom_required' });
+    const cat = txt(b.categorie) || 'ACTIONNAIRE_SA';
+    const type = txt(b.type_entite) || 'PERSONNE_PHYSIQUE';
+    // SCOOPS : les personnes morales ne sont pas sociétaires.
+    if (cat === 'MEMBRE_SCOOP' && type === 'PERSONNE_MORALE') {
+      return res.status(400).json({ error: 'personne_morale_non_societaire' });
+    }
+    const numero = txt(b.numero_registre) ||
+      ((cat === 'MEMBRE_SCOOP' ? 'SOC-' : 'ACT-') + crypto.randomBytes(3).toString('hex').toUpperCase());
+    // Rattachement au compte client (utile en SCOOPS).
+    let clientId = txt(b.client_id);
+    if (clientId) {
+      const { rows: cl } = await q('SELECT id FROM client WHERE id=$1 AND imf_id=$2', [clientId, req.user.imf_id]);
+      if (!cl.length) clientId = null;
+    }
+    const { rows } = await q(
+      `INSERT INTO detenteurs_capital (imf_id, type_entite, categorie, numero_registre,
+          nom_ou_raison_sociale, nationalite_ou_pays_siege, telephone, email, est_membre_fondateur,
+          statut, date_adhesion, date_sortie, client_id, observations, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+      [req.user.imf_id, type, cat, numero, nom, txt(b.nationalite_ou_pays_siege), txt(b.telephone),
+       txt(b.email), b.est_membre_fondateur === true, txt(b.statut) || 'ACTIF',
+       day(b.date_adhesion) || today(), day(b.date_sortie), clientId, txt(b.observations), req.user.id]);
+    res.json({ ok: true, detenteur: rows[0] });
+  } catch (e) {
+    if (/uq_detenteur_registre/.test(e.message || '')) {
+      return res.status(409).json({ error: 'numero_registre_deja_utilise' });
+    }
+    next(e);
+  }
+});
+
+r.put('/governance/capital/detenteurs/:id', guardWrite, async (req, res, next) => {
+  try {
+    const cur = await own('detenteurs_capital', req.params.id, req.user.imf_id);
+    if (!cur) return res.status(404).json({ error: 'not_found' });
+    const b = req.body || {};
+    const statut = txt(b.statut) || cur.statut;
+    // Une sortie (démission, exclusion, décès) fixe automatiquement la date.
+    const sortie = ['DEMISSIONNAIRE', 'EXCLU', 'DECEDE'].includes(statut)
+      ? (day(b.date_sortie) || cur.date_sortie || today()) : day(b.date_sortie);
+    const { rows } = await q(
+      `UPDATE detenteurs_capital SET nom_ou_raison_sociale=$1, nationalite_ou_pays_siege=$2,
+              telephone=$3, email=$4, est_membre_fondateur=$5, statut=$6, date_adhesion=$7,
+              date_sortie=$8, observations=$9, updated_at=now(), updated_by=$10
+        WHERE id=$11 AND imf_id=$12 RETURNING *`,
+      [txt(b.nom_ou_raison_sociale) || cur.nom_ou_raison_sociale, txt(b.nationalite_ou_pays_siege),
+       txt(b.telephone), txt(b.email), b.est_membre_fondateur === undefined ? cur.est_membre_fondateur : b.est_membre_fondateur === true,
+       statut, day(b.date_adhesion) || cur.date_adhesion, sortie, txt(b.observations), req.user.id,
+       cur.id, req.user.imf_id]);
+    res.json({ ok: true, detenteur: rows[0] });
+  } catch (e) { next(e); }
+});
+
+r.delete('/governance/capital/detenteurs/:id', guardWrite, async (req, res, next) => {
+  try {
+    const cur = await own('detenteurs_capital', req.params.id, req.user.imf_id);
+    if (!cur) return res.status(404).json({ error: 'not_found' });
+    // Un détenteur qui a des mouvements n'est jamais supprimé : il est
+    // « DEMISSIONNAIRE » (traçabilité du registre).
+    const { rows: mv } = await q('SELECT 1 FROM mouvements_titres WHERE detenteur_id=$1 LIMIT 1', [cur.id]);
+    if (mv.length) {
+      await q(`UPDATE detenteurs_capital SET statut='DEMISSIONNAIRE',
+                  date_sortie=COALESCE(date_sortie, now()::date), updated_at=now()
+                WHERE id=$1 AND imf_id=$2`, [cur.id, req.user.imf_id]);
+      return res.json({ ok: true, soft: true });
+    }
+    await q('DELETE FROM detenteurs_capital WHERE id=$1 AND imf_id=$2', [cur.id, req.user.imf_id]);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// --- 9.2 Mouvements de titres ---------------------------------------------
+r.get('/governance/capital/mouvements', async (req, res, next) => {
+  try {
+    const { rows } = await q(
+      `SELECT m.*, d.nom_ou_raison_sociale, d.numero_registre, d.categorie
+         FROM mouvements_titres m
+         JOIN detenteurs_capital d ON d.id=m.detenteur_id AND d.imf_id=m.imf_id
+        WHERE m.imf_id=$1
+        ORDER BY m.date_operation DESC, m.created_at DESC LIMIT 500`, [req.user.imf_id]);
+    const soldes = await soldesTitres(req.user.imf_id);
+    const totaux = Object.values(soldes).reduce((a, x) => ({
+      titres: a.titres + x.titres, souscrit: a.souscrit + x.souscrit, libere: a.libere + x.libere
+    }), { titres: 0, souscrit: 0, libere: 0 });
+    const { rows: imf } = await q('SELECT capital_cents FROM imf WHERE id=$1', [req.user.imf_id]);
+    const capitalImf = Number((imf[0] && imf[0].capital_cents) || 0) / 100;
+    const { forme, coop } = await formeJuridique(req.user.imf_id);
+    res.json({
+      mouvements: rows, totaux, forme_juridique: forme, est_scoop: coop,
+      capital_social: capitalImf,
+      non_libere: Math.max(0, totaux.souscrit - totaux.libere),
+      couverture_capital: capitalImf > 0 ? +(totaux.libere / capitalImf * 100).toFixed(2) : null
+    });
+  } catch (e) { next(e); }
+});
+
+r.post('/governance/capital/mouvements', guardWrite, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const det = txt(b.detenteur_id) ? await own('detenteurs_capital', txt(b.detenteur_id), req.user.imf_id) : null;
+    if (!det) return res.status(400).json({ error: 'detenteur_required' });
+    const op = txt(b.type_operation) || 'SOUSCRIPTION_INITIALE';
+    const n = int(b.nombre_titres);
+    if (n <= 0) return res.status(400).json({ error: 'nombre_titres_invalide' });
+    // Une cession ou un remboursement ne peut pas dépasser les titres détenus.
+    if (op === 'CESSION' || op === 'REMBOURSEMENT_SORTIE') {
+      const soldes = await soldesTitres(req.user.imf_id);
+      const dispo = (soldes[det.id] && soldes[det.id].titres) || 0;
+      if (n > dispo) return res.status(400).json({ error: 'titres_insuffisants', disponibles: dispo });
+    }
+    const vn = num(b.valeur_nominale_unitaire) || 0;
+    const total = num(b.montant_total);
+    const montant = total == null ? +(vn * n).toFixed(2) : total;
+    const libere = num(b.montant_libere);
+    const { rows } = await q(
+      `INSERT INTO mouvements_titres (imf_id, detenteur_id, type_operation, nombre_titres,
+          valeur_nominale_unitaire, montant_total, montant_libere, date_operation,
+          reference_piece_comptable, autorisation_bceao_requise, observations, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [req.user.imf_id, det.id, op, n, vn, montant,
+       libere == null ? (op === 'CESSION' || op === 'REMBOURSEMENT_SORTIE' ? montant : 0) : libere,
+       day(b.date_operation) || today(), txt(b.reference_piece_comptable),
+       b.autorisation_bceao_requise === true, txt(b.observations), req.user.id]);
+    res.json({ ok: true, mouvement: rows[0] });
+  } catch (e) {
+    if (/ck_mouvement_libere/.test(e.message || '')) {
+      return res.status(400).json({ error: 'montant_libere_superieur_au_total' });
+    }
+    next(e);
+  }
+});
+
+// --- 9.3 Bénéficiaires effectifs (LBC/FT) ---------------------------------
+r.get('/governance/capital/beneficiaires', async (req, res, next) => {
+  try {
+    const { rows } = await q(
+      `SELECT b.*, d.nom_ou_raison_sociale, d.type_entite, d.numero_registre
+         FROM beneficiaires_effectifs b
+         JOIN detenteurs_capital d ON d.id=b.detenteur_id AND d.imf_id=b.imf_id
+        WHERE b.imf_id=$1 ORDER BY d.nom_ou_raison_sociale, b.nom_prenom`, [req.user.imf_id]);
+    // Personnes morales sans bénéficiaire effectif déclaré = alerte LBC/FT.
+    const { rows: pm } = await q(
+      `SELECT d.id, d.nom_ou_raison_sociale FROM detenteurs_capital d
+        WHERE d.imf_id=$1 AND d.type_entite='PERSONNE_MORALE'
+          AND NOT EXISTS (SELECT 1 FROM beneficiaires_effectifs b WHERE b.detenteur_id=d.id)`,
+      [req.user.imf_id]);
+    res.json({ beneficiaires: rows, personnes_morales_sans_beneficiaire: pm });
+  } catch (e) { next(e); }
+});
+
+r.post('/governance/capital/beneficiaires', guardWrite, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const det = txt(b.detenteur_id) ? await own('detenteurs_capital', txt(b.detenteur_id), req.user.imf_id) : null;
+    if (!det) return res.status(400).json({ error: 'detenteur_required' });
+    if (det.type_entite !== 'PERSONNE_MORALE') return res.status(400).json({ error: 'beneficiaire_reserve_personne_morale' });
+    const nom = txt(b.nom_prenom);
+    if (!nom) return res.status(400).json({ error: 'nom_required' });
+    const { rows } = await q(
+      `INSERT INTO beneficiaires_effectifs (imf_id, detenteur_id, nom_prenom,
+          pourcentage_detention_indirecte, piece_identite_url)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [req.user.imf_id, det.id, nom, num(b.pourcentage_detention_indirecte) || 0, txt(b.piece_identite_url)]);
+    res.json({ ok: true, beneficiaire: rows[0] });
+  } catch (e) { next(e); }
+});
+
+r.delete('/governance/capital/beneficiaires/:id', guardWrite, async (req, res, next) => {
+  try {
+    const { rowCount } = await q('DELETE FROM beneficiaires_effectifs WHERE id=$1 AND imf_id=$2',
+      [req.params.id, req.user.imf_id]);
+    if (!rowCount) return res.status(404).json({ error: 'not_found' });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// --- 9.4 Feuille de présence en AG : quorum et droits de vote --------------
+/** Voix attribuées : nombre d'actions en SA, 1 voix en SCOOPS. */
+function voixAttribuees(cat, titres, coop) {
+  if (coop || cat === 'MEMBRE_SCOOP') return 1;
+  return Math.max(0, Number(titres) || 0);
+}
+
+/** Recalcule et enregistre le quorum de la session (sans écraser un PV signé). */
+async function majQuorum(imfId, sessionId) {
+  const { rows: s } = await q(
+    'SELECT id, statut, quorum_requis FROM sessions_et_pv WHERE id=$1 AND imf_id=$2', [sessionId, imfId]);
+  const session = s[0];
+  if (!session) return null;
+  const { coop } = await formeJuridique(imfId);
+  const { rows: f } = await q(
+    `SELECT mode_participation, nombre_titres_retenus, nombre_voix_attribuees
+       FROM feuille_presence_ag WHERE session_id=$1 AND imf_id=$2`, [sessionId, imfId]);
+  let presents = 0; let voixPresents = 0; let voixTotal; let voixAbsents;
+  const { rows: det } = await q(
+    `SELECT d.categorie, COALESCE(s.titres,0) AS titres
+       FROM detenteurs_capital d
+       LEFT JOIN (SELECT detenteur_id,
+                         SUM(CASE WHEN type_operation IN ('CESSION','REMBOURSEMENT_SORTIE')
+                                  THEN -nombre_titres ELSE nombre_titres END)::int AS titres
+                    FROM mouvements_titres WHERE imf_id=$1 GROUP BY detenteur_id) s
+              ON s.detenteur_id=d.id
+      WHERE d.imf_id=$1 AND d.statut='ACTIF'`, [imfId]);
+  voixTotal = det.reduce((a, x) => a + voixAttribuees(x.categorie, x.titres, coop), 0);
+  f.forEach((x) => {
+    if (x.mode_participation === 'ABSENT') return;
+    presents += 1;
+    voixPresents += Number(x.nombre_voix_attribuees || 0);
+  });
+  voixAbsents = Math.max(0, voixTotal - voixPresents);
+  const base = voixPresents + voixAbsents;
+  const pct = base > 0 ? +(voixPresents / base * 100).toFixed(2) : null;
+  const quorumRequis = Number(session.quorum_requis || 0);
+  // En SA et en SCOOPS, le quorum s'exprime en pourcentage de droits de vote.
+  const atteint = pct == null ? null : pct >= (quorumRequis || 0);
+  await q(
+    `UPDATE sessions_et_pv SET nombre_presents=$1, quorum_atteint=$2, updated_at=now()
+      WHERE id=$3 AND imf_id=$4 AND statut <> 'SIGNE_VERROUILLE'`,
+    [presents, atteint, sessionId, imfId]);
+  return { presents, quorum_requis: quorumRequis, voix_presents: voixPresents, voix_total: voixTotal,
+           pourcentage_presents: pct, quorum_atteint: atteint };
+}
+
+r.get('/governance/capital/presence/:sessionId', async (req, res, next) => {
+  try {
+    const { rows: s } = await q(
+      `SELECT s.*, o.libelle AS organe_libelle FROM sessions_et_pv s
+         LEFT JOIN organes_gouvernance o ON o.id=s.organe_id AND o.imf_id=s.imf_id
+        WHERE s.id=$1 AND s.imf_id=$2`, [req.params.sessionId, req.user.imf_id]);
+    if (!s.length) return res.status(404).json({ error: 'not_found' });
+    const { rows: lignes } = await q(
+      `SELECT l.*, d.nom_ou_raison_sociale, d.numero_registre, d.categorie, d.statut AS statut_detenteur,
+              md.nom_ou_raison_sociale AS mandataire_nom
+         FROM feuille_presence_ag l
+         JOIN detenteurs_capital d ON d.id=l.detenteur_id AND d.imf_id=l.imf_id
+         LEFT JOIN detenteurs_capital md ON md.id=l.mandataire_id
+        WHERE l.session_id=$1 AND l.imf_id=$2 ORDER BY d.nom_ou_raison_sociale`,
+      [req.params.sessionId, req.user.imf_id]);
+    const { coop, forme } = await formeJuridique(req.user.imf_id);
+    const { rows: det } = await q(
+      `SELECT d.id, d.nom_ou_raison_sociale, d.numero_registre, d.categorie,
+              COALESCE(sc.titres,0) AS titres
+         FROM detenteurs_capital d
+         LEFT JOIN (SELECT detenteur_id,
+                           SUM(CASE WHEN type_operation IN ('CESSION','REMBOURSEMENT_SORTIE')
+                                    THEN -nombre_titres ELSE nombre_titres END)::int AS titres
+                      FROM mouvements_titres WHERE imf_id=$1 GROUP BY detenteur_id) sc
+                ON sc.detenteur_id=d.id
+        WHERE d.imf_id=$1 AND d.statut='ACTIF' ORDER BY d.nom_ou_raison_sociale`, [req.user.imf_id]);
+    const voixTotal = det.reduce((a, x) => a + voixAttribuees(x.categorie, x.titres, coop), 0);
+    res.json({ session: s[0], lignes, detenteurs: det, forme_juridique: forme, est_scoop: coop,
+               voix_total: voixTotal, regle_voix: coop ? '1 sociétaire = 1 voix' : '1 action = 1 voix' });
+  } catch (e) { next(e); }
+});
+
+r.post('/governance/capital/presence', guardWrite, async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const sessionId = txt(b.session_id);
+    const det = txt(b.detenteur_id) ? await own('detenteurs_capital', txt(b.detenteur_id), req.user.imf_id) : null;
+    if (!sessionId || !det) return res.status(400).json({ error: 'session_et_detenteur_requis' });
+    const { rows: s } = await q('SELECT id, statut FROM sessions_et_pv WHERE id=$1 AND imf_id=$2',
+      [sessionId, req.user.imf_id]);
+    if (!s.length) return res.status(404).json({ error: 'session_not_found' });
+    if (s[0].statut === 'SIGNE_VERROUILLE') return res.status(409).json({ error: 'pv_verrouille' });
+    const { coop } = await formeJuridique(req.user.imf_id);
+    const mode = txt(b.mode_participation) || 'PRESENT';
+    const mandataire = txt(b.mandataire_id) ? await own('detenteurs_capital', txt(b.mandataire_id), req.user.imf_id) : null;
+    if (mode === 'REPRESENTE_PROCURATION' && (!mandataire || mandataire.id === det.id)) {
+      return res.status(400).json({ error: 'mandataire_invalide' });
+    }
+    const titres = b.nombre_titres_retenus != null ? int(b.nombre_titres_retenus)
+      : ((await soldesTitres(req.user.imf_id))[det.id] || { titres: 0 }).titres;
+    // Voix : celles du détenteur, portées par le mandataire en cas de procuration.
+    const voix = mode === 'ABSENT' ? 0 : voixAttribuees(det.categorie, titres, coop);
+    const { rows } = await q(
+      `INSERT INTO feuille_presence_ag (imf_id, session_id, detenteur_id, mode_participation,
+          mandataire_id, nombre_titres_retenus, nombre_voix_attribuees)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (session_id, detenteur_id) DO UPDATE SET
+         mode_participation=EXCLUDED.mode_participation, mandataire_id=EXCLUDED.mandataire_id,
+         nombre_titres_retenus=EXCLUDED.nombre_titres_retenus,
+         nombre_voix_attribuees=EXCLUDED.nombre_voix_attribuees, updated_at=now()
+       RETURNING *`,
+      [req.user.imf_id, sessionId, det.id, mode, mode === 'REPRESENTE_PROCURATION' ? mandataire.id : null,
+       titres, voix]);
+    const quorum = await majQuorum(req.user.imf_id, sessionId);
+    res.json({ ok: true, ligne: rows[0], quorum });
+  } catch (e) { next(e); }
+});
+
+r.get('/governance/capital/synthese', async (req, res, next) => {
+  try {
+    const imfId = req.user.imf_id;
+    const { forme, coop } = await formeJuridique(imfId);
+    const { rows: det } = await q(
+      `SELECT d.categorie, d.type_entite, d.statut, COALESCE(s.titres,0) AS titres
+         FROM detenteurs_capital d
+         LEFT JOIN (SELECT detenteur_id,
+                           SUM(CASE WHEN type_operation IN ('CESSION','REMBOURSEMENT_SORTIE')
+                                    THEN -nombre_titres ELSE nombre_titres END)::int AS titres
+                      FROM mouvements_titres WHERE imf_id=$1 GROUP BY detenteur_id) s
+                ON s.detenteur_id=d.id
+        WHERE d.imf_id=$1`, [imfId]);
+    const actifs = det.filter((x) => x.statut === 'ACTIF');
+    const titresTotal = actifs.reduce((a, x) => a + (x.titres || 0), 0);
+    // Concentration : part du premier détenteur et des 5 premiers (SA).
+    const parts = actifs.map((x) => x.titres || 0).sort((a, b) => b - a);
+    const pct = (n) => (titresTotal > 0 ? +(n / titresTotal * 100).toFixed(2) : null);
+    const { rows: pm } = await q(
+      `SELECT COUNT(*)::int AS n FROM detenteurs_capital d WHERE d.imf_id=$1
+          AND d.type_entite='PERSONNE_MORALE'
+          AND NOT EXISTS (SELECT 1 FROM beneficiaires_effectifs b WHERE b.detenteur_id=d.id)`,
+      [imfId]);
+    res.json({
+      forme_juridique: forme, est_scoop: coop,
+      regle_voix: coop ? '1 sociétaire = 1 voix' : '1 action = 1 voix',
+      nombre_detenteurs: det.length, nombre_actifs: actifs.length,
+      personnes_physiques: actifs.filter((x) => x.type_entite === 'PERSONNE_PHYSIQUE').length,
+      personnes_morales: actifs.filter((x) => x.type_entite === 'PERSONNE_MORALE').length,
+      titres_total: titresTotal,
+      voix_total: actifs.reduce((a, x) => a + voixAttribuees(x.categorie, x.titres, coop), 0),
+      part_premier: pct(parts[0] || 0),
+      part_cinq_premiers: pct(parts.slice(0, 5).reduce((a, b) => a + b, 0)),
+      personnes_morales_sans_beneficiaire: (pm[0] && pm[0].n) || 0
+    });
+  } catch (e) { next(e); }
+});
+
 export default r;
