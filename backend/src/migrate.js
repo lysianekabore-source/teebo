@@ -32,15 +32,38 @@ async function main() {
     console.error('!! DATABASE_URL absente : aucune migration possible.');
     return;
   }
-  try {
-    await Promise.race([
-      q('SELECT 1'),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('délai de connexion dépassé (20 s)')), 20000))
-    ]);
-  } catch (e) {
-    console.error('!! Base injoignable (' + (e && e.message) + ') : migration reportée, le serveur démarre.');
-    return;
+  // CORRECTIF 13/11/2026-D : trois essais rapides seulement (3 x 4 s).
+  // Auparavant, une base encore endormie pouvait retarder le demarrage de
+  // 20 s a 2 min ; desormais, au pire 12 s, alors que le serveur doit ouvrir
+  // le port tout de suite (sante Render).
+  let up = false;
+  for (let i = 1; i <= 3 && !up; i++) {
+    try {
+      await Promise.race([
+        q('SELECT 1'),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('délai de connexion dépassé (4 s)')), 4000))
+      ]);
+      up = true;
+    } catch (e) {
+      console.error('!! Base injoignable (essai ' + i + '/3) : ' + (e && e.message));
+    }
   }
+  if (!up) {
+    console.error('!! Migration reportée : le serveur démarre et réessaiera tout seul ' +
+      '(voir /healthz et /ready).');
+    return false;
+  }
+
+  // Est-ce deja migre ? On evite ainsi de rejouer 29 scripts SQL a chaque
+  // redemarrage (Render redemarre souvent sur l'offre gratuite).
+  try {
+    const v = await q("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='app_user'");
+    const o = await q("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='detenteurs_capital'");
+    if (v.rows.length && o.rows.length) {
+      console.log('Base déjà à jour (schema v33) : migration ignorée.');
+      return true;
+    }
+  } catch (e) { /* on continue, la migration verra */ }
 
   // Applique les schémas dans l'ordre : socle puis extensions (VAGUE 7).
   // CORRECTIF VAGUE 34 : la liste etait ecrite a la main et s'arretait a
@@ -163,13 +186,14 @@ async function main() {
 
   await pool.end();
   console.log('Migration terminée.');
+  return true;
 }
 
-main()
-  .then(() => { clearTimeout(watchdog); process.exit(0); })
-  .catch((e) => {
-    console.error(e);
-    // Code de sortie 0 : la migration ne doit jamais empecher le demarrage.
-    clearTimeout(watchdog);
-    process.exit(0);
-  });
+export default main;
+
+if (process.argv[1] && process.argv[1].endsWith('migrate.js')) {
+  main()
+    .then(() => { clearTimeout(watchdog); process.exit(0); })
+    .catch((e) => { console.error('Migration :', e && (e.message || e)); clearTimeout(watchdog); process.exit(0); });
+}
+

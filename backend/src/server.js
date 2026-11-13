@@ -6,9 +6,10 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
+import httpMod from 'http';
 import { fileURLToPath } from 'url';
 
-import { q, tx } from './db.js';
+import { q, tx, pool } from './db.js';
 import { authenticate, requireFreshPassword, requireRole, createSession } from './auth.js';
 import authRoutes from './routes/auth.js';
 import requestRoutes from './routes/requests.js';
@@ -136,6 +137,57 @@ app.use('/api/v1', governanceRoutes);
 // VAGUE 29 — conformite prudentielle, risques & PCA, echeancier, exports reglementaires
 app.use('/api/v1', governanceConformiteRoutes);
 
+// État de préparation, exposé sur /ready (et utilisé par /healthz).
+const etat = { migration: 'en attente', demarre: new Date().toISOString(), erreur: null };
+app.get('/ready', async (_req, res) => {
+  // Vérification RÉELLE de la base à la demande (Render ne l'appelle pas,
+  // c'est pour vous : ouvrez /ready dans le navigateur pour savoir où en est
+  // le service). Ne bloque pas : 3 s maximum.
+  let base = 'injoignable';
+  let tables = 0;
+  try {
+    await Promise.race([q('SELECT 1'), new Promise((_, rj) => setTimeout(() => rj(new Error('timeout')), 3000))]);
+    base = 'connectee';
+    const t = await q("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema='public'");
+    tables = t.rows[0].n;
+  } catch (e) { base = 'injoignable (' + (e && e.message) + ')'; }
+  const pret = base === 'connectee' && tables > 10;
+  res.status(pret ? 200 : 503).json({
+    pret, base, tables, migration: etat.migration, erreur: etat.erreur, depuis: etat.demarre
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CORRECTIF 13/11/2026-D — le serveur n'attend PLUS la base pour se mettre en
+// ligne. Ordre des opérations :
+//   1. le port s'ouvre immédiatement (Render voit le service en vie) ;
+//   2. la migration tourne ensuite en tâche de fond, sans jamais bloquer ;
+//   3. si la base était endormie, elle est réessayée automatiquement toutes
+//      les 20 s (3 tentatives en arrière-plan après le démarrage).
+// Avant, la migration passait AVANT le démarrage : une base endormie rendait
+// le service « injoignable » alors que rien n'était cassé dans le code.
+// ---------------------------------------------------------------------------
+let essaisRestants = 3;
+async function lancerMigration() {
+  try {
+    etat.migration = 'en cours';
+    const { default: migrate } = await import('./migrate.js');
+    const ok = await migrate();
+    etat.migration = ok ? 'terminee' : 'reportee';
+    etat.erreur = ok ? null : 'Base injoignable pour le moment';
+    console.log('État migration : ' + etat.migration);
+    if (!ok && essaisRestants > 0) {
+      essaisRestants--;
+      setTimeout(lancerMigration, 20000).unref();
+    }
+  } catch (e) {
+    etat.migration = 'erreur';
+    etat.erreur = String((e && e.message) || e);
+    console.error('Migration non aboutie :', etat.erreur);
+    if (essaisRestants > 0) { essaisRestants--; setTimeout(lancerMigration, 20000).unref(); }
+  }
+}
+
 // ----------------------------- Frontend -----------------------------------
 // CORRECTIF 13/11/2026-C — « ENOENT ... stat '/frontend/index.html' »
 // L'API cherchait les pages web dans un dossier /frontend qui n'existe pas
@@ -237,23 +289,22 @@ app.use((err, req, res, _next) => {
 const port = process.env.PORT || 3000;
 const host = process.env.HOST || '0.0.0.0';
 
-// Le serveur écoute IMMÉDIATEMENT : la santé (/healthz) répond sans attendre la
-// base. C'est ce qui garantit une mise en ligne rapide sur Render (offre
-// gratuite) même si PostgreSQL est encore en train de se réveiller.
 const server = app.listen(port, host, () => {
   console.log(`teebo API en écoute sur ${host}:${port}`);
-  // Rattrapage des schémas en tâche de fond : si la migration au démarrage a
-  // été interrompue (base lente, verrou), on réessaie ici SANS jamais bloquer
-  // le service. Idempotent : relancer ne casse rien.
-  // CORRECTIF 13/11/2026-B : la migration tourne désormais AU PREMIER PLAN
-  // dans le conteneur (voir Dockerfile). On ne l'importe plus ici : le module
-  // se terminait par process.exit(0), ce qui pouvait arrêter le serveur juste
-  // après son démarrage (symptôme « Application exited early » sur Render).
-  // La variable TEEBO_AUTO_MIGRATE n'est conservée que pour compatibilité.
-  if (process.env.TEEBO_AUTO_MIGRATE === '1' && process.env.TEEBO_BOOT_MIGRATED !== '1') {
-    console.log('Rattrapage migration ignoré : appliquez node src/migrate.js séparément.');
-  }
+  // La migration démarre juste après l'ouverture du port, en arrière-plan.
+  setTimeout(lancerMigration, 300);
+  // Sonde de vie : garde le service éveillé sur l'offre gratuite Render
+  // (les instances gratuites s'endorment après 15 min d'inactivité).
+  setInterval(() => {
+    if (process.env.TEEBO_KEEPALIVE === '0') return;
+    const url = 'http://127.0.0.1:' + port + '/healthz';
+    const h = require_http();
+    const r = h.get(url, (res) => res.resume());
+    r.on('error', () => {});
+  }, 10 * 60 * 1000).unref();
 });
+
+function require_http() { return httpMod; }
 
 // Un dernier incident ne doit pas tuer le service silencieusement.
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e && (e.message || e)));

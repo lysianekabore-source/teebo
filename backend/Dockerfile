@@ -52,6 +52,7 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=5 \
   CMD curl -fsS http://127.0.0.1:3000/healthz || exit 1
 
-# Un seul processus au premier plan : le serveur ne peut plus « sortir tôt ».
-# La migration est bornée dans le temps et ne peut pas empêcher la mise en ligne.
-CMD ["sh", "-c", "node src/migrate.js || true; exec node src/server.js"]
+# Le serveur démarre en PREMIER (port ouvert tout de suite), puis la migration
+# tourne en tâche de fond : une base endormie ne retarde plus la mise en ligne
+# et ne peut plus provoquer « Application exited early ».
+CMD ["sh", "./start.sh"]

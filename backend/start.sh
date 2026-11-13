@@ -1,20 +1,17 @@
 #!/bin/sh
-# teebo - demarrage du serveur API (Render, offre gratuite).
+# teebo — démarrage du serveur API (Render, offre gratuite)
+# ---------------------------------------------------------------
+# CORRECTIF 13/11/2026-D — l'ordre a été inversé :
+#   1. le serveur démarre IMMÉDIATEMENT (le port s'ouvre, Render le voit en vie) ;
+#   2. la migration tourne ensuite EN TÂCHE DE FOND, sans jamais bloquer ;
+#   3. si la base dort, elle est réessayée automatiquement (voir src/server.js).
 #
-# CORRECTIF 13/11/2026-B : un seul processus, au PREMIER PLAN.
-# La migration est executee d'abord (bornee a 120 s : elle ne peut pas bloquer),
-# puis le serveur prend la main avec exec (PID 1). Le conteneur ne « sort » donc
-# plus juste apres le demarrage du serveur (« Application exited early »).
+# Ne JAMAIS revenir à « node src/migrate.js ; node src/server.js » :
+# une base endormie retardait alors tout le démarrage, et Render affichait
+# « Application exited early » / « service injoignable ».
+# ---------------------------------------------------------------
 set -e
 cd "$(dirname "$0")"
 
-# Le dossier db/ est cherche a cote de start.sh et a la racine de l'image.
-export TEEBO_DB_DIR="${TEEBO_DB_DIR:-$(pwd)/db}"
-export MIGRATION_MAX_MS="${MIGRATION_MAX_MS:-120000}"
-
-echo "==> Dossier des migrations : $TEEBO_DB_DIR"
-echo "==> Migration de la base (schemas 01 .. 33) ..."
-node src/migrate.js || echo "!! Migration partielle (base indisponible ?) - le serveur demarre quand meme."
-
-echo "==> Demarrage du serveur API ..."
+echo "==> Démarrage du serveur API (la base sera mise à jour en arrière-plan) ..."
 exec node src/server.js
