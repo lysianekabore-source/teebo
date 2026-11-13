@@ -199,8 +199,13 @@ const server = app.listen(port, host, () => {
   // Rattrapage des schémas en tâche de fond : si la migration au démarrage a
   // été interrompue (base lente, verrou), on réessaie ici SANS jamais bloquer
   // le service. Idempotent : relancer ne casse rien.
-  if (process.env.TEEBO_AUTO_MIGRATE !== '0') {
-    import('./migrate.js').catch((e) => console.error('Rattrapage migration :', e && e.message));
+  // CORRECTIF 13/11/2026-B : la migration tourne désormais AU PREMIER PLAN
+  // dans le conteneur (voir Dockerfile). On ne l'importe plus ici : le module
+  // se terminait par process.exit(0), ce qui pouvait arrêter le serveur juste
+  // après son démarrage (symptôme « Application exited early » sur Render).
+  // La variable TEEBO_AUTO_MIGRATE n'est conservée que pour compatibilité.
+  if (process.env.TEEBO_AUTO_MIGRATE === '1' && process.env.TEEBO_BOOT_MIGRATED !== '1') {
+    console.log('Rattrapage migration ignoré : appliquez node src/migrate.js séparément.');
   }
 });
 

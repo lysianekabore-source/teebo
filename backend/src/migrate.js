@@ -24,6 +24,24 @@ watchdog.unref && watchdog.unref();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
+  // CORRECTIF 13/11/2026-B : on VÉRIFIE d'abord que la base répond. Sinon on
+  // s'arrête en quelques secondes au lieu de tenter 32 fichiers et d'attendre
+  // le délai global : le serveur prend la main tout de suite et la migration
+  // sera rejouée au démarrage suivant (ou à la main) quand la base sera prête.
+  if (!process.env.DATABASE_URL) {
+    console.error('!! DATABASE_URL absente : aucune migration possible.');
+    return;
+  }
+  try {
+    await Promise.race([
+      q('SELECT 1'),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('délai de connexion dépassé (20 s)')), 20000))
+    ]);
+  } catch (e) {
+    console.error('!! Base injoignable (' + (e && e.message) + ') : migration reportée, le serveur démarre.');
+    return;
+  }
+
   // Applique les schémas dans l'ordre : socle puis extensions (VAGUE 7).
   // CORRECTIF VAGUE 34 : la liste etait ecrite a la main et s'arretait a
   // schema_v30. Les tables de l'actionnariat/societariat (detenteurs_capital,
@@ -36,15 +54,29 @@ async function main() {
   //   2) ../db              (paquet arborescent backend/ + db/)
   //   3) ../../db           (ancienne arborescence backend/src + db/)
   // Le premier dossier contenant des fichiers schema*.sql est retenu.
+  // CORRECTIF 13/11/2026-B : « Dossier db/ illisible : ENOENT ... '/db' ».
+  // Le chemin '/db' venait d'un path.resolve sur un dossier de travail mal
+  // résolu : on n'utilise plus que des chemins ABSOLUS fiables, et on affiche
+  // en clair le dossier retenu pour que le journal Render soit parlant.
+  const here = __dirname;                       // .../src
   const candidates = [
-    process.env.TEEBO_DB_DIR,
+    process.env.TEEBO_DB_DIR,                   // /app/db (Dockerfile)
+    path.resolve(here, '..', 'db'),             // backend/db
+    path.resolve(here, '..', '..', 'db'),       // db/ à côté de backend/ (paquet livré)
+    path.resolve(here, '..', '..', '..', 'db'), // db/ deux niveaux au-dessus
+    '/app/db',
     path.resolve(process.cwd(), 'db'),
-    path.resolve(__dirname, '../../../db'),
-    path.resolve(__dirname, '../../db')
+    path.resolve(process.cwd(), '..', 'db')
   ].filter(Boolean);
-  const dbDir = candidates.find((d) => {
+  const withSchemas = candidates.filter((d) => {
     try { return fs.readdirSync(d).some((f) => /^schema.*\.sql$/i.test(f)); } catch (e) { return false; }
-  }) || candidates[2];
+  });
+  const dbDir = withSchemas[0] || path.resolve(here, '..', 'db');
+  if (withSchemas.length) {
+    console.log('Dossier des migrations : ' + dbDir);
+  } else {
+    console.error('!! Aucun dossier db/ contenant schema*.sql. Emplacements essayés : ' + candidates.join(' | '));
+  }
   const numOf = (f) => {
     const m = /^schema(?:_v(\d+))?\.sql$/i.exec(f);
     return m ? Number(m[1] || 1) : null;
