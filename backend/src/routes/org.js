@@ -2,7 +2,7 @@ import express from 'express';
 import crypto from 'crypto';
 import { q, tx } from '../db.js';
 import { authenticate, requireFreshPassword, requireRole } from '../auth.js';
-import { notifyWhatsApp, notifyEmail, waLink, mailtoLink, PUBLIC_SITE_URL, emailGatewayReady } from '../notify.js';
+import { notifyWhatsApp, notifyEmail, waLink, mailtoLink, loginUrlFor, emailGatewayReady } from '../notify.js';
 import { getBranding } from '../documents.js';
 import { defaultPermissionKeysForRole, buildProfilesMatrix } from '../permissions.js';
 import { positionInfo } from '../org_structure.js';
@@ -323,7 +323,7 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
     // Diffusion du code d'accès à l'utilisateur, via les canaux de l'IMF.
     const send = await buildAccessCodeSend(req.user.imf_id, {
       id: out.id, full_name, email, phone, code_user: out.code_user
-    }, { channel: 'creation', dispatchedBy: req.user.id });
+    }, { channel: 'creation', dispatchedBy: req.user.id, req });
     res.json({ ok: true, id: out.id, code_user: out.code_user, send });
   } catch (e) { next(e); }
 });
@@ -360,7 +360,7 @@ router.post('/users/:id/resend-code', requireRole('admin_imf','direction'), asyn
     const send = await buildAccessCodeSend(req.user.imf_id, {
       id: u.id, full_name: u.full_name, email: newEmail || u.email,
       phone: newPhone || u.phone, code_user: u.code_user
-    }, { channel: ch, dispatchedBy: req.user.id });
+    }, { channel: ch, dispatchedBy: req.user.id, req });
     res.json({ ok: true, id: u.id, code_user: u.code_user, send });
   } catch (e) { next(e); }
 });
@@ -377,6 +377,9 @@ router.post('/users/:id/resend-code', requireRole('admin_imf','direction'), asyn
  *   passerelle configurée.
  */
 async function buildAccessCodeSend(imfId, user, ctx = {}) {
+  // Lien de connexion : celui du site réellement utilisé par l'administrateur
+  // (req), jamais une adresse générique. Repli : PUBLIC_SITE_URL / défaut.
+  const loginUrl = loginUrlFor(ctx.req);
   const br = await getBranding(imfId);
   const imfName = br.legal_name || (br.imf && br.imf.name) || 'votre institution';
   const senderWa = br.notify_whatsapp || (br.imf && br.imf.whatsapp) || '';
@@ -388,7 +391,7 @@ async function buildAccessCodeSend(imfId, user, ctx = {}) {
     '',
     `Votre accès à l'application ${imfName} (via teebo) est créé.`,
     `Code d'accès : ${user.code_user}`,
-    `Connexion : ${PUBLIC_SITE_URL}/login`,
+    `Connexion : ${loginUrl}`,
     `Dès votre première connexion, créez immédiatement votre mot de passe.`,
     '',
     `-- ${imfName}`,

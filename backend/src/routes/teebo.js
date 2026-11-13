@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { q, tx } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
 import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL,
-  waLink, mailtoLink, invoicePublicUrl, PUBLIC_SITE_URL } from '../notify.js';
+  waLink, mailtoLink, invoicePublicUrl, siteBaseFrom } from '../notify.js';
 import { getBranding, renderInvoice, setDocumentCsp, moneyFcfa } from '../documents.js';
 import { buildInvoiceLines, LICENCE_CENTS } from '../pricing.js';
 import { buildProfilesMatrix } from '../permissions.js';
@@ -128,11 +128,13 @@ router.post('/requests/:id/approve', async (req, res, next) => {
     });
 
     // Notification WhatsApp + e-mail à l'IMF (code d'accès + essai 30 jours)
+    // Lien de connexion du site teebo réellement utilisé par l'opérateur.
+    const siteBase = siteBaseFrom(req);
     const invoiceUrl = invoicePublicUrl(out.invoiceId);
     const subject = 'Votre accès teebo est approuvé (essai 30 jours)';
     const msg = `Bonjour: votre accès à l'essai gratuit de 30 jours sur teebo est approuvé. ` +
       `Code d'accès admin (IMF ${out.imfCode}) : ${out.code}. ` +
-      `Connectez-vous sur https://teebo-imf.netlify.app/login puis créez immédiatement votre propre mot de passe.`;
+      `Connectez-vous sur ${siteBase}/login puis créez immédiatement votre propre mot de passe.`;
     const waTo = out.whatsapp || out.phone_main;
     const resWa = await notifyWhatsApp(waTo, msg);
     const resMail = await notifyEmail(out.email, subject, msg);
@@ -283,8 +285,9 @@ router.post('/imfs/:id/regenerate-code', async (req, res, next) => {
       return { code, email: admin.email, imfCode: imf.code_imf,
         whatsapp: imf.whatsapp, phone: imf.phone_main };
     });
+    const siteBase = siteBaseFrom(req);
     const msg = `teebo: votre nouveau code d'accès administrateur (IMF ${out.imfCode}) : ${out.code}. ` +
-      `Connectez-vous sur https://teebo-imf.netlify.app/login et créez votre mot de passe via « Premier accès ».`;
+      `Connectez-vous sur ${siteBase}/login et créez votre mot de passe via « Premier accès ».`;
     const subject = 'Votre nouveau code d\'accès teebo';
     const waTo = out.whatsapp || out.phone;
     const resWa = await notifyWhatsApp(waTo, msg);
@@ -311,8 +314,9 @@ router.post('/imfs/:id/resend-code', async (req, res, next) => {
       `SELECT id, code_user, email FROM app_user WHERE imf_id=$1 AND role='admin_imf' ORDER BY created_at ASC LIMIT 1`,
       [imf.id])).rows[0];
     if (!admin || !admin.code_user) return res.status(409).json({ error: 'no_code' });
+    const siteBase = siteBaseFrom(req);
     const msg = `teebo: rappel de votre code d'accès administrateur (IMF ${imf.code_imf}) : ${admin.code_user}. ` +
-      `Connectez-vous sur https://teebo-imf.netlify.app/login et créez votre mot de passe.`;
+      `Connectez-vous sur ${siteBase}/login et créez votre mot de passe.`;
     const subject = 'Rappel : votre code d\'accès teebo';
     const waTo = imf.whatsapp || imf.phone_main;
     const resWa = await notifyWhatsApp(waTo, msg);

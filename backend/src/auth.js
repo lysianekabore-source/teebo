@@ -3,7 +3,13 @@ import crypto from 'crypto';
 import { q, tx } from './db.js';
 
 export const MDP_MAX_DAYS = 60;      // expiration mot de passe
-const IDLE_MINUTES = 30;              // inactivité -> déconnexion
+// Inactivité -> déconnexion : 60 minutes par défaut, réglable sans toucher
+// au code via la variable d'environnement IDLE_MINUTES (Render > Environment).
+export function idleMinutes() {
+  const v = parseInt(process.env.IDLE_MINUTES, 10);
+  return Number.isFinite(v) && v >= 5 && v <= 720 ? v : 60;
+}
+const IDLE_MINUTES = 60;
 export const SESSION_TOKEN_TTL = '60d';
 
 function b64url(buf) {
@@ -35,7 +41,9 @@ export async function createSession(user) {
 /**
  * Middleware d'authentification :
  *  - vérifie le cookie de session (opaque, httpOnly)
- *  - applique la déconnexion après 30 min d'inactivité
+ *  - applique la déconnexion après 60 min d'inactivité (toute requête
+ *    authentifiée compte comme de l'activité : un utilisateur qui travaille
+ *    n'est jamais déconnecté)
  *  - vérifie l'expiration du mot de passe (60 jours) -> force le changement
  *  - expose req.user + req.imf (cloisonnement)
  */
@@ -61,15 +69,24 @@ export async function authenticate(req, res, next) {
       await q('UPDATE session SET revoked = true WHERE id = $1', [row.session_id]);
       return res.status(401).json({ error: 'session_expired' });
     }
-    // Inactivité 30 min
+    // Inactivité : 60 min par défaut (IDLE_MINUTES). Le compteur repart à
+    // chaque requête authentifiée (voir le marquage d'activité plus bas).
     const idleMs = Date.now() - new Date(row.last_seen_at).getTime();
-    if (idleMs > IDLE_MINUTES * 60 * 1000) {
+    if (idleMs > idleMinutes() * 60 * 1000) {
       await q('UPDATE session SET revoked = true WHERE id = $1', [row.session_id]);
       return res.status(401).json({ error: 'idle_timeout' });
     }
     if (!row.is_active) return res.status(403).json({ error: 'user_disabled' });
 
-    await q('UPDATE session SET last_seen_at = now() WHERE id = $1', [row.session_id]);
+    // ACTIVITÉ : chaque requête authentifiée repousse l'échéance d'inactivité.
+    // Les appels de simple maintien de session (balise de l'interface) ne
+    // sont écrits qu'une fois par minute maximum, pour ne pas surcharger la
+    // base quand plusieurs onglets sont ouverts.
+    const isKeepAlive = req.headers['x-teebo-keepalive'] === '1';
+    const sinceLastSeen = Date.now() - new Date(row.last_seen_at).getTime();
+    if (!isKeepAlive || sinceLastSeen > 60 * 1000) {
+      await q('UPDATE session SET last_seen_at = now() WHERE id = $1', [row.session_id]);
+    }
 
     req.user = {
       id: row.id, imf_id: row.imf_id, role: row.role, email: row.email,
@@ -106,6 +123,9 @@ export function requireFreshPassword(req, res, next) {
 const ROLE_ALIASES = Object.freeze({
   // Direction générale de l'IMF : administration complète.
   superadmin:           ['admin_imf', 'direction'],
+  // Président du Conseil d'Administration : administration de l'institution
+  // (structure, gouvernance, comptes) mais AUCUN droit d'opération financière.
+  pca_admin:            ['admin_imf', 'direction'],
   // Directions de département : encadrement (lecture + validations).
   operations_director:  ['department', 'service', 'agency'],
   credit_director:      ['department', 'service'],
@@ -125,6 +145,23 @@ const ROLE_ALIASES = Object.freeze({
   credit_analyst:       ['staff', 'service'],
   recovery_agent:       ['staff', 'service'],
 });
+
+/**
+ * Rôle TECHNIQUE effectif d'un utilisateur.
+ * Le poste « Président du Conseil d'Administration » est historiquement
+ * enregistré avec le rôle socle 'office_staff' (aucun droit d'opération).
+ * Pour que le PCA administre réellement son institution (structure,
+ * gouvernance, comptes) sans lui ouvrir la caisse, on lui attribue le rôle
+ * technique 'pca_admin' — strictement identique à superadmin côté droits.
+ * Règle : position_code = POS_PCA ET rôle encore 'office_staff' (ou 'superadmin').
+ */
+export function effectiveRoleOf(user) {
+  if (!user) return null;
+  const pos = String(user.position_code || '').toUpperCase();
+  const role = String(user.role || '');
+  if (pos === 'POS_PCA' && (role === 'office_staff' || role === 'superadmin')) return 'pca_admin';
+  return role;
+}
 
 /** Profils effectifs d'un rôle : le rôle lui-même + ses alias socle. */
 export function rolesOf(role) {

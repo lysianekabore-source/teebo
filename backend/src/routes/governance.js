@@ -19,7 +19,7 @@
 import crypto from 'crypto';
 import { Router } from 'express';
 import { q } from '../db.js';
-import { authenticate, requireFreshPassword, requireRole } from '../auth.js';
+import { authenticate, requireFreshPassword, requireRole, rolesOf } from '../auth.js';
 import { getBranding, setDocumentCsp, fmtDate, moneyFcfa } from '../documents.js';
 
 const r = Router();
@@ -32,8 +32,10 @@ r.use((req, res, next) => {
   next();
 });
 
-const WRITE_ROLES = ['superadmin', 'admin_imf', 'direction'];
-const canWrite = (user) => WRITE_ROLES.includes(user && user.role);
+const WRITE_ROLES = ['superadmin', 'pca_admin', 'admin_imf', 'direction'];
+// On compare les PROFILS EFFECTIFS (rôle-poste + alias) : un poste dont le
+// rôle est un alias d'administration (ex. PCA) reste autorisé.
+const canWrite = (user) => Boolean(user) && rolesOf(user.role).some((r) => WRITE_ROLES.includes(r));
 
 // --- Utilitaires -----------------------------------------------------------
 const int = (v, dflt = 0) => {

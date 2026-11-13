@@ -2,8 +2,8 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { q, tx } from '../db.js';
-import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken, userHasPermission, effectivePermissionKeys } from '../auth.js';
-import { notifyEmail, notifyWhatsApp, PUBLIC_SITE_URL } from '../notify.js';
+import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken, userHasPermission, effectivePermissionKeys, idleMinutes, effectiveRoleOf } from '../auth.js';
+import { notifyEmail, notifyWhatsApp, loginUrlFor } from '../notify.js';
 import { isCashierPosition } from '../org_structure.js';
 import { getStatus, is2faRequired, createChallenge, consumeChallenge, verifyForUser,
   verifyRecoveryCode, startEnrollment, confirmEnrollment, disable,
@@ -16,7 +16,7 @@ const COOKIE = {
   secure: process.env.NODE_ENV === 'production',
   sameSite: 'lax',
   path: '/',
-  maxAge: 30 * 60 * 1000  // cookie glissant aligné sur l'inactivité 30 min
+  maxAge: 60 * 60 * 1000  // cookie glissant aligné sur l'inactivité (60 min)
 };
 
 // Politique de mot de passe : >= 10 car., maj/min/chiffre.
@@ -268,7 +268,11 @@ router.post('/forgot-password', async (req, res, next) => {
       [u.id, u.imf_id, hashToken(token), String(RESET_TTL_MIN)]
     );
 
-    const link = `${PUBLIC_SITE_URL}/login.html?reset=${encodeURIComponent(token)}`;
+    // Le lien de réinitialisation pointe vers LE site utilisé par le demandeur
+    // (ex. https://teebo-imf.netlify.app/login.html?reset=…) et non vers un
+    // domaine générique : le destinataire arrive directement sur la bonne page.
+    const siteBase = loginUrlFor(req).replace(/\/login$/, '');
+    const link = `${siteBase}/login.html?reset=${encodeURIComponent(token)}`;
     const prenom = (u.full_name || '').split(' ')[0] || '';
     const subject = 'teebo — Réinitialisation de votre mot de passe';
     const body =
@@ -341,6 +345,15 @@ router.post('/logout', authenticate, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// --- Maintien de session (balise d'activité de l'interface) -----------------
+// Appelée toutes les 10 minutes par l'onglet ouvert ET AU RETOUR sur l'onglet :
+// un utilisateur qui travaille (ou qui revient sur son écran après une pause)
+// n'est jamais déconnecté. Coût minimal : une seule requête authentifiée.
+router.post('/keepalive', authenticate, (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ ok: true, idle_minutes: idleMinutes(), at: new Date().toISOString() });
+});
+
 // --- Profil courant (avec contexte IMF + essai) -----------------------------
 router.get('/me', authenticate, async (req, res, next) => {
   try {
@@ -361,6 +374,8 @@ router.get('/me', authenticate, async (req, res, next) => {
       user: {
         id: req.user.id, email: req.user.email, full_name: req.user.full_name,
         role: req.user.role, code_user: req.user.code_user, imf_id: req.user.imf_id,
+        // Profil effectif (rôle technique éventuel, ex. 'pca_admin' pour un PCA).
+        effective_role: effectiveRoleOf(req.user),
         position_code: req.user.position_code || null,
         is_cashier: isCashierPosition(req.user.position_code)
       },
@@ -373,6 +388,7 @@ router.get('/me', authenticate, async (req, res, next) => {
       password_set_at: req.user.password_set_at || null,
       password_expires_at: pwdExpiresAt,
       password_change_required: req.user.must_change_password || req.passwordExpired,
+      idle_minutes: idleMinutes(),
       can_validate_credit_final: canValidateCreditFinal,
       permissions: permissionKeys
     });

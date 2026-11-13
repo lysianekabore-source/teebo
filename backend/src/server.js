@@ -34,6 +34,9 @@ const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
+// Dernière origine de site connue (voir middleware X-Site-URL ci-dessous).
+export let SITE_ORIGIN_SEEN = '';
+
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -54,6 +57,26 @@ app.use(cors({ origin: process.env.CORS_ORIGIN || true, credentials: true }));
 // en data URL (base64) et dépassent largement 1 Mo ; une limite trop basse
 // renvoyait un 413 masqué en « Une erreur est survenue » lors de la
 // confrontation / signature. On autorise donc des corps plus volumineux.
+// CONTEXTE DU SITE : quel site le visiteur utilise-t-il ? (Netlify, domaine
+// propre, aperçu de déploiement…). Le front envoie l'origine réelle dans
+// l'en-tête X-Site-URL ; on la mémorise pour que les messages envoyés
+// (code d'accès, mot de passe oublié) contiennent LE lien de connexion du
+// client et non l'adresse Render de l'API. Aucune valeur n'est acceptée sans
+// contrôle : seules les origines http(s) valides et non locales sont gardées.
+app.use((req, _res, next) => {
+  try {
+    const raw = req.headers['x-site-url'] || req.headers.origin || req.headers.referer;
+    const v = String(raw || '').trim();
+    if (v) {
+      const u = new URL(v);
+      if (/^https?:$/.test(u.protocol) && !/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(u.origin)) {
+        SITE_ORIGIN_SEEN = u.origin;
+        globalThis.__TEEBO_SITE_ORIGIN__ = u.origin;
+      }
+    }
+  } catch (_) { /* en-tête absent ou illisible : on garde la dernière valeur connue */ }
+  next();
+});
 app.use(express.json({ limit: '12mb' }));
 app.use(cookieParser());
 

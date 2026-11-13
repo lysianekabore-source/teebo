@@ -22,7 +22,57 @@ export const TEEBO_EMAIL = process.env.TEEBO_EMAIL || 'hello@teebo.africa';
 export const PUBLIC_API_URL = (process.env.PUBLIC_API_URL || process.env.PUBLIC_BASE_URL ||
   'https://teebo-api-p825.onrender.com').replace(/\/+$/, '');
 // Site public teebo (page de connexion de l'IMF).
-export const PUBLIC_SITE_URL = (process.env.PUBLIC_SITE_URL || 'https://www.teebo.africa').replace(/\/+$/, '');
+// PUBLIC_SITE_URL ne sert QUE de valeur de secours : c'est le site réellement
+// utilisé (déduit de la requête : origine du navigateur, Referer de la page de
+// connexion, ou en-tête X-Site-URL) qui prime. Ainsi le lien envoyé dans les
+// messages de code d'accès pointe toujours vers LA page de connexion du client
+// (ex. https://teebo-imf.netlify.app/login) et jamais vers un domaine générique.
+export const PUBLIC_SITE_URL = (process.env.PUBLIC_SITE_URL || 'https://teebo-imf.netlify.app').replace(/\/+$/, '');
+
+/** Retire le chemin et normalise une origine (https://site.com/ → https://site.com). */
+export function cleanOrigin(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    if (!/^https?:$/.test(u.protocol)) return '';
+    return u.origin;
+  } catch (_) { return ''; }
+}
+
+/**
+ * Origine du SITE vue par l'utilisateur, pour construire les liens de connexion.
+ * Ordre de priorité :
+ *   1. en-tête X-Site-URL (posé par la règle de redirection / le proxy Netlify) ;
+ *   2. header Origin (appels XHR/fetch) ;
+ *   3. Referer (page d'où part la requête : /app.html, /login…) ;
+ *   4. PUBLIC_SITE_URL (réglage explicite de l'exploitant, s'il est défini) ;
+ *   5. site teebo par défaut.
+ * Un Referer ou une origine « localhost/127.0.0.1 » est ignoré (lien inutilisable
+ * pour un destinataire). Le résultat ne contient jamais de double slash final.
+ */
+export function siteBaseFrom(req) {
+  const h = (req && req.headers) || {};
+  // Raccourci : un X-Site-URL valide est la source la plus fiable.
+  const hinted = cleanOrigin(h['x-site-url']);
+  if (hinted && !/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(hinted)) return hinted;
+  const candidates = [h['x-site-url'], h['x-forwarded-host'] && h['x-forwarded-proto']
+    ? `${h['x-forwarded-proto']}://${h['x-forwarded-host']}` : '', h.origin, h.referer];
+  // Une valeur explicite de l'exploitant (PUBLIC_SITE_URL) est respectée :
+  // elle passe avant la dernière origine vue, mais jamais avant les en-têtes
+  // réellement transmis par la requête en cours.
+  const explicitSite = String(process.env.PUBLIC_SITE_URL || '').trim()
+    ? cleanOrigin(process.env.PUBLIC_SITE_URL) : '';
+  const ordered = candidates.slice(0, 4).concat(explicitSite ? [explicitSite] : [], candidates.slice(4));
+  for (const c of ordered) {
+    const o = cleanOrigin(c);
+    if (o && !/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(o)) return o;
+  }
+  return PUBLIC_SITE_URL;
+}
+
+/** URL de la page de connexion (premier accès + mot de passe). */
+export function loginUrlFor(req) { return `${siteBaseFrom(req)}/login`; }
 
 /**
  * Lien « click-to-chat » WhatsApp (https://wa.me/<numero>?text=...).

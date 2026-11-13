@@ -10,7 +10,18 @@
 // ---------------------------------------------------------------------------
 import { RESOURCES, VERBS, deptOfRole, serviceOfRole } from './org_structure.js';
 
+// pca_admin : rôle TECHNIQUE interne du poste « President du Conseil
+// d'Administration ». Le PCA ne gere pas la caisse (separation des taches :
+// aucune permission operations/clients/treasury), mais il administre bien son
+// institution : structure, gouvernance, utilisateurs, parametres.
 const ADMIN_ROLES = ['superadmin', 'admin_imf', 'teebo_admin', 'direction'];
+
+// Le PCA dispose des mêmes droits d'ADMINISTRATION que la Direction Générale,
+// MAIS la séparation des tâches reste stricte : il n'a aucun droit
+// d'opération financière (caisse, clients, trésorerie, comptabilité, crédit).
+// -> on lui accorde tout SAUF ces ressources.
+const PCA_ROLE = 'pca_admin';
+const PCA_DENIED_RESOURCES = new Set(['operations', 'clients', 'accounts', 'treasury', 'accounting', 'credit', 'recovery']);
 
 // Règles scopées : [role, resource, verb, scope]. (DOIT refléter rbac_rule.)
 const SCOPED = [
@@ -95,6 +106,13 @@ function grant(role, resource, verb, scope) {
 }
 for (const role of ADMIN_ROLES)
   for (const res of RESOURCES) for (const v of VERBS) grant(role, res, v, 'tenant');
+// PCA : administration complète de l'institution, sans droit d'opération.
+for (const res of RESOURCES) {
+  if (PCA_DENIED_RESOURCES.has(res)) continue;
+  for (const v of VERBS) grant(PCA_ROLE, res, v, 'tenant');
+}
+// Le PCA reste LECTEUR sur les opérations (supervision, aucune écriture).
+for (const res of ['operations', 'clients', 'credit']) grant(PCA_ROLE, res, 'READ', 'tenant');
 for (const [role, res, verb, scope] of SCOPED) grant(role, res, verb, scope);
 
 /** Périmètre accordé à un rôle pour (resource, verb), ou null si interdit. */

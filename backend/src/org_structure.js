@@ -89,7 +89,9 @@ export const ROLES = Object.freeze([
 //                        OU Agent de crédit).
 // DOIT rester synchronisé avec db/schema_v12.sql (position_catalog).
 const _TREE = Object.freeze({
-  POS_PCA:         { parentLabel: null, parentCodes: [] },
+  // Le PCA est le sommet : aucun responsable, et son unité de rattachement
+  // officielle est le « Conseil d'Administration » (vague 28).
+  POS_PCA:         { parentLabel: null, parentCodes: [], homeUnit: 'CONSEIL', unitFirst: true },
   POS_DG:          { parentLabel: "Président du Conseil d'Administration", parentCodes: ['POS_PCA'] },
   POS_DGA:         { parentLabel: 'Directeur Général', parentCodes: ['POS_DG'] },
   POS_ASSIST_DG:   { parentLabel: 'Directeur Général Adjoint', parentCodes: ['POS_DGA', 'POS_DG'] },
@@ -136,7 +138,7 @@ const _TREE = Object.freeze({
 
 export const POSITIONS = Object.freeze([
   // 1. Direction Générale
-  { code:'POS_PCA',         label:"Président du Conseil d'Administration", dept:'DG', service:'DG_PILOTAGE', role:'superadmin', level:100, validation:100, manager:true, supervisesCollectors:false, needsSupervisor:false },
+  { code:'POS_PCA',         label:"Président du Conseil d'Administration (PCA)", dept:'DG', service:'DG_PILOTAGE', role:'superadmin', level:100, validation:0,   manager:false, supervisesCollectors:false, needsSupervisor:false },
   { code:'POS_DG',          label:'Directeur Général (DG)',            dept:'DG',        service:'DG_PILOTAGE',    role:'superadmin',          level:100, validation:100, manager:true,  supervisesCollectors:false, needsSupervisor:false },
   { code:'POS_DGA',         label:'Directeur Général Adjoint (DGA)',   dept:'DG',        service:'DG_PILOTAGE',    role:'superadmin',          level:95,  validation:95,  manager:true,  supervisesCollectors:false, needsSupervisor:false },
   { code:'POS_ASSIST_DG',   label:'Assistante de Direction',            dept:'DG',        service:'DG_PILOTAGE',    role:'office_staff',        level:20,  validation:0,   manager:false, supervisesCollectors:false, needsSupervisor:false },
