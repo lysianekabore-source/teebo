@@ -87,8 +87,39 @@
     return attempt(total);
   }
   function notify(msg, type) {
-    var a = $('global-alert'); a.textContent = msg; a.className = 'alert alert--' + (type || 'info'); a.hidden = false;
-    clearTimeout(notify._t); notify._t = setTimeout(function () { a.hidden = true; }, 5000);
+    var a = $('global-alert');
+    if (!a) { try { (type === 'err' ? console.warn : console.log)(msg); } catch (e) {} return; }
+    a.textContent = msg; a.className = 'alert alert--' + (type || 'info'); a.hidden = false;
+    clearTimeout(notify._t);
+    notify._t = setTimeout(function () { a.hidden = true; }, type === 'err' ? 12000 : 6000);
+  }
+  // Bandeau d'erreur PERSISTANT au-dessus de la modale ouverte : un échec de
+  // création ne doit jamais rester invisible (l'alerte globale est masquée
+  // par l'écran modal sur certains navigateurs).
+  function modalNotice(msg, type) {
+    var box = $('modal-notice');
+    if (!box) {
+      var card = document.querySelector('.modal__card') || document.querySelector('.modal-card') || document.querySelector('.modal');
+      if (!card) { notify(msg, type); return; }
+      box = document.createElement('div');
+      box.id = 'modal-notice';
+      box.className = 'modal-notice';
+      card.insertBefore(box, card.firstChild);
+    }
+    box.className = 'modal-notice ' + (type === 'ok' ? 'ok' : 'err');
+    box.textContent = msg;
+    box.hidden = false;
+    try { box.scrollIntoView({ block: 'nearest' }); } catch (_) {}
+  }
+  function modalNoticeClear() {
+    var box = $('modal-notice');
+    if (box) { box.hidden = true; box.textContent = ''; }
+  }
+  // Retour utilisateur garanti : bandeau de la modale + alerte globale.
+  function fail(e) {
+    var m = srv(e) || 'Une erreur est survenue.';
+    try { modalNotice(m, 'err'); } catch (_) {}
+    notify(m, 'err');
   }
   var MSG = { forbidden: 'Action non autorisée.', bad_hierarchy: 'Ordre hiérarchique invalide (direction → département → service → agence).',
     bad_parent: 'Unité parente invalide.', bad_unit: 'Unité invalide.', missing_fields: 'Champs obligatoires manquants.',
@@ -96,7 +127,10 @@
     weak_password: 'Mot de passe trop faible (10 car., majuscule, minuscule, chiffre).', invalid_current_password: 'Mot de passe actuel incorrect.',
     password_change_required: 'Votre mot de passe doit être changé.', idle_timeout: 'Session expirée (60 min d’inactivité).',
     session_expired: 'Session expirée.', invalid_session: 'Session invalide.', not_authenticated: 'Non connecté.',
-    invalid_position: 'Poste invalide.', supervisor_required: 'Un superviseur est requis pour ce poste.',
+    invalid_position: 'Ce poste n’existe pas dans le catalogue de votre institution. Choisissez un autre poste (page Organisation › Postes si besoin).',
+    invalid_role: 'Ce poste ne permet pas de créer un compte (rôle non autorisé).',
+    invalid_email: 'Adresse e-mail invalide.',
+    timeout: 'Le serveur met trop de temps à répondre. Patientez puis réessayez.', supervisor_required: 'Un superviseur est requis pour ce poste.',
     invalid_supervisor: 'Le superviseur choisi doit être un Chef d’agence ou un Agent de crédit.',
     bad_supervisor: 'Superviseur invalide.',
     self_supervisor: 'Vous ne pouvez pas désigner votre propre compte comme responsable hiérarchique.',
@@ -124,7 +158,7 @@
   }
 
   // ----- Navigation -----
-  var VIEWS = ['dash', 'org', 'users', 'dispatches', 'profiles', 'credits', 'clients', 'caisse', 'coffre', 'compta', 'recouvrement', 'audit', 'settings', 'security'];
+  var VIEWS = ['dash', 'org', 'users', 'dispatches', 'profiles', 'credits', 'clients', 'caisse', 'coffre', 'compta', 'recouvrement', 'gouvernance', 'audit', 'settings', 'security'];
   document.querySelectorAll('.nav-item').forEach(function (b) {
     b.addEventListener('click', function () {
       switchView(b.dataset.view);
@@ -150,6 +184,7 @@
     if (v === 'coffre') loadVault();
     if (v === 'compta') loadCompta();
     if (v === 'recouvrement') loadArrears();
+    if (v === 'gouvernance') loadGouvernance();
     if (v === 'audit') loadAudit();
     if (v === 'settings') loadSettings();
     if (v === 'security') renderSession();
@@ -164,6 +199,9 @@
   function closeModal() { $('modal-root').innerHTML = ''; }
 
   // ----- Tableau de bord -----
+  // Rendu BLINDÉ : il est appelé au démarrage et après chaque chargement de
+  // données. Une donnée manquante (profil, unités, postes) ne doit JAMAIS
+  // produire une « erreur » à l'écran ni bloquer le reste de la page.
   // Une session invalide ne doit JAMAIS produire un aller-retour en boucle
   // entre la page et la connexion ("la page clignote sans fin").
   function sessionGone(err) {
@@ -181,6 +219,7 @@
   }
   function renderDash() {
     try { renderDashInner(); } catch (e) {
+      // Filet de sécurité : on n'affiche pas de trace technique au client.
       if (window.console && console.warn) console.warn('dashboard:', e && e.message);
       try { renderDashFallback(); } catch (_) {}
     }
@@ -208,29 +247,32 @@
       if (me.trial_active) chipsHtml += '<span class="chip chip--warn">Essai gratuit — <b>' + esc(me.trial_days_left == null ? '—' : me.trial_days_left) + ' j restants</b></span>';
       else if (me.imf_status || me.trial_active === false) chipsHtml += '<span class="chip chip--ok">Accès actif</span>';
       if (u0.role) chipsHtml += '<span class="chip">Rôle <b>' + esc(roleLabelForCode(effRole(u0))) + '</b></span>';
-      var pc = u0.position_code || u0.position;
-      if (pc) chipsHtml += '<span class="chip">Poste <b>' + esc((posByCode[pc] && posByCode[pc].label) || roleLabelForCode(pc)) + '</b></span>';
+      if (u0.position_code) {
+        chipsHtml += '<span class="chip">Poste <b>' + esc((posByCode[u0.position_code] && posByCode[u0.position_code].label) || roleLabelForCode(u0.position_code)) + '</b></span>';
+      }
       chips.innerHTML = chipsHtml;
     }
-    // --- Indicateurs : uniquement des valeurs fiables, jamais NaN/undefined --
-    var U = Array.isArray(units) ? units : [];
-    var W = Array.isArray(users) ? users : [];
-    var unitsOk = U.length > 0;
+    // --- Indicateurs : on n'affiche QUE des chiffres fiables -----------------
+    var unitsOk = Array.isArray(units) && units.length > 0;
     var usersOk = Array.isArray(users);
     var kpis = $('dash-kpis');
     if (kpis) {
-      kpis.innerHTML = kpi(U.length, 'Unités organisationnelles', true) +
+      var U = Array.isArray(units) ? units : [];
+      var W = Array.isArray(users) ? users : [];
+      var html = kpi(U.length, 'Unités organisationnelles', true) +
         kpi(U.filter(function (u) { return u && u.kind === 'agency'; }).length, 'Agences') +
         kpi(usersOk ? W.length : '—', 'Utilisateurs') +
         kpi(usersOk ? W.filter(function (u) { return u && u.must_change_password; }).length : '—', 'Mot de passe à créer');
+      kpis.innerHTML = html;
       kpis.classList.toggle('is-loading', !unitsOk && !usersOk);
     }
-    // --- Alerte « sans responsable hiérarchique » ---
+    // --- Alerte « sans responsable hiérarchique » ---------------------------
     var alertBox = $('dash-alert');
     if (alertBox) {
-      if (!usersOk) { alertBox.innerHTML = ''; }
-      else {
-        var noSup = W.filter(function (x) { return x && !x.parent_id; });
+      if (!usersOk) {
+        alertBox.innerHTML = '';
+      } else {
+        var noSup = users.filter(function (x) { return x && !x.parent_id; });
         var crit = noSup.filter(function (x) { var p = (kpiSafe(function () { return posOf(x); }, null)) || {}; return Boolean(p.needsSupervisor || p.id === 'collectrice'); });
         alertBox.innerHTML = noSup.length
           ? '<div class="alert ' + (crit.length ? 'alert--err' : 'alert--warn') + '" style="margin-bottom:14px">' +
@@ -243,14 +285,14 @@
           try { history.replaceState(null, '', '#users'); } catch (e) {} });
       }
     }
-    // --- Mini-liste des unités ---
+    // --- Mini-liste des unités ---------------------------------------------
     var miniBox = $('dash-units-mini');
     if (miniBox) {
       if (!unitsOk) {
         dashCardState(miniBox, 'Chargement de l’organisation…', 'Réessayer', function () { refreshDash(); });
       } else {
         var KINDS = (typeof KIND_ORDER === 'object' && KIND_ORDER) ? KIND_ORDER : {};
-        var mini = U.slice().sort(function (a, b) {
+        var mini = units.filter(Boolean).slice().sort(function (a, b) {
           return ((KINDS[a.kind] || 0) - (KINDS[b.kind] || 0)) || String(a.name || '').localeCompare(String(b.name || ''));
         }).slice(0, 6);
         miniBox.innerHTML = mini.length
@@ -269,14 +311,19 @@
     return Promise.all([loadUnits(true), loadUsers(true)]).then(function () { renderDash(); })
       .catch(function () {}).then(function () { dashBusy = false; });
   }
+  // Valeur d'indicateur : nombre compact et jamais « NaN » ni « undefined ».
   function kpiVal(v) {
     if (typeof v === 'number' && isFinite(v)) return String(v);
     if (typeof v === 'string' && v) return esc(v);
     return '—';
   }
-  function kpi(v, l, dark) { return '<div class="kpi' + (dark ? ' kpi--dark' : '') + '"><b>' + kpiVal(v) + '</b><span>' + esc(l) + '</span></div>'; }
+  function kpi(v, l, dark) {
+    return '<div class="kpi' + (dark ? ' kpi--dark' : '') + '"><b>' + kpiVal(v) + '</b><span>' + esc(l) + '</span></div>';
+  }
 
   // ----- Organisation (arbre) -----
+  // silent = true : rechargement de fond depuis le tableau de bord (pas de
+  // notification d'erreur en double, pas de blocage de l'onglet Organisation).
   function loadUnits(silent) {
     var root = silent ? null : $('org-tree');
     // État visible immédiat au premier chargement (arbre encore vide), pour ne
@@ -432,12 +479,17 @@
       '<div class="org-bar">' +
         '<span class="tag tag--muted">' + units.length + ' unité' + (units.length > 1 ? 's' : '') + '</span>' +
         (orgQuery ? '<span class="tag">Filtre : ' + esc(orgQuery) + '</span>' : '') +
+        (units.length ? '' : '<button class="btn btn--primary btn--sm" id="org-seed">Générer la structure de base</button>') +
         '<button class="btn btn--ghost btn--sm" id="org-expand">Tout déplier</button>' +
         '<button class="btn btn--ghost btn--sm" id="org-collapse">Tout replier</button>' +
         '<div class="org-search"><input id="org-filter" type="search" placeholder="Rechercher une unité, une ville…" value="' + esc(orgQuery) + '" autocomplete="off"></div>' +
       '</div>' + caBanner() +
       (html || '<div class="org-nomatch">Aucune unité ne correspond à « ' + esc(orgQuery) + ' ».</div>');
 
+    // Institution vide : un seul clic crée le Conseil d'Administration, les
+    // Directions, Départements et Services du socle (tout reste modifiable).
+    var sd = $('org-seed');
+    if (sd) sd.addEventListener('click', seedStructure);
     var f = $('org-filter');
     if (f) f.addEventListener('input', function () {
       orgQuery = this.value.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -446,15 +498,9 @@
       var nf = $('org-filter');
       if (nf) { nf.focus(); try { nf.setSelectionRange(nf.value.length, nf.value.length); } catch (_) {} }
     });
-    // Boutons d'action de l'arbre : un seul écouteur par bouton, quelle que soit
-    // la fréquence de re-rendu (avant : un écouteur ajouté à chaque rendu, d'où
-    // des appels API en double).
-    ['org-ca-create','org-seed2'].forEach(function (id) {
-      var el = $(id); if (!el) return;
-      var handler = id === 'org-ca-create' ? createCAUnit : seedStructure;
-      el._teeboBound = handler;
-      if (!el.dataset.bound) { el.dataset.bound = '1'; el.addEventListener('click', function (ev) { el._teeboBound(ev); }); }
-    });
+    // Les boutons de l'encart CA sont câblés UNE SEULE FOIS (au démarrage) :
+    // un nouvel écouteur à chaque rendu de l'arbre finissait par exécuter
+    // plusieurs fois la même action (double création / double appel API).
     var ex = $('org-expand'); if (ex) ex.addEventListener('click', function () {
       units.forEach(function (u) { orgOpen[u.id] = true; }); renderTree();
     });
@@ -627,12 +673,21 @@
 
   // ----- Personnel -----
   function loadUsers(silent) {
-    return api('/api/v1/users').then(function (d) { users = d.users || []; renderUsers(); renderDash(); })
-      .catch(function (e) {
-        if (guard(e)) return;
-        if (silent) throw e;
-        notify(fr(e), 'err');
-      });
+    return api('/api/v1/users').then(function (d) {
+      users = (d && d.users) || [];
+      try { renderUsers(); } catch (e) { if (window.console) console.warn('users:', e && e.message); }
+      renderDash();
+    }).catch(function (e) {
+      if (guard(e)) return;
+      if (silent) throw e;
+      notify(fr(e), 'err');
+      var box = $('users-table');
+      if (box && !users.length) {
+        box.innerHTML = '<div class="empty">' + esc(fr(e)) +
+          '<br><button class="btn btn--ghost btn--sm" type="button" style="margin-top:10px" id="users-retry">Réessayer</button></div>';
+        var b = $('users-retry'); if (b) b.addEventListener('click', function () { loadUsers(); });
+      }
+    });
   }
   // Alerte visible : agents qui n'ont aucun responsable hiérarchique.
   // Un agent de collecte SANS responsable est un cas bloquant (sa collecte ne
@@ -694,7 +749,11 @@
         var sup = u.parent_id ? byId[u.parent_id] : null;
         var supCell;
         if (u.parent_id && !sup) supCell = '<span class="tag tag--warn">Introuvable</span>';
-        else if (!sup) supCell = '<button class="tag tag--warn" data-sup="' + u.id + '" title="Définir le responsable">⚠ Non défini</button>';
+        else if (!sup) {
+          var expL = expectedParentLabel(posOf(u) || {});
+          supCell = '<button class="tag tag--warn" data-sup="' + u.id + '" title="Définir le responsable">⚠ Non défini</button>' +
+            (expL ? '<br><small style="color:var(--muted)">à rattacher à : ' + esc(expL) + '</small>' : '');
+        }
         else supCell = esc(sup.full_name) + '<br><small style="color:var(--muted)">' + esc(posLabelOf(sup)) + '</small>';
         return '<tr><td><b>' + esc(u.full_name) + '</b>' +
             (pl ? '<br><small style="color:var(--muted)">' + esc(pl) + '</small>' : '') + '</td>' +
@@ -727,26 +786,47 @@
     loadPositions().then(function () {
       var p = posOf(u) || {};
       p.selfId = u.id;
-      var cands = supervisorCandidates(p);
+      var expLabel = expectedParentLabel(p);
+      // Le responsable prévu est présélectionné s'il est déjà enregistré.
+      var who = expLabel ? findByPositionLabel(expLabel) : null;
+      var preId = (who && String(who.id) !== String(u.id)) ? String(who.id) : null;
+      // Sinon : le meilleur candidat hiérarchique (jamais l'agent lui-même).
+      if (!preId && !u.parent_id && expLabel) {
+        var best = supervisorCandidates(p).filter(function (x) { return String(x.id) !== String(u.id); });
+        if (best.length) preId = String(best[0].id);
+      }
+      var selId = u.parent_id ? String(u.parent_id) : preId;
+      var cands = users.filter(function (x) {
+        return x.is_active !== false && String(x.id) !== String(u.id);
+      });
       var opts = cands.map(function (c) {
-        return '<option value="' + esc(c.id) + '"' + (u.parent_id === c.id ? ' selected' : '') + '>' +
-          esc(c.full_name + ' — ' + posLabelOf(c)) + '</option>';
+        var blocked = p.needsSupervisor && String(c.id) !== preId && !posSupervisesCollectors(posOf(c));
+        return '<option value="' + esc(c.id) + '"' + (blocked ? ' disabled' : '') + '>' +
+          esc(c.full_name + ' — ' + posLabelOf(c) + (blocked ? ' (non habilité)' : '')) + '</option>';
       }).join('');
+      var pendNote = '';
+      if (!u.parent_id && !preId && expLabel) {
+        pendNote = '<small style="color:#b45309">Le poste de ' + esc(expLabel) +
+          ' n’est pas encore pourvu (ou dépend d’un agent inexistant). Créez-le dans Personnel, puis revenez ici.</small>';
+      }
       openModal(
-        '<h3>Responsable hiérarchique</h3><p class="sub">' + esc(u.full_name) + ' · ' + esc(posLabelOf(u)) + '</p>' +
+        '<h3>Responsable hiérarchique</h3><p class="sub">' + esc(u.full_name) + ' · ' + esc(posLabelOf(u)) +
+          (expLabel ? '<br>Responsable prévu pour ce poste : <b>' + esc(expLabel) + '</b>' : '') + '</p>' +
         '<div class="fld"><label for="sh-sup">Superviseur / Responsable hiérarchique</label>' +
           '<select id="sh-sup"><option value="">— Aucun (pas de responsable) —</option>' + opts + '</select>' +
           '<small style="color:var(--muted)">' + (p.needsSupervisor
             ? 'Obligatoire pour un agent de collecte : Chef d’agence ou Agent de crédit.'
-            : 'Facultatif. Un agent ne peut jamais être son propre responsable.') + '</small></div>' +
+            : 'Facultatif. Un agent ne peut jamais être son propre responsable.') + '</small>' +
+          pendNote + '</div>' +
         '<div class="modal__nav"><button class="btn btn--ghost" id="sh-cancel">Annuler</button>' +
           '<button class="btn btn--primary" id="sh-ok">Enregistrer</button></div>'
       );
       var sel = $('sh-sup');
-      if (u.parent_id) sel.value = u.parent_id;
+      if (selId) sel.value = selId;
       $('sh-cancel').addEventListener('click', closeModal);
       $('sh-ok').addEventListener('click', function () {
         var val = sel.value || null;
+
         // BLOCAGE 1 : auto-assignation (l'agent ne se choisit pas lui-même).
         if (val && String(val) === String(u.id)) { notify('Un agent ne peut pas être son propre responsable hiérarchique.', 'err'); return; }
         // BLOCAGE 2 : le responsable choisi ne doit pas être un subordonné de l'agent.
@@ -911,6 +991,39 @@
       return String(a.full_name || '').localeCompare(String(b.full_name || ''));
     });
   }
+  // ---- Responsable attendu par APPELLATION (règle metier) ----------------
+  // Chaque poste porte l'appellation de son responsable direct :
+  //   Directeur General Adjoint -> Directeur General
+  //   Chef de Caisse -> Chef d'Agence, Caissier -> Chef de Caisse, etc.
+  // Un poste sans appellation (Directeur General) est le sommet : pas de
+  // responsable. Une appellation dont la case n'est pas encore pourvue est
+  // affichee en ATTENTE, et devient un choix des qu'un agent l'occupe.
+  function expectedParentLabel(p) { return (p && p.parentLabel) ? String(p.parentLabel) : null; }
+  function posShortLabel(p) {
+    return String((p && p.label) || '').replace(/\s*[\/(].*$/, '').trim();
+  }
+  // Retrouve l'agent dont le poste porte une appellation donnee (ex. le DG).
+  function findByPositionLabel(label) {
+    if (!label) return null;
+    var target = normLabel(label);
+    return users.find(function (u) {
+      if (u.is_active === false) return false;
+      var up = posOf(u);
+      if (up && normLabel(up.label) === target) return true;
+      return normLabel(posLabelOf(u)) === target;
+    }) || null;
+  }
+  function expectedOption(p) {
+    var lab = expectedParentLabel(p);
+    if (!lab) return '';
+    var who = findByPositionLabel(lab);
+    if (who && String(who.id) !== String(p.selfId || '')) {
+      return '<option value="' + esc(who.id) + '">' + esc(lab + ' : ' + who.full_name) + '</option>';
+    }
+    // Appellation prevue mais personne a ce poste (ou soi-meme) : en attente.
+    return '<option value="pending:' + esc(lab) + '">' + esc(lab) + ' (poste non pourvu)</option>';
+  }
+
   function supOption(u) {
     var p = posOf(u);
     var lvl = p && p.level ? ' · niv. ' + p.level : '';
@@ -943,31 +1056,44 @@
       function syncFromPosition() {
         var p = posByCode[$('u-pos').value];
         var wrap = $('u-sup-wrap'), sel = $('u-sup'), unitSel = $('u-unit');
-        if (!p) { wrap.hidden = true; sel.innerHTML = ''; return; }
-        var cands = supervisorCandidates(p);
-        // Aucun candidat exploitable : on l'explique au lieu de laisser une liste
-        // avec pour seul choix l'administrateur connecté (perçu comme « figé »).
-        if (!cands.length) {
-          sel.innerHTML = p.needsSupervisor
-            ? '<option value="">Aucun responsable disponible — créez d’abord un Chef d’agence ou un Agent de crédit</option>'
-            : '<option value="">— Aucun collaborateur encadrant disponible —</option>';
-          sel.value = '';
+        if (!p) { if (wrap) wrap.hidden = true; if (sel) sel.innerHTML = ''; return; }
+        // Unité de rattachement : on l'affecte tout de suite, même si la liste
+        // de responsables est réduite (le champ doit refléter la structure).
+        var uidEarly = autoUnitForPosition(p);
+        if (uidEarly) unitSel.value = uidEarly;
+        // Liste de base : tous les agents de l'institution sauf soi-même.
+        var cands = users.filter(function (x) {
+          return x.is_active !== false && String(x.id) !== String(p.selfId || '');
+        });
+        // Sommet de l'organisation (ex. Directeur Général) : aucun responsable.
+        if (!expectedParentLabel(p) && !cands.length) {
+          sel.innerHTML = '<option value="">— Aucun (sommet de l’organisation) —</option>';
           wrap.hidden = false;
-          var uid0 = autoUnitForPosition(p);
-          if (uid0) unitSel.value = uid0;
+          var hu = $('u-sup-hint');
+          if (hu) hu.textContent = 'Ce poste est au sommet : il n’a pas de responsable hiérarchique.';
+          var uidS = autoUnitForPosition(p); if (uidS) unitSel.value = uidS;
           return;
         }
-        var opts = cands.map(supOption).join('');
-        // Dans les deux cas la liste commence par « — Aucun — » : le champ est
-        // donc TOUJOURS modifiable, y compris quand un seul candidat reste.
+        // 1. Le responsable réel du poste est présélectionné s'il existe déjà.
+        var who = findByPositionLabel(expectedParentLabel(p));
+        var preId = null;
+        if (who && String(who.id) !== String(p.selfId || '')) preId = who.id;
+        // 2. Tous les agents possibles restent proposés : le champ est modifiable.
+        var whoNow = who ? String(who.id) : null;
+        var opts = cands.map(function (c) {
+          var blocked = p.needsSupervisor && String(c.id) !== whoNow && !posSupervisesCollectors(posOf(c));
+          return '<option value="' + esc(c.id) + '"' + (blocked ? ' disabled' : '') + '>' +
+            esc(c.full_name + ' — ' + posLabelOf(c) + (blocked ? ' (non habilité)' : '')) + '</option>';
+        }).join('');
         sel.innerHTML = '<option value="">— Aucun (pas de responsable) —</option>' + opts;
-        // Présélection sur le candidat le plus proche (obligatoire pour un agent
-        // de collecte, facultatif pour les autres postes).
-        sel.value = cands[0].id;
-        var hint = $('u-sup-hint');
-        if (hint) hint.textContent = p.needsSupervisor
-          ? 'Obligatoire pour ce poste. Choix limité aux Chefs d’agence et Agents de crédit — vous pouvez en changer.'
-          : 'Pré-rempli d’après le poste ; vous pouvez choisir un autre agent ou « — Aucun — ».';
+        if (preId) sel.value = preId;
+        // 3. Message clair : pré-rempli, ou en attente de création du poste.
+        var hint2 = $('u-sup-hint');
+        if (hint2) hint2.textContent = expectedParentLabel(p)
+          ? (preId
+              ? 'Pré-rempli avec le ' + expectedParentLabel(p) + ' d’après le poste choisi — modifiable.'
+              : 'Ce poste dépend du ' + expectedParentLabel(p) + ', qui n’est pas encore créé. Vous pourrez le rattacher plus tard via le bouton « Responsable » de la page Personnel.')
+          : 'Facultatif ; vous pouvez choisir un responsable ou laisser « — Aucun — ».';
         // Le champ reste TOUJOURS visible et modifiable une fois un poste choisi :
         // plus de champ figé/vide sans possibilité de sélection.
         wrap.hidden = false;
@@ -975,6 +1101,20 @@
         if (uid) unitSel.value = uid;
       }
       $('u-pos').addEventListener('change', syncFromPosition);
+      // À l'ouverture : un poste est souvent déjà sélectionné (présélection) —
+      // on synchronise immédiatement le responsable et l'unité correspondants.
+      try { syncFromPosition(); } catch (_) {}
+      // Si les postes n'étaient pas encore chargés, on rafraîchit la liste dès
+      // qu'ils arrivent : plus de liste vide ni de « — Choisir un poste — »
+      // bloquant en silence.
+      loadPositions().then(function () {
+        var sel = $('u-pos');
+        if (!sel) return;
+        var keep = sel.value;
+        sel.innerHTML = '<option value="">— Choisir un poste —</option>' + positionOptionsHtml();
+        if (keep) sel.value = keep;
+        try { syncFromPosition(); } catch (_) {}
+      }).catch(function () {});
       // Garde-fou : si la liste ne contient qu'un seul choix, il reste
       // modifiable (« — Aucun — ») — rien n'est jamais verrouillé.
       $('u-sup').addEventListener('change', function () {
@@ -983,22 +1123,63 @@
           notify('Vous ne pouvez pas vous désigner vous-même comme responsable hiérarchique.', 'err');
         }
       });
-      $('u-cancel').addEventListener('click', closeModal);
-      $('u-ok').addEventListener('click', function () {
-        var pos = posByCode[$('u-pos').value];
-        var body = { full_name: $('u-name').value.trim(), position_code: $('u-pos').value || null,
-          org_unit_id: $('u-unit').value || null, email: $('u-email').value.trim(), phone: $('u-phone').value.trim() };
-        var supId = (!$('u-sup-wrap').hidden && $('u-sup').value) ? $('u-sup').value : null;
-        // BLOCAGE anti auto-assignation : le nouveau compte est un nouveau
-        // collaborateur, il ne peut donc jamais être son propre responsable.
-        // On refuse aussi d'enregistrer le compte connecté comme responsable.
+      // Protection : les deux boutons de la modale sont posés explicitement
+      // (un champ manquant ne doit jamais casser l'enregistrement du clic).
+      var btnCancel = $('u-cancel'), btnOk = $('u-ok');
+      if (btnCancel) btnCancel.addEventListener('click', closeModal);
+      if (btnOk) btnOk.addEventListener('click', function () {
+        var btn = this;
+        modalNoticeClear();
+        // CONSERVÉ par prudence : sur certaines versions du moteur JS de
+        // navigateur, lire un champ situé après un bloc masqué peut lever une
+        // erreur silencieuse qui interrompt le clic AVANT tout appel serveur.
+        // On lit donc chaque champ séparément, avec protection.
+        function val(id) { var el = $(id); return el ? String(el.value || '') : ''; }
+        var posCode = val('u-pos');
+        var pos = posByCode[posCode];
+        var body = { full_name: val('u-name').trim(), position_code: posCode || null,
+          org_unit_id: val('u-unit') || null, email: val('u-email').trim(), phone: val('u-phone').trim() };
+        var supEl = $('u-sup'), supWrap = $('u-sup-wrap');
+        var supId = (supEl && supWrap && !supWrap.hidden && supEl.value) ? String(supEl.value) : null;
+        if (supId && supId.indexOf('pending:') === 0) supId = null;
         if (supId) body.supervisor_id = supId;
-        if (!body.full_name || !body.email || !body.position_code) { notify('Nom, e-mail et poste sont requis.', 'err'); return; }
-        if (isSelfSupervisor(supId)) { notify('Vous ne pouvez pas être votre propre responsable hiérarchique.', 'err'); return; }
-        if (pos && pos.needsSupervisor && !supId) { notify('Un agent de collecte doit être rattaché à un superviseur (Chef d’agence ou Agent de crédit).', 'err'); return; }
-        var self = this; self.disabled = true;
-        api('/api/v1/users', 'POST', body).then(function (d) { closeModal(); return loadUsers().then(function () { notify('Utilisateur créé — code ' + d.code_user + '.', 'ok'); showSendCodeModal(d, body.full_name); }); })
-          .catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+        // Rôle de secours : si le poste n'a pas encore été résolu (chargement
+        // des postes plus lent que la saisie), on l'envoie explicitement.
+        if (pos && pos.role) body.role = pos.role;
+
+        if (!body.full_name || !body.email || !body.position_code) { modalNotice('Nom complet, e-mail et poste sont obligatoires.', 'err'); notify('Nom, e-mail et poste sont requis.', 'err'); return; }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(body.email)) { modalNotice('Adresse e-mail invalide : vérifiez la saisie.', 'err'); notify('Adresse e-mail invalide.', 'err'); return; }
+        if (isSelfSupervisor(supId)) { modalNotice('Vous ne pouvez pas être votre propre responsable hiérarchique.', 'err'); return; }
+        if (pos && pos.needsSupervisor && !supId) {
+          var who = expectedParentLabel(pos);
+          var m1 = 'Un agent de collecte doit être rattaché à un ' + (who || 'Chef d’agence ou Agent de crédit') +
+            '. Si ce poste n’est pas encore pourvu, créez d’abord le ' + (who || 'responsable') + '.';
+          modalNotice(m1, 'err'); notify(m1, 'err'); return;
+        }
+        btn.disabled = true;
+        var libelle = btn.textContent;
+        btn.textContent = 'Création en cours…';
+        // On n'utilise PAS « this » : il est perdu dans la chaîne de promesses.
+        api('/api/v1/users', 'POST', body).then(function (d) {
+          modalNoticeClear();
+          closeModal();
+          var nom = body.full_name;
+          return loadUsers().then(function () {
+            notify('Utilisateur créé — code ' + ((d && d.code_user) || '').toString() + '.', 'ok');
+            showSendCodeModal(d, nom);
+          });
+        }).catch(function (e) {
+          btn.disabled = false; btn.textContent = libelle;
+          if (guard(e)) return;
+          // Le compte peut avoir été créé malgré une coupure pendant la réponse.
+          if (e && e.message === 'network') {
+            loadUsers();
+            var m2 = 'Création incertaine : le serveur n’a pas répondu. Vérifiez la liste du personnel — si le nom apparaît, le compte est créé (utilisez « Renvoyer le code »). Sinon, réessayez.';
+            modalNotice(m2, 'err'); notify(m2, 'err');
+            return;
+          }
+          fail(e);
+        });
       });
     }).catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
   }
@@ -1684,9 +1865,9 @@
 
   // ----- Démarrage -----
   // Objectif : un tableau de bord AFFICHÉ TOUT DE SUITE, puis complété.
-  // 1) Rendu immédiat du squelette (plus d'attente devant un écran vide).
-  // 2) /me (indispensable) puis unités + utilisateurs EN PARALLÈLE.
-  // 3) Modules secondaires (essai) en arrière-plan, jamais bloquants.
+  // 1) /me (indispensable) -> rendu immédiat.
+  // 2) Unités + utilisateurs en PARALLÈLE (avant : l'un après l'autre).
+  // 3) Modules secondaires (essai, catalogue des postes) en arrière-plan.
   var BOOT = { units: false, users: false };
 
   function bootProgress() {
@@ -1713,24 +1894,25 @@
     // Validation finale des crédits : réservée aux postes habilités.
     var canFinal = !!me.can_validate_credit_final || canSee;
     var navC = $('nav-credits'); if (navC) navC.hidden = !canFinal;
-    // Menus opérationnels selon les habilitations du poste.
-    try { setupBankingNav(); } catch (e) {}
-    try { initSettingsHandlers(); } catch (e) {}
-    var bnP = $('btn-new-perm'); if (bnP) bnP.addEventListener('click', openNewPermModal);
-    var bnPos = $('btn-new-position'); if (bnPos) bnPos.addEventListener('click', openNewPositionModal);
-    var bnCr = $('btn-credits-refresh'); if (bnCr) bnCr.addEventListener('click', loadCreditsQueue);
     return true;
   }
 
   function boot() {
+    // Rendu immédiat du squelette : plus d'écran figé sur « Chargement… ».
     renderDash();
     bootProgress();
     api('/api/v1/auth/me').then(function (d) {
       if (!setupMe(d)) return null;
       // Catalogue des postes : en tâche de fond, sans retarder l'affichage.
       loadPositions().catch(function () {});
+      // Modules opérationnels et réglages : une seule fois, non bloquant.
+      try { setupBankingNav(); } catch (e) {}
+      try { initSettingsHandlers(); } catch (e) {}
+      var bnP = $('btn-new-perm'); if (bnP) bnP.addEventListener('click', openNewPermModal);
+      var bnPos = $('btn-new-position'); if (bnPos) bnPos.addEventListener('click', openNewPositionModal);
+      var bnCr = $('btn-credits-refresh'); if (bnCr) bnCr.addEventListener('click', loadCreditsQueue);
       renderDash();
-      // Données du tableau de bord en PARALLÈLE (avant : l'une après l'autre).
+      // Données en parallèle.
       var pUnits = loadUnits(true).then(function () { BOOT.units = true; })
         .catch(function (e) { BOOT.units = true; if (!guard(e)) notify(fr(e), 'err'); });
       var pUsers = loadUsers(true).then(function () { BOOT.users = true; })
@@ -1740,6 +1922,7 @@
       renderDash(); bootProgress(); renderSession();
       // Bandeau d'essai : jamais bloquant pour l'affichage.
       loadTrial();
+      // 2FA obligatoire : on ouvre directement « Mon accès ».
       var pending = false;
       try { pending = sessionStorage.getItem('teebo_2fa_enroll') === '1'; } catch (e) {}
       if (pending) {
@@ -1748,6 +1931,7 @@
         notify('Activation de la double authentification requise pour continuer.', 'info');
         return;
       }
+      // Lien direct (ex. « /app#org ») : on ouvre l'onglet demandé.
       var wanted = '';
       try { wanted = String(location.hash || '').replace(/^#/, ''); } catch (e) {}
       switchView(VIEWS.indexOf(wanted) >= 0 ? wanted : 'dash');
@@ -1807,6 +1991,7 @@
       'nav-coffre': has('accounts.manage'),
       'nav-compta': has('accounts.manage'),
       'nav-recouvrement': has('credit.recovery'),
+      'nav-gouvernance': true,
       'nav-audit': has('audit.read')
     };
     Object.keys(map).forEach(function (id) { var n = $(id); if (n) n.hidden = !map[id]; });
@@ -2661,4 +2846,893 @@
       $('audit-table').innerHTML = '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>R\u00f4le</th><th>Action</th><th>Entit\u00e9</th><th>R\u00e9f.</th></tr></thead><tbody>' + body + '</tbody></table></div>';
     }).catch(function (e) { if (guard(e)) return; if (e.message === 'forbidden' || e.message === 'missing_permission' || e.message === 'insufficient_privilege') forbidden('audit-table', 'Vous n\u2019\u00eates pas habilit\u00e9 \u00e0 consulter le journal d\u2019audit.'); else notify(fr(e), 'err'); });
   }
+
+  /* ===== VAGUE 27 : GOUVERNANCE & CONFORMITÉ ===== */
+  var GOUV = { loaded: false, tab: 'institution', inst: null, organes: [], membres: [], users: [], mandats: [], sessions: [], resolutions: [], dash: null };
+  var GOUV_READY = false;
+
+  function gouvCanWrite() { return !!me && ['admin_imf', 'direction', 'superadmin', 'pca_admin'].indexOf(effRole(me.user)) >= 0; }
+  function gouvDate(d) { return d ? String(d).slice(0, 10) : ''; }
+  function gouvDateFr(d) { return d ? new Date(String(d).slice(0, 10) + 'T00:00:00').toLocaleDateString('fr-FR') : '\u2014'; }
+  function gouvMoney(c) { return c == null ? '\u2014' : fmtAmount(Number(c) / 100) + ' FCFA'; }
+  function gouvOpts(list, sel, placeholder) {
+    return '<option value="">' + esc(placeholder || '\u2014 choisir \u2014') + '</option>' + list.map(function (o) {
+      return '<option value="' + esc(o[0]) + '"' + (String(o[0]) === String(sel == null ? '' : sel) ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
+    }).join('');
+  }
+  function gouvBadge(txt, kind) {
+    var cls = { ok: 'g-badge g-badge--ok', warn: 'g-badge g-badge--warn', bad: 'g-badge g-badge--bad', info: 'g-badge g-badge--info' }[kind || 'info'];
+    return '<span class="' + cls + '">' + esc(txt) + '</span>';
+  }
+
+  function setupGouvernance() {
+    if (GOUV_READY) return;
+    GOUV_READY = true;
+    var t = $('gouv-tabs');
+    if (!t) return;
+    t.querySelectorAll('[data-gtab]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        GOUV.tab = b.dataset.gtab;
+        t.querySelectorAll('[data-gtab]').forEach(function (x) { x.classList.toggle('active', x === b); });
+        ['institution', 'organes', 'membres', 'mandats', 'sessions', 'resolutions'].forEach(function (k) {
+          var p = $('gouv-pane-' + k); if (p) p.hidden = k !== GOUV.tab;
+        });
+      });
+    });
+    var rf = $('btn-gouv-refresh'); if (rf) rf.addEventListener('click', function () { GOUV.loaded = false; loadGouvernance(); });
+    var pdf = $('btn-gouv-pdf'); if (pdf) pdf.addEventListener('click', exportGouvernancePdf);
+    setupGouvernance29();
+  }
+
+  function loadGouvernance() {
+    setupGouvernance();
+    return Promise.all([
+      api('/api/v1/governance/institution'),
+      api('/api/v1/governance/organes'),
+      api('/api/v1/governance/membres'),
+      api('/api/v1/governance/mandats'),
+      api('/api/v1/governance/sessions'),
+      api('/api/v1/governance/resolutions'),
+      api('/api/v1/governance/dashboard')
+    ]).then(function (r) {
+      GOUV.inst = r[0]; GOUV.organes = r[1].organes || []; GOUV.gouvDefaults = r[1].defaults || [];
+      GOUV.membres = r[2].membres || []; GOUV.users = r[2].users || [];
+      GOUV.mandats = r[3].mandats || []; GOUV.mandatsMembres = r[3].membres || []; GOUV.cumul = r[3].alertesCumul || [];
+      GOUV.sessions = r[4].sessions || []; GOUV.sessionsOrganes = r[4].organes || [];
+      GOUV.resolutions = r[5].resolutions || []; GOUV.resSessions = r[5].sessions || []; GOUV.resOrganes = r[5].organes || [];
+      GOUV.dash = r[6]; GOUV.loaded = true;
+      renderGouvernance();
+    }).catch(function (e) {
+      if (guard(e)) return;
+      if (e.message === 'forbidden' || e.message === 'use_teebo_console') return forbidden('gouv-kpis', 'Module réservé aux institutions.');
+      notify(fr(e), 'err');
+      var k = $('gouv-kpis'); if (k) k.innerHTML = '<div class="empty">Chargement impossible. Réessayez.</div>';
+    });
+  }
+
+  function renderGouvernance() {
+    var d = GOUV.dash || { kpis: {}, alertes: [] };
+    var k = d.kpis || {};
+    var score = Number(k.score_conformite || 0);
+    var sc = score >= 85 ? 'ok' : (score >= 60 ? 'warn' : 'bad');
+    $('gouv-kpis').innerHTML =
+      '<div class="kpi kpi--dark"><b>' + score + ' / 100</b><span>Score de conformité</span></div>' +
+      kpi(k.organes || 0, 'Organes statutaires') +
+      kpi(k.membres || 0, 'Membres actifs') +
+      kpi(k.mandats_en_cours || 0, 'Mandats en cours') +
+      kpi(k.sessions || 0, 'Sessions tenues') +
+      kpi(k.pv_signes || 0, 'PV signés / verrouillés') +
+      kpi(k.resolutions_retard || 0, 'Résolutions en retard') +
+      kpi(k.taux_execution_resolutions || 0, 'Avancement moyen (%)');
+    var al = d.alertes || [];
+    $('gouv-alerts').innerHTML = al.length
+      ? '<span class="chip chip--warn"><b>' + al.length + '</b> point(s) à corriger</span>' +
+        al.slice(0, 12).map(function (a) {
+          var cls = a.niveau === 'CRITIQUE' ? 'chip chip--warn' : (a.niveau === 'HAUTE' ? 'chip chip--warn' : 'chip');
+          return '<span class="' + cls + '">' + esc(a.texte) + '</span>';
+        }).join('')
+      : '<span class="chip chip--ok">Aucun écart détecté — gouvernance conforme</span>';
+    renderGouvInstitution(); renderGouvOrganes(); renderGouvMembres();
+    renderGouvMandats(); renderGouvSessions(); renderGouvResolutions();
+    loadGouvernance29(false);
+    void sc;
+  }
+
+  /* --- Onglet 1 : fiche institution (pré-remplie) --- */
+  function renderGouvInstitution() {
+    var i = (GOUV.inst && GOUV.inst.institution) || {};
+    var saved = GOUV.inst && GOUV.inst.saved;
+    var dis = gouvCanWrite() ? '' : ' disabled';
+    function f(id, label, val, hint, type) {
+      return '<div class="fld"><label for="gi-' + id + '">' + esc(label) +
+        (hint ? ' <span class="hint" style="font-weight:400">' + esc(hint) + '</span>' : '') +
+        '</label><input id="gi-' + id + '" type="' + (type || 'text') + '" value="' + esc(val == null ? '' : val) + '"' + dis + '></div>';
+    }
+    var formes = [['SA', 'Société Anonyme (SA)'], ['SAS', 'SAS'], ['SARL', 'SARL'], ['COOPERATIVE', 'Coopérative'], ['SCOOPS', 'SCOOPS'], ['ASSOCIATION', 'Association'], ['GIE', 'GIE'], ['AUTRE', 'Autre']];
+    $('gouv-pane-institution').innerHTML =
+      '<div class="chips" style="margin-bottom:16px">' +
+        '<span class="chip chip--ok">Pré-remplissage automatique depuis la fiche IMF et les paramètres légaux</span>' +
+        (saved ? '<span class="chip">Fiche déjà enregistrée</span>' : '<span class="chip chip--warn">Aucune fiche enregistrée — vérifiez puis validez</span>') +
+      '</div>' +
+      '<div class="g-grid">' +
+        f('raison_sociale', 'Raison sociale', i.raison_sociale, 'reprise du nom de l’IMF') +
+        '<div class="fld"><label for="gi-forme">Forme juridique <span class="hint" style="font-weight:400">déduite du type d’IMF</span></label><select id="gi-forme"' + dis + '>' + gouvOpts(formes, i.forme_juridique, '\u2014 choisir \u2014') + '</select></div>' +
+        f('rccm', 'RCCM', i.rccm, 'repris des paramètres légaux') +
+        f('ifu_nif', 'IFU / NIF', i.ifu_nif, 'repris des paramètres légaux') +
+        f('numero_agrement', 'N° d’agrément BCEAO', i.numero_agrement, 'repris de la fiche IMF') +
+        f('date_agrement', 'Date d’agrément', gouvDate(i.date_agrement), '', 'date') +
+        f('capital', 'Capital social (FCFA)', i.capital_social_cents != null ? Math.round(Number(i.capital_social_cents) / 100) : '', 'repris de la fiche IMF') +
+        f('siege_social', 'Siège social', i.siege_social, 'adresse légale déjà connue') +
+        f('pays', 'Pays', i.pays) + f('ville', 'Ville', i.ville) +
+        f('telephone', 'Téléphone', i.telephone) + f('email', 'E-mail', i.email, '', 'email') +
+        f('site_web', 'Site web', i.site_web) +
+        f('president_ca', 'Président du Conseil d’Administration', i.president_ca, 'déduit du poste PCA') +
+        f('directeur_general', 'Directeur Général', i.directeur_general, 'déduit du poste DG') +
+        f('nombre_administrateurs', 'Nombre d’administrateurs', i.nombre_administrateurs, 'compté dans les membres', 'number') +
+        f('nombre_femmes_dirigeantes', 'dont femmes', i.nombre_femmes_dirigeantes, 'compté automatiquement', 'number') +
+        f('date_derniere_ag', 'Dernière Assemblée Générale', gouvDate(i.date_derniere_ag), '', 'date') +
+        f('date_prochaine_ag', 'Prochaine Assemblée Générale', gouvDate(i.date_prochaine_ag), '', 'date') +
+      '</div>' +
+      '<div class="fld"><label for="gi-obs">Observations</label><textarea id="gi-obs" rows="2"' + dis + '>' + esc(i.observations || '') + '</textarea></div>' +
+      (gouvCanWrite() ? '<div class="modal__nav" style="justify-content:flex-start"><button class="btn btn--primary" id="btn-gi-save" type="button">Enregistrer la fiche</button></div>' : '<p class="hint">Consultation seule : votre poste ne permet pas de modifier la fiche.</p>');
+    var sv = $('btn-gi-save');
+    if (sv) sv.addEventListener('click', function () {
+      sv.disabled = true;
+      var body = {
+        raison_sociale: $('gi-raison_sociale').value.trim(), forme_juridique: $('gi-forme').value || null,
+        rccm: $('gi-rccm').value.trim(), ifu_nif: $('gi-ifu_nif').value.trim(),
+        numero_agrement: $('gi-numero_agrement').value.trim(), date_agrement: $('gi-date_agrement').value || null,
+        capital_social_cents: $('gi-capital').value ? cents($('gi-capital').value) : null,
+        siege_social: $('gi-siege_social').value.trim(), pays: $('gi-pays').value.trim(), ville: $('gi-ville').value.trim(),
+        telephone: $('gi-telephone').value.trim(), email: $('gi-email').value.trim(), site_web: $('gi-site_web').value.trim(),
+        president_ca: $('gi-president_ca').value.trim(), directeur_general: $('gi-directeur_general').value.trim(),
+        nombre_administrateurs: $('gi-nombre_administrateurs').value || null,
+        nombre_femmes_dirigeantes: $('gi-nombre_femmes_dirigeantes').value || null,
+        date_derniere_ag: $('gi-date_derniere_ag').value || null, date_prochaine_ag: $('gi-date_prochaine_ag').value || null,
+        observations: $('gi-obs').value.trim()
+      };
+      api('/api/v1/governance/institution', 'PUT', body)
+        .then(function () { notify('Fiche de gouvernance enregistrée.', 'ok'); GOUV.loaded = false; loadGouvernance(); })
+        .catch(function (e) { sv.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+
+  /* --- Onglet 2 : organes --- */
+  function renderGouvOrganes() {
+    var l = GOUV.organes || [];
+    var head = '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
+      '<p class="hint" style="margin:0">Les organes obligatoires (Conseil, Comités, Assemblée Générale, Direction) peuvent être créés en un clic.</p>' +
+      (gouvCanWrite() ? '<div style="display:flex;gap:8px"><button class="btn btn--ghost" id="btn-gn-seed" type="button">Générer les organes de base</button><button class="btn btn--primary" id="btn-gn-new" type="button">+ Nouvel organe</button></div>' : '') +
+      '</div>';
+    var body = l.length ? '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Organe</th><th>Type</th><th>Membres</th><th>Quorum</th><th>Fréquence</th><th>Dernière session</th><th>Statut</th><th></th></tr></thead><tbody>' +
+      l.map(function (o) {
+        return '<tr><td><b>' + esc(o.libelle) + '</b><br><span class="hint" style="font-size:11px">' + esc(o.code_organe) + (o.obligatoire ? ' \u00b7 obligatoire' : '') + '</span></td>' +
+          '<td>' + esc(gouvLabelType(o.type_organe)) + '</td>' +
+          '<td>' + (o.membres_reels || 0) + ' / ' + (o.nombre_membres || 0) + '</td>' +
+          '<td>' + (o.quorum_requis || 0) + '</td>' +
+          '<td>' + esc(gouvLabelFreq(o.frequence_reunion)) + '</td>' +
+          '<td>' + (o.derniere_session ? gouvDateFr(o.derniere_session) : '\u2014') + '</td>' +
+          '<td>' + gouvBadge(o.statut, o.statut === 'ACTIF' ? 'ok' : 'warn') + '</td>' +
+          '<td style="text-align:right">' + (gouvCanWrite() ? '<button class="btn btn--sm btn--ghost" data-gn-edit="' + esc(o.id) + '" type="button">Modifier</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' : '<div class="empty">Aucun organe enregistré.</div>';
+    $('gouv-pane-organes').innerHTML = head + body;
+    var sd = $('btn-gn-seed');
+    if (sd) sd.addEventListener('click', function () {
+      sd.disabled = true;
+      api('/api/v1/governance/organes/seed', 'POST', {})
+        .then(function () { notify('Organes de base générés.', 'ok'); loadGouvernance(); })
+        .catch(function (e) { sd.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+    var nw = $('btn-gn-new'); if (nw) nw.addEventListener('click', function () { openOrganeModal(null); });
+    $('gouv-pane-organes').querySelectorAll('[data-gn-edit]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var o = (GOUV.organes || []).filter(function (x) { return x.id === b.dataset.gnEdit; })[0];
+        openOrganeModal(o || null);
+      });
+    });
+  }
+  function gouvLabelType(t) {
+    return { CONSEIL_ADMINISTRATION: 'Conseil d’Administration', COMITE_AUDIT: 'Comité d’Audit', COMITE_RISQUE: 'Comité des Risques', COMITE_CREDIT: 'Comité de Crédit', COMITE_ALM: 'Comité ALM', ASSEMBLEE_GENERALE: 'Assemblée Générale', DIRECTION_GENERALE: 'Direction Générale', AUTRE: 'Autre' }[t] || t || '\u2014';
+  }
+  function gouvLabelFreq(f) {
+    return { MENSUELLE: 'Mensuelle', BIMESTRIELLE: 'Bimestrielle', TRIMESTRIELLE: 'Trimestrielle', SEMESTRIELLE: 'Semestrielle', ANNUELLE: 'Annuelle', A_LA_DEMANDE: 'À la demande' }[f] || f || '\u2014';
+  }
+  function openOrganeModal(o) {
+    var isNew = !o;
+    o = o || {};
+    var types = [['CONSEIL_ADMINISTRATION', 'Conseil d’Administration'], ['COMITE_AUDIT', 'Comité d’Audit'], ['COMITE_RISQUE', 'Comité des Risques'], ['COMITE_CREDIT', 'Comité de Crédit'], ['COMITE_ALM', 'Comité ALM'], ['ASSEMBLEE_GENERALE', 'Assemblée Générale'], ['DIRECTION_GENERALE', 'Direction Générale'], ['AUTRE', 'Autre']];
+    var freqs = [['TRIMESTRIELLE', 'Trimestrielle'], ['MENSUELLE', 'Mensuelle'], ['BIMESTRIELLE', 'Bimestrielle'], ['SEMESTRIELLE', 'Semestrielle'], ['ANNUELLE', 'Annuelle'], ['A_LA_DEMANDE', 'À la demande']];
+    openModal('<h3>' + (isNew ? 'Nouvel organe' : 'Modifier l’organe') + '</h3><p class="sub">' + esc(o.libelle || '') + '</p>' +
+      '<div class="fld"><label for="go-lib">Libellé</label><input id="go-lib" value="' + esc(o.libelle || '') + '"></div>' +
+      '<div class="fld"><label for="go-type">Type</label><select id="go-type">' + gouvOpts(types, o.type_organe, '\u2014 choisir \u2014') + '</select></div>' +
+      '<div class="fld"><label for="go-freq">Fréquence des réunions</label><select id="go-freq">' + gouvOpts(freqs, o.frequence_reunion, '\u2014 choisir \u2014') + '</select></div>' +
+      '<div class="fld"><label for="go-mem">Nombre de membres</label><input id="go-mem" type="number" value="' + esc(o.nombre_membres || 0) + '"></div>' +
+      '<div class="fld"><label for="go-quo">Quorum requis</label><input id="go-quo" type="number" value="' + esc(o.quorum_requis || 0) + '"></div>' +
+      '<div class="fld"><label for="go-base">Base réglementaire</label><input id="go-base" value="' + esc(o.base_reglementaire || '') + '"></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="go-cancel" type="button">Annuler</button><button class="btn btn--primary" id="go-save" type="button">Enregistrer</button></div>');
+    $('go-cancel').addEventListener('click', closeModal);
+    $('go-save').addEventListener('click', function () {
+      var body = { libelle: $('go-lib').value.trim(), type_organe: $('go-type').value, frequence_reunion: $('go-freq').value,
+        nombre_membres: $('go-mem').value, quorum_requis: $('go-quo').value, base_reglementaire: $('go-base').value.trim() };
+      if (!body.libelle) { notify('Indiquez le libellé de l’organe.', 'err'); return; }
+      $('go-save').disabled = true;
+      api(isNew ? '/api/v1/governance/organes' : '/api/v1/governance/organes/' + encodeURIComponent(o.id), isNew ? 'POST' : 'PUT', body)
+        .then(function () { closeModal(); notify('Organe enregistré.', 'ok'); loadGouvernance(); })
+        .catch(function (e) { $('go-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+
+  /* --- Onglet 3 : membres --- */
+  function renderGouvMembres() {
+    var l = GOUV.membres || [];
+    var head = '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
+      '<p class="hint" style="margin:0">Rattachez un membre à son compte d’accès : nom, fonction, téléphone et e-mail sont alors repris automatiquement.</p>' +
+      (gouvCanWrite() ? '<button class="btn btn--primary" id="btn-gm-new" type="button">+ Nouveau membre</button>' : '') + '</div>';
+    var body = l.length ? '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Nom</th><th>Fonction</th><th>Organe</th><th>Qualité</th><th>Casier judiciaire</th><th>Statut</th><th></th></tr></thead><tbody>' +
+      l.map(function (m) {
+        return '<tr><td><b>' + esc(m.nom_complet) + '</b><br><span class="hint" style="font-size:11px">' + esc(m.email || '') + (m.telephone ? ' \u00b7 ' + esc(m.telephone) : '') + '</span></td>' +
+          '<td>' + esc(m.fonction) + '</td><td>' + esc(m.organe_libelle || '\u2014') + '</td>' +
+          '<td>' + esc(m.qualite || '\u2014') + '</td>' +
+          '<td>' + (m.casier_a_renouveler ? gouvBadge('à renouveler', 'warn') : gouvBadge('à jour', 'ok')) + '</td>' +
+          '<td>' + (m.actif ? gouvBadge('actif', 'ok') : gouvBadge('sorti', 'info')) + '</td>' +
+          '<td style="text-align:right">' + (gouvCanWrite() ? '<button class="btn btn--sm btn--ghost" data-gm-edit="' + esc(m.id) + '" type="button">Modifier</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' : '<div class="empty">Aucun membre enregistré.</div>';
+    $('gouv-pane-membres').innerHTML = head + body;
+    var nw = $('btn-gm-new'); if (nw) nw.addEventListener('click', function () { openMembreModal(null); });
+    $('gouv-pane-membres').querySelectorAll('[data-gm-edit]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var m = (GOUV.membres || []).filter(function (x) { return x.id === b.dataset.gmEdit; })[0];
+        openMembreModal(m || null);
+      });
+    });
+  }
+  function openMembreModal(m) {
+    var isNew = !m; m = m || {};
+    var types = [['ADMINISTRATEUR', 'Administrateur'], ['DIRECTEUR_GENERAL', 'Directeur Général'], ['DIRECTEUR_GENERAL_ADJOINT', 'Directeur Général Adjoint'], ['MEMBRE_COMITE', 'Membre de comité'], ['COMMISSAIRE_COMPTES', 'Commissaire aux comptes'], ['SECRETAIRE', 'Secrétaire'], ['AUTRE', 'Autre']];
+    var quals = [['INTERNE', 'Interne'], ['INDEPENDANT', 'Indépendant'], ['EXTERNE', 'Externe'], ['REPRESENTANT_ETAT', 'Représentant de l’État']];
+    var users = (GOUV.users || []).map(function (u) { return [u.id, u.full_name + (u.position ? ' \u2014 ' + u.position : '')]; });
+    var organes = (GOUV.organes || []).map(function (o) { return [o.id, o.libelle]; });
+    openModal('<h3>' + (isNew ? 'Nouveau membre' : 'Modifier le membre') + '</h3><p class="sub">' + esc(m.nom_complet || '') + '</p>' +
+      '<div class="fld"><label for="gm-user">Compte d’accès lié <span class="hint" style="font-weight:400">remplit nom, fonction, tél., e-mail</span></label><select id="gm-user">' + gouvOpts(users, m.app_user_id, '\u2014 aucun \u2014') + '</select></div>' +
+      '<div class="fld"><label for="gm-nom">Nom complet</label><input id="gm-nom" value="' + esc(m.nom_complet || '') + '"></div>' +
+      '<div class="fld"><label for="gm-fct">Fonction</label><input id="gm-fct" value="' + esc(m.fonction || '') + '"></div>' +
+      '<div class="fld"><label for="gm-org">Organe</label><select id="gm-org">' + gouvOpts(organes, m.organe_id, '\u2014 aucun \u2014') + '</select></div>' +
+      '<div class="fld"><label for="gm-type">Type de membre</label><select id="gm-type">' + gouvOpts(types, m.type_membre || 'ADMINISTRATEUR') + '</select></div>' +
+      '<div class="fld"><label for="gm-qual">Qualité</label><select id="gm-qual">' + gouvOpts(quals, m.qualite, '\u2014 choisir \u2014') + '</select></div>' +
+      '<div class="fld"><label for="gm-sexe">Sexe</label><select id="gm-sexe">' + gouvOpts([['F', 'Féminin'], ['M', 'Masculin']], m.sexe, '\u2014 choisir \u2014') + '</select></div>' +
+      '<div class="fld"><label for="gm-tel">Téléphone</label><input id="gm-tel" value="' + esc(m.telephone || '') + '"></div>' +
+      '<div class="fld"><label for="gm-mail">E-mail</label><input id="gm-mail" type="email" value="' + esc(m.email || '') + '"></div>' +
+      '<div class="fld"><label for="gm-casier">Date du casier judiciaire <span class="hint" style="font-weight:400">alerte après 90 jours</span></label><input id="gm-casier" type="date" value="' + esc(gouvDate(m.casier_judiciaire_date)) + '"></div>' +
+      '<div class="fld"><label for="gm-entree">Date d’entrée</label><input id="gm-entree" type="date" value="' + esc(gouvDate(m.date_entree)) + '"></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="gm-cancel" type="button">Annuler</button><button class="btn btn--primary" id="gm-save" type="button">Enregistrer</button></div>');
+    $('gm-cancel').addEventListener('click', closeModal);
+    var us = $('gm-user');
+    if (us) us.addEventListener('change', function () {
+      var u = (GOUV.users || []).filter(function (x) { return x.id === us.value; })[0];
+      if (!u) return;
+      $('gm-nom').value = u.full_name || ''; $('gm-fct').value = u.position || '';
+      $('gm-tel').value = u.phone || ''; $('gm-mail').value = u.email || '';
+    });
+    $('gm-save').addEventListener('click', function () {
+      var body = { app_user_id: $('gm-user').value || null, nom_complet: $('gm-nom').value.trim(), fonction: $('gm-fct').value.trim(),
+        organe_id: $('gm-org').value || null, type_membre: $('gm-type').value, qualite: $('gm-qual').value || null,
+        sexe: $('gm-sexe').value || null, telephone: $('gm-tel').value.trim(), email: $('gm-mail').value.trim(),
+        casier_judiciaire_date: $('gm-casier').value || null, date_entree: $('gm-entree').value || null };
+      if (!body.nom_complet) { notify('Indiquez le nom du membre.', 'err'); return; }
+      $('gm-save').disabled = true;
+      api(isNew ? '/api/v1/governance/membres' : '/api/v1/governance/membres/' + encodeURIComponent(m.id), isNew ? 'POST' : 'PUT', body)
+        .then(function () { closeModal(); notify('Membre enregistré.', 'ok'); loadGouvernance(); })
+        .catch(function (e) { $('gm-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+
+  /* --- Onglet 4 : mandats --- */
+  function renderGouvMandats() {
+    var l = GOUV.mandats || [];
+    var al = GOUV.cumul || [];
+    var head = '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
+      '<p class="hint" style="margin:0">Le statut « expiré » et le numéro de renouvellement sont calculés automatiquement. Plafond de 3 mandats d’administrateur.</p>' +
+      (gouvCanWrite() ? '<button class="btn btn--primary" id="btn-gt-new" type="button">+ Nouveau mandat</button>' : '') + '</div>' +
+      (al.length ? '<div class="chips" style="margin-bottom:12px">' + al.map(function (a) { return '<span class="chip chip--warn">Cumul (' + a.mandats_en_cours + ') : ' + esc(a.nom) + '</span>'; }).join('') + '</div>' : '');
+    var body = l.length ? '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Membre</th><th>Fonction</th><th>Organe</th><th>Début</th><th>Fin</th><th>Renouv.</th><th>Statut</th><th></th></tr></thead><tbody>' +
+      l.map(function (m) {
+        var kind = m.statut === 'EN_COURS' ? 'ok' : (m.statut === 'EXPIRE' ? 'bad' : 'info');
+        return '<tr><td><b>' + esc(m.nom_complet) + '</b></td><td>' + esc(m.fonction) + '</td><td>' + esc(m.organe_libelle || '\u2014') + '</td>' +
+          '<td>' + gouvDateFr(m.date_debut) + '</td><td>' + gouvDateFr(m.date_fin) + '</td><td>' + (m.numero_renouvellement || 1) + '</td>' +
+          '<td>' + gouvBadge(m.statut, kind) + '</td>' +
+          '<td style="text-align:right">' + (gouvCanWrite() ? '<button class="btn btn--sm btn--ghost" data-gt-edit="' + esc(m.id) + '" type="button">Modifier</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' : '<div class="empty">Aucun mandat enregistré.</div>';
+    $('gouv-pane-mandats').innerHTML = head + body;
+    var nw = $('btn-gt-new'); if (nw) nw.addEventListener('click', function () { openMandatModal(null); });
+    $('gouv-pane-mandats').querySelectorAll('[data-gt-edit]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var m = (GOUV.mandats || []).filter(function (x) { return x.id === b.dataset.gtEdit; })[0];
+        openMandatModal(m || null);
+      });
+    });
+  }
+  function openMandatModal(m) {
+    var isNew = !m; m = m || {};
+    var membres = (GOUV.mandatsMembres || []).map(function (x) { return [x.id, x.nom_complet + ' — ' + (x.fonction || '')]; });
+    var organes = (GOUV.organes || []).map(function (o) { return [o.id, o.libelle]; });
+    openModal('<h3>' + (isNew ? 'Nouveau mandat' : 'Modifier le mandat') + '</h3><p class="sub">' + esc(m.nom_complet || '') + '</p>' +
+      '<div class="fld"><label for="gt-membre">Membre</label><select id="gt-membre">' + gouvOpts(membres, m.membre_id, '\u2014 choisir \u2014') + '</select></div>' +
+      '<div class="fld"><label for="gt-fct">Fonction</label><input id="gt-fct" value="' + esc(m.fonction || '') + '"></div>' +
+      '<div class="fld"><label for="gt-org">Organe</label><select id="gt-org">' + gouvOpts(organes, m.organe_id, '\u2014 aucun \u2014') + '</select></div>' +
+      '<div class="fld"><label for="gt-debut">Début du mandat</label><input id="gt-debut" type="date" value="' + esc(gouvDate(m.date_debut)) + '"></div>' +
+      '<div class="fld"><label for="gt-fin">Fin du mandat</label><input id="gt-fin" type="date" value="' + esc(gouvDate(m.date_fin)) + '"></div>' +
+      '<div class="fld"><label for="gt-acte">Acte de nomination</label><input id="gt-acte" value="' + esc(m.acte_nomination || '') + '"></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="gt-cancel" type="button">Annuler</button><button class="btn btn--primary" id="gt-save" type="button">Enregistrer</button></div>');
+    $('gt-cancel').addEventListener('click', closeModal);
+    $('gt-save').addEventListener('click', function () {
+      var body = { membre_id: $('gt-membre').value, fonction: $('gt-fct').value.trim(), organe_id: $('gt-org').value || null,
+        date_debut: $('gt-debut').value || null, date_fin: $('gt-fin').value || null, acte_nomination: $('gt-acte').value.trim() };
+      if (!body.membre_id) { notify('Choisissez le membre concerné.', 'err'); return; }
+      $('gt-save').disabled = true;
+      api(isNew ? '/api/v1/governance/mandats' : '/api/v1/governance/mandats/' + encodeURIComponent(m.id), isNew ? 'POST' : 'PUT', body)
+        .then(function () { closeModal(); notify('Mandat enregistré.', 'ok'); loadGouvernance(); })
+        .catch(function (e) { $('gt-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+
+  /* --- Onglet 5 : sessions & PV --- */
+  function renderGouvSessions() {
+    var l = GOUV.sessions || [];
+    var head = '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
+      '<p class="hint" style="margin:0">Le quorum est calculé automatiquement. La signature scelle le PV par une empreinte numérique et le verrouille.</p>' +
+      (gouvCanWrite() ? '<button class="btn btn--primary" id="btn-gs-new" type="button">+ Nouvelle session</button>' : '') + '</div>';
+    var body = l.length ? '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Date</th><th>Organe</th><th>Présents / quorum</th><th>PV</th><th>Empreinte</th><th>Statut</th><th></th></tr></thead><tbody>' +
+      l.map(function (s) {
+        var qk = s.quorum_atteint === false ? gouvBadge('quorum non atteint', 'bad') : (s.quorum_atteint === true ? gouvBadge('quorum atteint', 'ok') : '\u2014');
+        var st = { SIGNE_VERROUILLE: 'ok', BROUILLON: 'warn', PLANIFIEE: 'info', ANNULEE: 'bad' }[s.statut] || 'info';
+        return '<tr><td>' + gouvDateFr(s.date_session) + '</td><td>' + esc(s.organe_libelle || '\u2014') + '</td>' +
+          '<td>' + s.nombre_presents + ' / ' + s.quorum_requis + ' ' + qk + '</td><td>' + esc(s.pv_reference || '\u2014') + '</td>' +
+          '<td><span class="hint" style="font-size:11px">' + (s.hash_integrite_pv ? esc(String(s.hash_integrite_pv).slice(0, 12)) + '\u2026' : '\u2014') + '</span></td>' +
+          '<td>' + gouvBadge(s.statut.replace('_', ' '), st) + '</td>' +
+          '<td style="text-align:right">' + (gouvCanWrite() ? '<button class="btn btn--sm btn--ghost" data-gs-edit="' + esc(s.id) + '" type="button">' + (s.statut === 'SIGNE_VERROUILLE' ? 'Consulter' : 'Modifier') + '</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' : '<div class="empty">Aucune session enregistrée.</div>';
+    $('gouv-pane-sessions').innerHTML = head + body;
+    var nw = $('btn-gs-new'); if (nw) nw.addEventListener('click', function () { openSessionModal(null); });
+    $('gouv-pane-sessions').querySelectorAll('[data-gs-edit]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var s = (GOUV.sessions || []).filter(function (x) { return x.id === b.dataset.gsEdit; })[0];
+        openSessionModal(s || null);
+      });
+    });
+  }
+  function openSessionModal(s) {
+    var isNew = !s; s = s || {};
+    var organes = (GOUV.sessionsOrganes || []).map(function (o) { return [o.id, o.libelle + ' (quorum ' + (o.quorum_requis || 0) + ')']; });
+    var locked = s.statut === 'SIGNE_VERROUILLE';
+    var types = [['ORDINAIRE', 'Ordinaire'], ['EXTRAORDINAIRE', 'Extraordinaire'], ['ASSEMBLEE_GENERALE', 'Assemblée Générale'], ['STATUTAIRE', 'Statutaire']];
+    openModal('<h3>' + (isNew ? 'Nouvelle session' : (locked ? 'Session verrouillée' : 'Modifier la session')) + '</h3><p class="sub">' + (locked ? 'PV signé : lecture seule.' : '') + '</p>' +
+      '<div class="fld"><label for="gs-org">Organe</label><select id="gs-org"' + (locked ? ' disabled' : '') + '>' + gouvOpts(organes, s.organe_id, '\u2014 choisir \u2014') + '</select></div>' +
+      '<div class="fld"><label for="gs-type">Type de session</label><select id="gs-type"' + (locked ? ' disabled' : '') + '>' + gouvOpts(types, s.type_session || 'ORDINAIRE') + '</select></div>' +
+      '<div class="fld"><label for="gs-date">Date</label><input id="gs-date" type="date" value="' + esc(gouvDate(s.date_session)) + '"' + (locked ? ' disabled' : '') + '></div>' +
+      '<div class="fld"><label for="gs-lieu">Lieu</label><input id="gs-lieu" value="' + esc(s.lieu || '') + '"' + (locked ? ' disabled' : '') + '></div>' +
+      '<div class="fld"><label for="gs-presents">Nombre de présents</label><input id="gs-presents" type="number" value="' + esc(s.nombre_presents || 0) + '"' + (locked ? ' disabled' : '') + '></div>' +
+      '<div class="fld"><label for="gs-pv">Référence du PV</label><input id="gs-pv" value="' + esc(s.pv_reference || '') + '"' + (locked ? ' disabled' : '') + '></div>' +
+      '<div class="fld"><label for="gs-resume">Résumé / décisions</label><textarea id="gs-resume" rows="3"' + (locked ? ' disabled' : '') + '>' + esc(s.pv_resume || '') + '</textarea></div>' +
+      '<div class="modal__nav">' + (locked ? '<button class="btn btn--ghost" id="gs-cancel" type="button">Fermer</button>' :
+        '<button class="btn btn--ghost" id="gs-cancel" type="button">Annuler</button><button class="btn btn--ghost" id="gs-sign" type="button">Signer &amp; verrouiller</button><button class="btn btn--primary" id="gs-save" type="button">Enregistrer</button>') + '</div>');
+    $('gs-cancel').addEventListener('click', closeModal);
+    function payload(extra) {
+      var b = { organe_id: $('gs-org').value || null, type_session: $('gs-type').value, date_session: $('gs-date').value || null,
+        lieu: $('gs-lieu').value.trim(), nombre_presents: $('gs-presents').value || 0,
+        pv_reference: $('gs-pv').value.trim(), pv_resume: $('gs-resume').value.trim() };
+      if (extra) Object.keys(extra).forEach(function (k) { b[k] = extra[k]; });
+      return b;
+    }
+    function send(b, btn) {
+      if (!b.date_session) { notify('Indiquez la date de la session.', 'err'); return; }
+      btn.disabled = true;
+      api(isNew ? '/api/v1/governance/sessions' : '/api/v1/governance/sessions/' + encodeURIComponent(s.id), isNew ? 'POST' : 'PUT', b)
+        .then(function () { closeModal(); notify('Session enregistrée.', 'ok'); loadGouvernance(); })
+        .catch(function (e) { btn.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    }
+    var sv = $('gs-save'); if (sv) sv.addEventListener('click', function () { send(payload({ statut: 'BROUILLON' }), sv); });
+    var sg = $('gs-sign'); if (sg) sg.addEventListener('click', function () {
+      if (!confirm('Signer ce procès-verbal ? Il sera scellé par une empreinte numérique et ne pourra plus être modifié.')) return;
+      send(payload({ statut: 'SIGNE_VERROUILLE' }), sg);
+    });
+  }
+
+  /* --- Onglet 6 : résolutions --- */
+  function renderGouvResolutions() {
+    var l = GOUV.resolutions || [];
+    var head = '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
+      '<p class="hint" style="margin:0">Une résolution non réalisée dont l’échéance est passée passe automatiquement « en retard ».</p>' +
+      (gouvCanWrite() ? '<button class="btn btn--primary" id="btn-gr-new" type="button">+ Nouvelle résolution</button>' : '') + '</div>';
+    var body = l.length ? '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Intitulé</th><th>Type</th><th>Responsable</th><th>Échéance</th><th>Avancement</th><th>Priorité</th><th>Statut</th><th></th></tr></thead><tbody>' +
+      l.map(function (x) {
+        var st = { REALISEE: 'ok', EN_RETARD: 'bad', EN_COURS: 'warn', A_FAIRE: 'info' }[x.statut] || 'info';
+        var pr = { CRITIQUE: 'bad', HAUTE: 'warn', NORMALE: 'info', BASSE: 'info' }[x.priorite] || 'info';
+        return '<tr><td><b>' + esc(x.intitule) + '</b></td><td>' + esc(x.type_element) + '</td><td>' + esc(x.responsable || '\u2014') + '</td>' +
+          '<td>' + gouvDateFr(x.date_echeance) + '</td>' +
+          '<td><div style="background:#e9ebf3;border-radius:99px;height:8px;width:88px;overflow:hidden"><div style="height:8px;width:' + Number(x.taux_execution || 0) + '%;background:#0b0c26"></div></div><span class="hint" style="font-size:11px">' + Number(x.taux_execution || 0) + '%</span></td>' +
+          '<td>' + gouvBadge(x.priorite, pr) + '</td><td>' + gouvBadge(x.statut.replace('_', ' '), st) + '</td>' +
+          '<td style="text-align:right">' + (gouvCanWrite() ? '<button class="btn btn--sm btn--ghost" data-gr-edit="' + esc(x.id) + '" type="button">Modifier</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' : '<div class="empty">Aucune résolution enregistrée.</div>';
+    $('gouv-pane-resolutions').innerHTML = head + body;
+    var nw = $('btn-gr-new'); if (nw) nw.addEventListener('click', function () { openResolutionModal(null); });
+    $('gouv-pane-resolutions').querySelectorAll('[data-gr-edit]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var x = (GOUV.resolutions || []).filter(function (y) { return y.id === b.dataset.grEdit; })[0];
+        openResolutionModal(x || null);
+      });
+    });
+  }
+  function openResolutionModal(x) {
+    var isNew = !x; x = x || {};
+    var types = [['RESOLUTION', 'Résolution'], ['RECOMMANDATION', 'Recommandation'], ['DECISION', 'Décision'], ['INSTRUCTION', 'Instruction']];
+    var domaines = [['GOUVERNANCE', 'Gouvernance'], ['RISQUE', 'Risque'], ['CREDIT', 'Crédit'], ['AUDIT', 'Audit'], ['COMPTABILITE', 'Comptabilité'], ['RESSOURCES_HUMAINES', 'Ressources humaines'], ['SYSTEME_INFORMATION', 'Système d’information'], ['CONFORMITE', 'Conformité'], ['STRATEGIE', 'Stratégie'], ['AUTRE', 'Autre']];
+    var prios = [['BASSE', 'Basse'], ['NORMALE', 'Normale'], ['HAUTE', 'Haute'], ['CRITIQUE', 'Critique']];
+    var sessions = (GOUV.resSessions || []).map(function (s) { return [s.id, gouvDateFr(s.date_session) + (s.numero_session ? ' \u2014 ' + s.numero_session : '')]; });
+    var organes = (GOUV.resOrganes || []).map(function (o) { return [o.id, o.libelle]; });
+    openModal('<h3>' + (isNew ? 'Nouvelle résolution' : 'Modifier') + '</h3><p class="sub">' + esc(x.intitule || '') + '</p>' +
+      '<div class="fld"><label for="gr-int">Intitulé</label><input id="gr-int" value="' + esc(x.intitule || '') + '"></div>' +
+      '<div class="fld"><label for="gr-texte">Texte / détail</label><textarea id="gr-texte" rows="2">' + esc(x.texte || '') + '</textarea></div>' +
+      '<div class="fld"><label for="gr-type">Type</label><select id="gr-type">' + gouvOpts(types, x.type_element || 'RESOLUTION') + '</select></div>' +
+      '<div class="fld"><label for="gr-dom">Domaine</label><select id="gr-dom">' + gouvOpts(domaines, x.domaine, '\u2014 choisir \u2014') + '</select></div>' +
+      '<div class="fld"><label for="gr-sess">Session d’origine</label><select id="gr-sess">' + gouvOpts(sessions, x.session_id, '\u2014 aucune \u2014') + '</select></div>' +
+      '<div class="fld"><label for="gr-org">Organe</label><select id="gr-org">' + gouvOpts(organes, x.organe_id, '\u2014 aucun \u2014') + '</select></div>' +
+      '<div class="fld"><label for="gr-resp">Responsable</label><input id="gr-resp" value="' + esc(x.responsable || '') + '"></div>' +
+      '<div class="fld"><label for="gr-ech">Échéance</label><input id="gr-ech" type="date" value="' + esc(gouvDate(x.date_echeance)) + '"></div>' +
+      '<div class="fld"><label for="gr-av">Avancement (%)</label><input id="gr-av" type="number" min="0" max="100" value="' + esc(x.taux_execution || 0) + '"></div>' +
+      '<div class="fld"><label for="gr-prio">Priorité</label><select id="gr-prio">' + gouvOpts(prios, x.priorite || 'NORMALE') + '</select></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="gr-cancel" type="button">Annuler</button><button class="btn btn--primary" id="gr-save" type="button">Enregistrer</button></div>');
+    $('gr-cancel').addEventListener('click', closeModal);
+    $('gr-save').addEventListener('click', function () {
+      var b = { intitule: $('gr-int').value.trim(), texte: $('gr-texte').value.trim(), type_element: $('gr-type').value,
+        domaine: $('gr-dom').value || null, session_id: $('gr-sess').value || null, organe_id: $('gr-org').value || null,
+        responsable: $('gr-resp').value.trim(), date_echeance: $('gr-ech').value || null,
+        taux_execution: $('gr-av').value || 0, priorite: $('gr-prio').value };
+      if (!b.intitule) { notify('Indiquez l’intitulé.', 'err'); return; }
+      if (Number(b.taux_execution) >= 100) b.statut = 'REALISEE';
+      $('gr-save').disabled = true;
+      api(isNew ? '/api/v1/governance/resolutions' : '/api/v1/governance/resolutions/' + encodeURIComponent(x.id), isNew ? 'POST' : 'PUT', b)
+        .then(function () { closeModal(); notify('Résolution enregistrée.', 'ok'); loadGouvernance(); })
+        .catch(function (e) { $('gr-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+
+
+  /* ===== VAGUE 29 : CONFORMITÉ PRUDENTIELLE, RISQUES & REPORTING ===== */
+  var G29 = { loaded: false, sub: 'apparentes', data: null };
+
+  function g29Money(c) {
+    if (c == null || c === '') return '\u2014';
+    return fmtAmount(Number(c) / 100) + ' FCFA';
+  }
+  function g29Pct(v) { return v == null || v === '' ? '\u2014' : String(Number(v).toFixed(2)).replace('.', ',') + ' %'; }
+  function g29Pill(txt, kind) { return '<span class="g29-pill ' + (kind || 'info') + '">' + esc(String(txt)) + '</span>'; }
+  function g29Head(titre, sous, actions) {
+    return '<div class="g29-head"><div><h3>' + esc(titre) + '</h3>' + (sous ? '<p class="hint">' + esc(sous) + '</p>' : '') + '</div>' +
+      '<div class="g29-actions">' + (actions || '') + '</div></div>';
+  }
+  function g29Stat(val, lab, extra) {
+    return '<div class="g29-stat"><b>' + val + '</b><span>' + esc(lab) + '</span>' + (extra || '') + '</div>';
+  }
+  function g29Alertes(list) {
+    if (!list || !list.length) return '<div class="g29-alert moy">Aucun écart détecté sur ce bloc.</div>';
+    return list.map(function (a) {
+      var cls = a.niveau === 'CRITIQUE' ? 'crit' : (a.niveau === 'HAUTE' ? 'haut' : 'moy');
+      return '<span class="g29-alert ' + cls + '">' + esc(a.texte) + '</span>';
+    }).join('');
+  }
+  function g29File(url) { window.open(url, '_blank'); }
+
+  function setupGouvernance29() {
+    var host = $('g29-host');
+    if (!host) return;
+    document.querySelectorAll('[data-g29]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        G29.sub = b.getAttribute('data-g29');
+        document.querySelectorAll('[data-g29]').forEach(function (x) { x.classList.toggle('active', x === b); });
+        renderG29Pane();
+      });
+    });
+    var b1 = $('btn-g29-cac-pdf'); if (b1) b1.addEventListener('click', function () { g29File('/api/v1/governance/exports/rapport-cac.pdf'); });
+    var b2 = $('btn-g29-cac-xls'); if (b2) b2.addEventListener('click', function () { g29File('/api/v1/governance/exports/rapport-cac.xlsx'); });
+    var b3 = $('btn-g29-pack'); if (b3) b3.addEventListener('click', function () { g29File('/api/v1/governance/exports/pack-inspection.zip'); });
+  }
+
+  function loadGouvernance29(force) {
+    if (G29.loaded && !force) { renderG29Pane(); return; }
+    var host = $('g29-host');
+    if (host) host.innerHTML = '<div class="empty">Chargement du bloc conformité…</div>';
+    Promise.all([
+      api('/api/v1/governance/conformite/dashboard'),
+      api('/api/v1/governance/apparentes'),
+      api('/api/v1/governance/conventions'),
+      api('/api/v1/governance/risques'),
+      api('/api/v1/governance/pca'),
+      api('/api/v1/governance/incidents'),
+      api('/api/v1/governance/lbcft'),
+      api('/api/v1/governance/echeancier')
+    ]).then(function (r) {
+      G29.data = { dash: r[0], app: r[1], conv: r[2], risq: r[3], pca: r[4], inc: r[5], lbc: r[6], ech: r[7] };
+      G29.loaded = true;
+      renderG29Kpis();
+      renderG29Pane();
+    }).catch(function (e) {
+      if (guard(e)) return;
+      if (e.message === 'forbidden' || e.message === 'use_teebo_console') { if (host) host.innerHTML = '<div class="empty">Module réservé aux institutions.</div>'; return; }
+      if (host) host.innerHTML = '<div class="empty">Bloc conformité indisponible. Réessayez.</div>';
+      notify(fr(e), 'err');
+    });
+  }
+
+  function renderG29Kpis() {
+    var d = (G29.data && G29.data.dash) || {};
+    var box = $('g29-kpis');
+    if (!box) return;
+    var ap = d.apparentes || {};
+    var tint = ap.ratio_global_pct == null ? '' : (ap.ratio_global_pct > Number(ap.plafond_global_pct) ? 'bad' : (ap.ratio_global_pct > Number(ap.plafond_global_pct) * 0.8 ? 'warn' : ''));
+    box.innerHTML =
+      g29Stat(g29Pct(ap.ratio_global_pct), 'Encours apparentés / FPE (plafond ' + g29Pct(ap.plafond_global_pct) + ')',
+        '<div class="g29-bar"><i class="' + tint + '" style="width:' + Math.min(100, Math.max(2, Number(ap.ratio_global_pct || 0))) + '%"></i></div>') +
+      g29Stat((d.conventions && d.conventions.n) || 0, 'Conventions réglementées') +
+      g29Stat((d.pca || []).length, 'Plans de continuité') +
+      g29Stat((d.incidents && d.incidents.a_notifier) || 0, 'Incidents à notifier BCEAO') +
+      g29Stat(((d.lbcft && d.lbcft.taux) || 0) + ' %', 'Personnel formé LBC/FT') +
+      g29Stat((d.echeancier && d.echeancier.en_retard) || 0, 'Échéances en retard') +
+      g29Stat((d.echeancier && d.echeancier.proches) || 0, 'Échéances à J-30/J-15/J-5');
+    var al = $('g29-alerts');
+    if (al) al.innerHTML = g29Alertes((d.alertes || []).slice(0, 8));
+  }
+
+  function renderG29Pane() {
+    var host = $('g29-host');
+    if (!host || !G29.data) return;
+    if (G29.sub === 'risques') return renderG29Risques(host);
+    if (G29.sub === 'conformite') return renderG29Conformite(host);
+    return renderG29Apparentes(host);
+  }
+
+  /* --- A. Apparentés & conventions réglementées --- */
+  function renderG29Apparentes(host) {
+    var a = G29.data.app, c = G29.data.conv;
+    var sit = a.situation || {};
+    var forme = a.forme || {};
+    var titre = forme.titre_pluriel || 'actions';
+    var html = g29Head('Crédits aux personnes apparentées et conventions réglementées',
+      'Plafonds prudentiels exprimés en pourcentage des fonds propres effectifs (FPE) — paramètres modifiables dans l\u2019onglet Paramètres.',
+      (gouvCanWrite() ? '<button class="btn btn--primary" id="btn-g29-new-app" type="button">+ Personne apparentée</button><button class="btn btn--ghost" id="btn-g29-new-conv" type="button">+ Convention</button>' : ''));
+
+    html += '<div class="g29-grid">' +
+      g29Stat(g29Money(sit.fpe_cents), 'Fonds propres effectifs (' + (sit.fpe_source === 'saisie' ? 'saisis' : 'capital social') + ')') +
+      g29Stat(g29Money(sit.encours_total_cents), 'Encours total apparentés') +
+      g29Stat('<span class="' + (sit.depassement_global ? 'g29-pill bad' : 'g29-pill ok') + '">' + g29Pct(sit.ratio_global_pct) + '</span>', 'Ratio global (plafond ' + g29Pct(sit.plafond_global_pct) + ')') +
+      g29Stat((sit.lignes || []).filter(function (l) { return l.depassement; }).length, 'Plafonds individuels dépassés') +
+      '</div>';
+
+    html += '<div class="g29-alert moy" style="margin-bottom:12px">Dans une ' + (forme.is_scoop ? 'société coopérative, les titres sont des <b>' + esc(titre) + '</b> et chaque membre dispose d\u2019une seule voix' : 'société anonyme, les titres sont des <b>' + esc(titre) + '</b> et les droits de vote suivent le nombre d\u2019actions (seuil d\u2019information ' + g29Pct((G29.data.dash.parametres || {}).seuil_participation_pct) + ')') + '.</div>';
+
+    html += '<h4 style="font-size:13px;margin:14px 0 8px">Personnes apparentées (' + (a.apparentes || []).length + ')</h4>';
+    var lines = a.apparentes || [];
+    html += lines.length ? '<div class="g29-scroll"><table class="tbl"><thead><tr><th>Nom</th><th>Lien / qualité</th><th>Vérification</th><th>Dossiers</th><th>Encours</th><th>Ratio FPE</th><th></th></tr></thead><tbody>' +
+      lines.map(function (p) {
+        var l = (sit.lignes || []).filter(function (x) { return x.id === p.id; })[0] || { encours_cents: 0, dossiers: 0, ratio_individuel_pct: null };
+        var kind = l.depassement ? 'bad' : (p.statut_verification === 'VERIFIEE' ? 'ok' : 'warn');
+        return '<tr><td><b>' + esc(p.nom_complet) + '</b><br><span class="hint" style="font-size:11px">' + esc(p.interessé ? 'lié à ' + p['interessé'] : '—') + '</span></td>' +
+          '<td>' + esc(String(p.type_lien).replace(/_/g, ' ')) + '</td>' +
+          '<td>' + g29Pill(p.statut_verification === 'VERIFIEE' ? 'Vérifiée' : 'À vérifier', kind) + '</td>' +
+          '<td>' + (l.dossiers || 0) + '</td><td>' + g29Money(l.encours_cents) + '</td>' +
+          '<td>' + (l.depassement ? g29Pill(g29Pct(l.ratio_individuel_pct), 'bad') : g29Pct(l.ratio_individuel_pct)) + '</td>' +
+          '<td style="text-align:right;white-space:nowrap">' + (gouvCanWrite() ? '<button class="btn btn--sm btn--ghost" data-g29-pa="' + esc(p.id) + '" type="button">Modifier</button> <button class="btn btn--sm btn--ghost" data-g29-pa-del="' + esc(p.id) + '" type="button">Retirer</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' : '<div class="empty">Aucune personne apparentée recensée. Commencez par les administrateurs et dirigeants.</div>';
+
+    html += '<h4 style="font-size:13px;margin:18px 0 8px">Conventions réglementées (' + (c.conventions || []).length + ')</h4>';
+    var cvs = c.conventions || [];
+    html += cvs.length ? '<div class="g29-scroll"><table class="tbl"><thead><tr><th>Réf.</th><th>Date</th><th>Apparenté</th><th>Type</th><th>Montant</th><th>Autorisation</th><th>Vote</th><th>CAC</th><th></th></tr></thead><tbody>' +
+      cvs.map(function (x) {
+        var st = { AUTORISEE: 'ok', EN_COURS: 'ok', CLOTUREE: 'info', PROJET: 'info', EN_ATTENTE_AUTORISATION: 'warn', REFUSEE: 'bad', ANNULEE: 'bad' }[x.statut] || 'info';
+        return '<tr><td>' + esc(x.reference) + '</td><td>' + gouvDateFr(x.date_convention) + '</td><td>' + esc(x.apparente_nom) + '</td>' +
+          '<td>' + esc(x.type_convention) + '</td><td>' + g29Money(x.montant_cents) + '</td>' +
+          '<td>' + (x.date_autorisation ? g29Pill('Autorisée le ' + gouvDateFr(x.date_autorisation), 'ok') : g29Pill(x.autorisation_requise ? 'Non autorisée' : 'Non requise', x.autorisation_requise ? 'bad' : 'info')) + ' ' + g29Pill(String(x.statut).replace(/_/g, ' '), st) + '</td>' +
+          '<td>' + (x.vote_exclu ? 'Exclu' : '—') + '</td><td>' + (x.informe_cac ? 'Oui' : g29Pill('Non', 'warn')) + '</td>' +
+          '<td style="text-align:right">' + (gouvCanWrite() ? '<button class="btn btn--sm btn--ghost" data-g29-cv="' + esc(x.id) + '" type="button">Modifier</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' : '<div class="empty">Aucune convention réglementée. Une convention est créée automatiquement lorsqu\u2019un crédit est accordé à un apparenté.</div>';
+
+    host.innerHTML = html;
+    var n1 = $('btn-g29-new-app'); if (n1) n1.addEventListener('click', function () { openG29Apparente(null); });
+    var n2 = $('btn-g29-new-conv'); if (n2) n2.addEventListener('click', function () { openG29Convention(null); });
+    host.querySelectorAll('[data-g29-pa]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var p = (a.apparentes || []).filter(function (x) { return x.id === b.dataset.g29Pa; })[0]; openG29Apparente(p || null);
+      });
+    });
+    host.querySelectorAll('[data-g29-pa-del]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        if (!window.confirm('Retirer cette personne apparentée du registre ?')) return;
+        api('/api/v1/governance/apparentes/' + encodeURIComponent(b.dataset.g29PaDel), 'DELETE')
+          .then(function () { notify('Personne apparentée retirée.', 'ok'); loadGouvernance29(true); })
+          .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+      });
+    });
+    host.querySelectorAll('[data-g29-cv]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var x = (c.conventions || []).filter(function (y) { return y.id === b.dataset.g29Cv; })[0]; openG29Convention(x || null);
+      });
+    });
+  }
+
+  function openG29Apparente(p) {
+    var isNew = !p; p = p || {};
+    var liens = [['CONJOINT', 'Conjoint'], ['ENFANT', 'Enfant'], ['ASCENDANT', 'Ascendant'], ['FRATRIE', 'Frère / Sœur'],
+      ['BELLE_FAMILLE', 'Belle-famille'], ['SOCIETE_CONTROLEE', 'Société contrôlée'], ['SOCIETE_AFFILIEE', 'Société affiliée'],
+      ['REPRESENTANT_LEGAL', 'Représentant légal'], ['AUTRE', 'Autre']];
+    var membres = (G29.data.app.membres || []).map(function (m) { return [m.id, m.nom_complet + (m.fonction ? ' — ' + m.fonction : '')]; });
+    openModal('<h3>' + (isNew ? 'Nouvelle personne apparentée' : 'Modifier la personne apparentée') + '</h3>' +
+      '<div class="fld"><label for="g29a-nom">Nom complet</label><input id="g29a-nom" value="' + esc(p.nom_complet || '') + '"></div>' +
+      '<div class="fld"><label for="g29a-lien">Lien de parenté / qualité</label><select id="g29a-lien">' + gouvOpts(liens, p.type_lien || 'CONJOINT') + '</select></div>' +
+      '<div class="fld"><label for="g29a-interesse">Rattachée à (administrateur / dirigeant)</label><select id="g29a-interesse">' + gouvOpts(membres, p.membre_gouvernance_id, '\u2014 non rattachée \u2014') + '</select></div>' +
+      '<div class="fld"><label for="g29a-nature">Nature</label><select id="g29a-nature">' + gouvOpts([['PHYSIQUE', 'Personne physique'], ['MORALE', 'Personne morale']], p.nature_personne || 'PHYSIQUE') + '</select></div>' +
+      '<div class="fld"><label for="g29a-piece">Pièce / RCCM</label><input id="g29a-piece" value="' + esc(p.numero_piece || p.rccm || '') + '"></div>' +
+      '<div class="fld"><label for="g29a-tel">Téléphone</label><input id="g29a-tel" value="' + esc(p.telephone || '') + '"></div>' +
+      '<div class="fld"><label for="g29a-st">Vérification</label><select id="g29a-st">' + gouvOpts([['A_VERIFIER', 'À vérifier'], ['VERIFIEE', 'Vérifiée'], ['REJETEE', 'Rejetée']], p.statut_verification || 'A_VERIFIER') + '</select></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="g29a-cancel" type="button">Annuler</button><button class="btn btn--primary" id="g29a-save" type="button">Enregistrer</button></div>');
+    $('g29a-cancel').addEventListener('click', closeModal);
+    $('g29a-save').addEventListener('click', function () {
+      var b = { nom_complet: $('g29a-nom').value.trim(), type_lien: $('g29a-lien').value, membre_gouvernance_id: $('g29a-interesse').value || null,
+        nature_personne: $('g29a-nature').value, numero_piece: $('g29a-piece').value.trim(), telephone: $('g29a-tel').value.trim(),
+        statut_verification: $('g29a-st').value };
+      if (!b.nom_complet) { notify('Indiquez le nom.', 'err'); return; }
+      $('g29a-save').disabled = true;
+      api(isNew ? '/api/v1/governance/apparentes' : '/api/v1/governance/apparentes/' + encodeURIComponent(p.id), isNew ? 'POST' : 'PUT', b)
+        .then(function () { closeModal(); notify('Personne apparentée enregistrée.', 'ok'); loadGouvernance29(true); })
+        .catch(function (e) { $('g29a-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+
+  function openG29Convention(x) {
+    var isNew = !x; x = x || {};
+    var pans = (G29.data.app.apparentes || []).map(function (p) { return [p.id, p.nom_complet]; });
+    var types = [['CREDIT', 'Crédit'], ['DEPOT', 'Dépôt'], ['ACHAT', 'Achat'], ['VENTE', 'Vente'], ['BAIL', 'Bail'],
+      ['PRESTATION', 'Prestation de service'], ['CAUTION', 'Caution'], ['PARTICIPATION', 'Participation'], ['REMUNERATION', 'Rémunération'], ['AUTRE', 'Autre']];
+    var statuts = [['PROJET', 'Projet'], ['EN_ATTENTE_AUTORISATION', 'En attente d\u2019autorisation'], ['AUTORISEE', 'Autorisée'], ['REFUSEE', 'Refusée'], ['EN_COURS', 'En cours'], ['CLOTUREE', 'Clôturée'], ['ANNULEE', 'Annulée']];
+    var organes = [['CONSEIL', 'Conseil d\u2019administration'], ['AG', 'Assemblée générale'], ['COMITE_AUDIT', 'Comité d\u2019audit'], ['DIRECTION', 'Direction générale']];
+    openModal('<h3>' + (isNew ? 'Nouvelle convention réglementée' : 'Convention ' + esc(x.reference || '')) + '</h3>' +
+      '<div class="fld"><label for="g29c-pa">Personne apparentée</label><select id="g29c-pa">' + gouvOpts(pans, x.personne_apparentee_id, '\u2014 choisir \u2014') + '</select></div>' +
+      '<div class="fld"><label for="g29c-type">Type</label><select id="g29c-type">' + gouvOpts(types, x.type_convention || 'CREDIT') + '</select></div>' +
+      '<div class="fld"><label for="g29c-obj">Objet</label><input id="g29c-obj" value="' + esc(x.objet || '') + '"></div>' +
+      '<div class="fld"><label for="g29c-date">Date de la convention</label><input id="g29c-date" type="date" value="' + esc(gouvDate(x.date_convention)) + '"></div>' +
+      '<div class="fld"><label for="g29c-mont">Montant (FCFA)</label><input id="g29c-mont" type="number" min="0" value="' + esc(x.montant_cents != null ? Number(x.montant_cents) / 100 : '') + '"></div>' +
+      '<div class="fld"><label for="g29c-stat">Statut</label><select id="g29c-stat">' + gouvOpts(statuts, x.statut || 'EN_ATTENTE_AUTORISATION') + '</select></div>' +
+      '<div class="fld"><label for="g29c-org">Organe qui autorise</label><select id="g29c-org">' + gouvOpts(organes, x.organe_autorisation, '\u2014 non autorisée \u2014') + '</select></div>' +
+      '<div class="fld"><label for="g29c-aut">Date d\u2019autorisation</label><input id="g29c-aut" type="date" value="' + esc(gouvDate(x.date_autorisation)) + '"></div>' +
+      '<div class="fld"><label>Information du Commissaire aux Comptes</label><label style="display:flex;gap:8px;align-items:center;font-weight:400"><input id="g29c-cac" type="checkbox"' + (x.informe_cac ? ' checked' : '') + '> Convention communiquée au CAC</label></div>' +
+      '<p class="hint">L\u2019administrateur intéressé est exclu du vote : la convention est adoptée par les autres membres du conseil.</p>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="g29c-cancel" type="button">Annuler</button><button class="btn btn--primary" id="g29c-save" type="button">Enregistrer</button></div>');
+    $('g29c-cancel').addEventListener('click', closeModal);
+    $('g29c-save').addEventListener('click', function () {
+      var b = { personne_apparentee_id: $('g29c-pa').value || null, type_convention: $('g29c-type').value,
+        objet: $('g29c-obj').value.trim(), date_convention: $('g29c-date').value || null,
+        montant_cents: Math.round(Number($('g29c-mont').value || 0) * 100), statut: $('g29c-stat').value,
+        organe_autorisation: $('g29c-org').value || null, date_autorisation: $('g29c-aut').value || null,
+        informe_cac: $('g29c-cac').checked };
+      if (!b.personne_apparentee_id) { notify('Choisissez la personne apparentée.', 'err'); return; }
+      $('g29c-save').disabled = true;
+      api(isNew ? '/api/v1/governance/conventions' : '/api/v1/governance/conventions/' + encodeURIComponent(x.id), isNew ? 'POST' : 'PUT', b)
+        .then(function () { closeModal(); notify('Convention enregistrée.', 'ok'); loadGouvernance29(true); })
+        .catch(function (e) { $('g29-c-save'); var s = $('g29c-save'); if (s) s.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+
+  /* --- B. Risques, PCA et incidents --- */
+  function renderG29Risques(host) {
+    var R = G29.data.risq, P = G29.data.pca, I = G29.data.inc;
+    var coul = { 1: '#e6f6ee', 2: '#f6f7d9', 3: '#fdeccb', 4: '#f9d5d2' };
+    var html = g29Head('Contrôle interne, risques et plan de continuité d\u2019activité',
+      'Matrice 4 \u00d7 4 (probabilité \u00d7 impact). Un plan de continuité non révisé depuis le délai paramétré passe automatiquement en « révision requise ».',
+      (gouvCanWrite() ? '<button class="btn btn--primary" id="btn-g29-risk" type="button">+ Risque</button><button class="btn btn--ghost" id="btn-g29-pca" type="button">+ Plan PCA</button><button class="btn btn--ghost" id="btn-g29-inc" type="button">+ Incident majeur</button>' : ''));
+    html += g29Alertes([].concat(R.alertes || [], P.alertes || [], I.alertes || []));
+    html += '<div class="g29-grid">' + g29Stat(R.kpis.total, 'Risques cartographiés') + g29Stat(R.kpis.critiques, 'Risques critiques') +
+      g29Stat(R.kpis.eleves_residuels, 'Risques résiduels élevés') + g29Stat(I.kpis.ouverts, 'Incidents ouverts') +
+      g29Stat(P.plans.filter(function (x) { return x.statut_calcule === 'REVISION_REQUISE'; }).length, 'Plans à réviser') + '</div>';
+
+    html += '<h4 style="font-size:13px;margin:14px 0 8px">Matrice des risques</h4><div class="g29-scroll"><div class="g29-heat">';
+    html += '<div class="hlab">Prob. \\ Impact</div>' + [1, 2, 3, 4].map(function (im) { return '<div class="hlab">Impact ' + im + '</div>'; }).join('');
+    (R.matrice || []).forEach(function (row) {
+      html += '<div class="hlab">Prob. ' + row[0].probabilite + '</div>';
+      row.forEach(function (cell) {
+        var bg = cell.score >= 12 ? coul[4] : (cell.score >= 8 ? coul[3] : (cell.score >= 4 ? coul[2] : coul[1]));
+        html += '<div class="hcell" style="background:' + bg + '">' + cell.risques.map(function (z) {
+          return '<span class="hrisque" data-g29-risk="' + esc(z.id) + '" title="' + esc(z.libelle) + '">' + esc(z.libelle.slice(0, 32)) + '</span>';
+        }).join('') + '</div>';
+      });
+    });
+    html += '</div></div>';
+
+    html += '<h4 style="font-size:13px;margin:18px 0 8px">Plans de continuité d\u2019activité (' + P.plans.length + ')</h4>';
+    html += P.plans.length ? '<div class="g29-scroll"><table class="tbl"><thead><tr><th>Code</th><th>Libellé</th><th>Dernière revue</th><th>Jours restants</th><th>Dernier exercice</th><th>Statut</th><th></th></tr></thead><tbody>' +
+      P.plans.map(function (x) {
+        var st = x.statut_calcule === 'REVISION_REQUISE' ? 'bad' : (x.statut_calcule === 'VALIDE' ? 'ok' : 'warn');
+        return '<tr><td>' + esc(x.code_plan) + '</td><td>' + esc(x.libelle) + '</td><td>' + gouvDateFr(x.date_derniere_revue || x.date_approbation) + '</td>' +
+          '<td>' + (x.jours_restants == null ? '\u2014' : (x.jours_restants < 0 ? g29Pill('dépassé', 'bad') : x.jours_restants + ' j')) + '</td>' +
+          '<td>' + gouvDateFr(x.date_dernier_exercice) + (x.mois_sans_exercice == null ? ' ' + g29Pill('aucun', 'warn') : ' (' + x.mois_sans_exercice + ' mois)') + '</td>' +
+          '<td>' + g29Pill(String(x.statut_calcule).replace(/_/g, ' '), st) + '</td>' +
+          '<td style="text-align:right">' + (gouvCanWrite() ? '<button class="btn btn--sm btn--ghost" data-g29-pca-edit="' + esc(x.id) + '" type="button">Modifier</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' : '<div class="empty">Aucun plan de continuité enregistré. Un PCA est obligatoire.</div>';
+
+    html += '<h4 style="font-size:13px;margin:18px 0 8px">Incidents majeurs (' + I.incidents.length + ')</h4>';
+    html += I.incidents.length ? '<div class="g29-scroll"><table class="tbl"><thead><tr><th>Réf.</th><th>Date</th><th>Type</th><th>Gravité</th><th>Pertes</th><th>Notification BCEAO</th><th>Statut</th><th></th></tr></thead><tbody>' +
+      I.incidents.map(function (x) {
+        var notif = x.notification_bceao ? g29Pill('Notifié le ' + gouvDateFr(x.date_notification), 'ok') : (x.notification_bceao_requise ? g29Pill('À notifier', 'bad') : g29Pill('Non requise', 'info'));
+        return '<tr><td>' + esc(x.reference) + '</td><td>' + gouvDateFr(x.date_incident) + '</td><td>' + esc(String(x.type_incident).replace(/_/g, ' ')) + '</td>' +
+          '<td>' + g29Pill(x.gravite, x.gravite === 'CRITIQUE' ? 'bad' : (x.gravite === 'HAUTE' ? 'warn' : 'info')) + '</td><td>' + g29Money(x.pertes_cents) + '</td>' +
+          '<td>' + notif + '</td><td>' + g29Pill(x.statut, x.statut === 'CLOS' || x.statut === 'RESOLU' ? 'ok' : 'warn') + '</td>' +
+          '<td style="text-align:right">' + (gouvCanWrite() ? '<button class="btn btn--sm btn--ghost" data-g29-inc-edit="' + esc(x.id) + '" type="button">Modifier</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' : '<div class="empty">Aucun incident majeur déclaré.</div>';
+
+    host.innerHTML = html;
+    var b1 = $('btn-g29-risk'); if (b1) b1.addEventListener('click', function () { openG29Risque(null); });
+    var b2 = $('btn-g29-pca'); if (b2) b2.addEventListener('click', function () { openG29Pca(null); });
+    var b3 = $('btn-g29-inc'); if (b3) b3.addEventListener('click', function () { openG29Incident(null); });
+    host.querySelectorAll('[data-g29-risk]').forEach(function (b) {
+      b.addEventListener('click', function () { var r = R.risques.filter(function (y) { return y.id === b.dataset.g29Risk; })[0]; openG29Risque(r || null); });
+    });
+    host.querySelectorAll('[data-g29-pca-edit]').forEach(function (b) {
+      b.addEventListener('click', function () { var x = P.plans.filter(function (y) { return y.id === b.dataset.g29PcaEdit; })[0]; openG29Pca(x || null); });
+    });
+    host.querySelectorAll('[data-g29-inc-edit]').forEach(function (b) {
+      b.addEventListener('click', function () { var x = I.incidents.filter(function (y) { return y.id === b.dataset.g29IncEdit; })[0]; openG29Incident(x || null); });
+    });
+  }
+
+  function openG29Risque(x) {
+    var isNew = !x; x = x || {};
+    var cats = [['CREDIT', 'Crédit'], ['LIQUIDITE', 'Liquidité'], ['MARCHE', 'Marché'], ['OPERATIONNEL', 'Opérationnel'], ['CONFORMITE', 'Conformité'], ['GOUVERNANCE', 'Gouvernance'], ['STRATEGIQUE', 'Stratégique'], ['TIC', 'Système d\u2019information'], ['LBC_FT', 'LBC/FT'], ['AUTRE', 'Autre']];
+    var lv = [['1', '1 \u2014 Très faible'], ['2', '2 \u2014 Faible'], ['3', '3 \u2014 Élevé'], ['4', '4 \u2014 Très élevé']];
+    openModal('<h3>' + (isNew ? 'Nouveau risque' : 'Modifier le risque') + '</h3>' +
+      '<div class="fld"><label for="g29r-lib">Libellé</label><input id="g29r-lib" value="' + esc(x.libelle || '') + '"></div>' +
+      '<div class="fld"><label for="g29r-cat">Catégorie</label><select id="g29r-cat">' + gouvOpts(cats, x.categorie || 'OPERATIONNEL') + '</select></div>' +
+      '<div class="fld"><label for="g29r-proc">Processus concerné</label><input id="g29r-proc" value="' + esc(x.processus || '') + '"></div>' +
+      '<div class="fld"><label for="g29r-prob">Probabilité</label><select id="g29r-prob">' + gouvOpts(lv, String(x.probabilite || 2)) + '</select></div>' +
+      '<div class="fld"><label for="g29r-imp">Impact</label><select id="g29r-imp">' + gouvOpts(lv, String(x.impact || 2)) + '</select></div>' +
+      '<div class="fld"><label for="g29r-dispo">Mesures de maîtrise</label><textarea id="g29r-dispo" rows="2">' + esc(x.dispositif_maitrise || '') + '</textarea></div>' +
+      '<div class="fld"><label for="g29r-resp">Responsable</label><input id="g29r-resp" value="' + esc(x.responsable || '') + '"></div>' +
+      '<div class="fld"><label for="g29r-stat">Statut</label><select id="g29r-stat">' + gouvOpts([['ACTIF', 'Actif'], ['MAITRISE', 'Maîtrisé'], ['SURVEILLE', 'Sous surveillance'], ['CLOS', 'Clos']], x.statut || 'ACTIF') + '</select></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="g29r-cancel" type="button">Annuler</button><button class="btn btn--primary" id="g29r-save" type="button">Enregistrer</button></div>');
+    $('g29r-cancel').addEventListener('click', closeModal);
+    $('g29r-save').addEventListener('click', function () {
+      var b = { libelle: $('g29r-lib').value.trim(), categorie: $('g29r-cat').value, processus: $('g29r-proc').value.trim(),
+        probabilite: $('g29r-prob').value, impact: $('g29r-imp').value, dispositif_maitrise: $('g29r-dispo').value.trim(),
+        responsable: $('g29r-resp').value.trim(), statut: $('g29r-stat').value };
+      if (!b.libelle) { notify('Indiquez le libellé du risque.', 'err'); return; }
+      $('g29r-save').disabled = true;
+      api(isNew ? '/api/v1/governance/risques' : '/api/v1/governance/risques/' + encodeURIComponent(x.id), isNew ? 'POST' : 'PUT', b)
+        .then(function () { closeModal(); notify('Risque enregistré.', 'ok'); loadGouvernance29(true); })
+        .catch(function (e) { $('g29r-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+
+  function openG29Pca(x) {
+    var isNew = !x; x = x || {};
+    var types = [['PCA', 'Plan de continuité d\u2019activité'], ['PRA', 'Plan de reprise d\u2019activité'], ['PGI', 'Plan de gestion d\u2019incident'], ['PLAN_SECOURS', 'Plan de secours']];
+    var res = [['SATISFAISANT', 'Satisfaisant'], ['PARTIEL', 'Partiel'], ['NON_SATISFAISANT', 'Non satisfaisant']];
+    openModal('<h3>' + (isNew ? 'Nouveau plan de continuité' : 'Modifier le plan') + '</h3>' +
+      '<div class="fld"><label for="g29p-lib">Libellé</label><input id="g29p-lib" value="' + esc(x.libelle || '') + '"></div>' +
+      '<div class="fld"><label for="g29p-type">Type</label><select id="g29p-type">' + gouvOpts(types, x.type_plan || 'PCA') + '</select></div>' +
+      '<div class="fld"><label for="g29p-resp">Responsable</label><input id="g29p-resp" value="' + esc(x.responsable || '') + '"></div>' +
+      '<div class="fld"><label for="g29p-app">Date d\u2019approbation</label><input id="g29p-app" type="date" value="' + esc(gouvDate(x.date_approbation)) + '"></div>' +
+      '<div class="fld"><label for="g29p-rev">Date de dernière revue</label><input id="g29p-rev" type="date" value="' + esc(gouvDate(x.date_derniere_revue)) + '"></div>' +
+      '<div class="fld"><label for="g29p-ex">Date du dernier exercice de simulation</label><input id="g29p-ex" type="date" value="' + esc(gouvDate(x.date_dernier_exercice)) + '"></div>' +
+      '<div class="fld"><label for="g29p-res">Résultat de l\u2019exercice</label><select id="g29p-res">' + gouvOpts(res, x.resultat_dernier_exercice, '\u2014 non réalisé \u2014') + '</select></div>' +
+      '<div class="fld"><label for="g29p-stat">Statut</label><select id="g29p-stat">' + gouvOpts([['BROUILLON', 'Brouillon'], ['VALIDE', 'Validé'], ['REVISION_REQUISE', 'Révision requise'], ['OBSOLETE', 'Obsolète']], x.statut || 'VALIDE') + '</select></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="g29p-cancel" type="button">Annuler</button><button class="btn btn--primary" id="g29p-save" type="button">Enregistrer</button></div>');
+    $('g29p-cancel').addEventListener('click', closeModal);
+    $('g29p-save').addEventListener('click', function () {
+      var b = { libelle: $('g29p-lib').value.trim(), type_plan: $('g29p-type').value, responsable: $('g29p-resp').value.trim(),
+        date_approbation: $('g29p-app').value || null, date_derniere_revue: $('g29p-rev').value || null,
+        date_dernier_exercice: $('g29p-ex').value || null, resultat_dernier_exercice: $('g29p-res').value || null, statut: $('g29p-stat').value };
+      if (!b.libelle) { notify('Indiquez le libellé du plan.', 'err'); return; }
+      $('g29p-save').disabled = true;
+      api(isNew ? '/api/v1/governance/pca' : '/api/v1/governance/pca/' + encodeURIComponent(x.id), isNew ? 'POST' : 'PUT', b)
+        .then(function () { closeModal(); notify('Plan enregistré.', 'ok'); loadGouvernance29(true); })
+        .catch(function (e) { $('g29p-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+
+  function openG29Incident(x) {
+    var isNew = !x; x = x || {};
+    var types = [['FRAUDE', 'Fraude'], ['VOL', 'Vol'], ['INTRUSION_SI', 'Intrusion informatique'], ['PANNE_SI', 'Panne informatique'],
+      ['PANNE_ELECTRIQUE', 'Panne électrique'], ['INONDATION', 'Inondation'], ['INCENDIE', 'Incendie'], ['ARRET_ACTIVITE', 'Arrêt d\u2019activité'],
+      ['ATTEINTE_DONNEES', 'Atteinte aux données'], ['BLANCHIMENT_SOUPCON', 'Soupçon de blanchiment'], ['AUTRE', 'Autre']];
+    openModal('<h3>' + (isNew ? 'Déclarer un incident majeur' : 'Incident ' + esc(x.reference || '')) + '</h3>' +
+      '<div class="fld"><label for="g29i-date">Date de l\u2019incident</label><input id="g29i-date" type="date" value="' + esc(gouvDate(x.date_incident) || new Date().toISOString().slice(0, 10)) + '"></div>' +
+      '<div class="fld"><label for="g29i-type">Type</label><select id="g29i-type">' + gouvOpts(types, x.type_incident || 'AUTRE') + '</select></div>' +
+      '<div class="fld"><label for="g29i-grav">Gravité</label><select id="g29i-grav">' + gouvOpts([['FAIBLE', 'Faible'], ['MOYENNE', 'Moyenne'], ['HAUTE', 'Haute'], ['CRITIQUE', 'Critique']], x.gravite || 'MOYENNE') + '</select></div>' +
+      '<div class="fld"><label for="g29i-desc">Description</label><textarea id="g29i-desc" rows="2">' + esc(x.description || '') + '</textarea></div>' +
+      '<div class="fld"><label for="g29i-pertes">Pertes estimées (FCFA)</label><input id="g29i-pertes" type="number" min="0" value="' + esc(x.pertes_cents != null ? Number(x.pertes_cents) / 100 : '') + '"></div>' +
+      '<div class="fld"><label>Notification BCEAO</label><label style="display:flex;gap:8px;align-items:center;font-weight:400"><input id="g29i-notif" type="checkbox"' + (x.notification_bceao ? ' checked' : '') + '> Incident notifié à la BCEAO</label></div>' +
+      '<div class="fld"><label for="g29i-dnotif">Date de notification</label><input id="g29i-dnotif" type="date" value="' + esc(gouvDate(x.date_notification)) + '"></div>' +
+      '<div class="fld"><label for="g29i-stat">Statut</label><select id="g29i-stat">' + gouvOpts([['OUVERT', 'Ouvert'], ['EN_COURS', 'En cours de traitement'], ['RESOLU', 'Résolu'], ['CLOS', 'Clos']], x.statut || 'OUVERT') + '</select></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="g29i-cancel" type="button">Annuler</button><button class="btn btn--primary" id="g29i-save" type="button">Enregistrer</button></div>');
+    $('g29i-cancel').addEventListener('click', closeModal);
+    $('g29i-save').addEventListener('click', function () {
+      var b = { date_incident: $('g29i-date').value || null, type_incident: $('g29i-type').value, gravite: $('g29i-grav').value,
+        description: $('g29i-desc').value.trim(), pertes_cents: Math.round(Number($('g29i-pertes').value || 0) * 100),
+        notification_bceao: $('g29i-notif').checked, date_notification: $('g29i-dnotif').value || null, statut: $('g29i-stat').value };
+      $('g29i-save').disabled = true;
+      api(isNew ? '/api/v1/governance/incidents' : '/api/v1/governance/incidents/' + encodeURIComponent(x.id), isNew ? 'POST' : 'PUT', b)
+        .then(function () { closeModal(); notify('Incident enregistré.', 'ok'); loadGouvernance29(true); })
+        .catch(function (e) { $('g29i-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+
+  /* --- C. Conformité & reporting réglementaire --- */
+  function renderG29Conformite(host) {
+    var E = G29.data.ech, L = G29.data.lbc, d = G29.data.dash;
+    var p = d.parametres || {};
+    var html = g29Head('Conformité et reporting réglementaire',
+      'Échéancier des obligations par autorité (alertes automatiques J-30 / J-15 / J-5), formation LBC/FT du personnel et Pack Inspection.',
+      (gouvCanWrite() ? '<button class="btn btn--primary" id="btn-g29-ech" type="button">+ Obligation</button>' : ''));
+    html += g29Alertes(E.alertes || []);
+    html += '<div class="g29-grid">' + g29Stat(E.kpis.total, 'Obligations suivies') + g29Stat(E.kpis.en_retard, 'En retard sans récépissé') +
+      g29Stat(E.kpis.recus, 'Récépissés reçus') + g29Stat(L.taux_couverture + ' %', 'Personnel formé LBC/FT (' + L.formes + '/' + L.effectif + ')',
+        '<div class="g29-bar"><i class="' + (L.taux_couverture >= 80 ? '' : (L.taux_couverture >= 50 ? 'warn' : 'bad')) + '" style="width:' + Math.min(100, L.taux_couverture) + '%"></i></div>') + '</div>';
+
+    html += '<div class="g29-scroll"><table class="tbl"><thead><tr><th>Obligation</th><th>Autorité</th><th>Échéance</th><th>Jours</th><th>Récépissé</th><th>Statut</th><th></th></tr></thead><tbody>' +
+      (E.echeances || []).map(function (x) {
+        var kind = x.statut_calcule === 'EN_RETARD' ? 'bad' : (x.statut_calcule === 'RECEPISSE_RECU' ? 'ok' : (x.alerte ? 'warn' : 'info'));
+        return '<tr><td><b>' + esc(x.libelle) + '</b><br><span class="hint" style="font-size:11px">' + esc(x.categorie) + ' \u00b7 ' + esc(x.periodicite) + '</span></td>' +
+          '<td>' + esc(x.autorite) + '</td><td>' + gouvDateFr(x.date_limite_depot || x.date_echeance) + '</td>' +
+          '<td>' + (x.jours_restants < 0 ? g29Pill('J+' + Math.abs(x.jours_restants), 'bad') : (x.alerte ? g29Pill('J-' + x.jours_restants, 'warn') : x.jours_restants + ' j')) + '</td>' +
+          '<td>' + (x.reference_recepisse ? esc(x.reference_recepisse) : '\u2014') + '</td>' +
+          '<td>' + g29Pill(String(x.statut_calcule).replace(/_/g, ' '), kind) + '</td>' +
+          '<td style="text-align:right">' + (gouvCanWrite() ? '<button class="btn btn--sm btn--ghost" data-g29-ech="' + esc(x.id) + '" type="button">Modifier</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+
+    html += '<h4 style="font-size:13px;margin:18px 0 8px">Paramètres prudentiels (par pays)</h4>';
+    html += '<p class="hint">Plafond individuel apparenté ' + g29Pct(p.plafond_apparente_individuel_pct) + ' \u00b7 plafond global apparentés ' + g29Pct(p.plafond_apparentes_global_pct) +
+      ' \u00b7 seuil d\u2019information des titres ' + g29Pct(p.seuil_participation_pct) + ' \u00b7 revue PCA ' + (p.revue_pca_jours || 365) + ' jours \u00b7 rappels J-' + String(p.alertes_jours || '30,15,5').split(',').join('/J-') + '.</p>' +
+      '<p class="hint" style="margin-top:6px">Ces valeurs doivent être confirmées auprès de la BCEAO / de la Commission Bancaire avant production. Elles se modifient via l\u2019API des paramètres (réservée aux profils d\u2019administration).</p>';
+
+    host.innerHTML = html;
+    var n = $('btn-g29-ech'); if (n) n.addEventListener('click', function () { openG29Echeance(null); });
+    host.querySelectorAll('[data-g29-ech]').forEach(function (b) {
+      b.addEventListener('click', function () { var x = (E.echeances || []).filter(function (y) { return y.id === b.dataset.g29Ech; })[0]; openG29Echeance(x || null); });
+    });
+  }
+
+  function openG29Echeance(x) {
+    var isNew = !x; x = x || {};
+    var aut = [['BCEAO', 'BCEAO'], ['COMMISSION_BANCAIRE', 'Commission Bancaire'], ['MINISTERE_FINANCES', 'Ministère des Finances'], ['CENTIF', 'CENTIF'], ['CONSEIL_REGIONAL', 'Conseil régional'], ['AUTRE', 'Autre']];
+    var cat = [['NORMALE', 'Normale'], ['PRUDENTIELLE', 'Prudentielle'], ['COMPTABLE', 'Comptable'], ['LBC_FT', 'LBC/FT'], ['STATISTIQUE', 'Statistique'], ['FISCALE', 'Fiscale'], ['SOCIALE', 'Sociale']];
+    var per = [['HEBDOMADAIRE', 'Hebdomadaire'], ['MENSUELLE', 'Mensuelle'], ['TRIMESTRIELLE', 'Trimestrielle'], ['SEMESTRIELLE', 'Semestrielle'], ['ANNUELLE', 'Annuelle'], ['PONCTUELLE', 'Ponctuelle']];
+    var stat = [['A_FAIRE', 'À faire'], ['EN_PREPARATION', 'En préparation'], ['DEPOSE', 'Déposé'], ['RECEPISSE_RECU', 'Récépissé reçu'], ['SANS_OBJET', 'Sans objet']];
+    openModal('<h3>' + (isNew ? 'Nouvelle obligation réglementaire' : 'Modifier l\u2019échéance') + '</h3>' +
+      '<div class="fld"><label for="g29e-lib">Libellé</label><input id="g29e-lib" value="' + esc(x.libelle || '') + '"></div>' +
+      '<div class="fld"><label for="g29e-aut">Autorité</label><select id="g29e-aut">' + gouvOpts(aut, x.autorite || 'BCEAO') + '</select></div>' +
+      '<div class="fld"><label for="g29e-cat">Catégorie</label><select id="g29e-cat">' + gouvOpts(cat, x.categorie || 'NORMALE') + '</select></div>' +
+      '<div class="fld"><label for="g29e-per">Périodicité</label><select id="g29e-per">' + gouvOpts(per, x.periodicite || 'MENSUELLE') + '</select></div>' +
+      '<div class="fld"><label for="g29e-ech">Échéance</label><input id="g29e-ech" type="date" value="' + esc(gouvDate(x.date_echeance)) + '"></div>' +
+      '<div class="fld"><label for="g29e-lim">Limite de dépôt</label><input id="g29e-lim" type="date" value="' + esc(gouvDate(x.date_limite_depot)) + '"></div>' +
+      '<div class="fld"><label for="g29e-stat">Statut</label><select id="g29e-stat">' + gouvOpts(stat, x.statut || 'A_FAIRE') + '</select></div>' +
+      '<div class="fld"><label for="g29e-ref">Référence du récépissé</label><input id="g29e-ref" value="' + esc(x.reference_recepisse || '') + '"></div>' +
+      '<div class="fld"><label for="g29e-rec">Date du récépissé</label><input id="g29e-rec" type="date" value="' + esc(gouvDate(x.date_recepisse)) + '"></div>' +
+      '<div class="fld"><label for="g29e-resp">Responsable</label><input id="g29e-resp" value="' + esc(x.responsable || '') + '"></div>' +
+      '<div class="modal__nav"><button class="btn btn--ghost" id="g29e-cancel" type="button">Annuler</button><button class="btn btn--primary" id="g29e-save" type="button">Enregistrer</button></div>');
+    $('g29e-cancel').addEventListener('click', closeModal);
+    $('g29e-save').addEventListener('click', function () {
+      var b = { libelle: $('g29e-lib').value.trim(), autorite: $('g29e-aut').value, categorie: $('g29e-cat').value,
+        periodicite: $('g29e-per').value, date_echeance: $('g29e-ech').value || null, date_limite_depot: $('g29e-lim').value || null,
+        statut: $('g29e-stat').value, reference_recepisse: $('g29e-ref').value.trim(), date_recepisse: $('g29e-rec').value || null,
+        responsable: $('g29e-resp').value.trim() };
+      if (!b.libelle) { notify('Indiquez le libellé de l\u2019obligation.', 'err'); return; }
+      if (b.date_recepisse && b.statut !== 'RECEPISSE_RECU') b.statut = 'RECEPISSE_RECU';
+      $('g29e-save').disabled = true;
+      api(isNew ? '/api/v1/governance/echeancier' : '/api/v1/governance/echeancier/' + encodeURIComponent(x.id), isNew ? 'POST' : 'PUT', b)
+        .then(function () { closeModal(); notify('Échéance enregistrée.', 'ok'); loadGouvernance29(true); })
+        .catch(function (e) { $('g29e-save').disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
+    });
+  }
+
+  /* --- Export PDF / impression du tableau de bord --- */
+  function exportGouvernancePdf() {
+    window.open('/api/v1/governance/rapport.pdf', '_blank');
+  }
+
 })();

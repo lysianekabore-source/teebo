@@ -8,7 +8,7 @@
 <title>Espace IMF — teebo</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="assets/favicon.ico" sizes="any">
-<link rel="stylesheet" href="assets/app.css">
+<link rel="stylesheet" href="assets/app.css?v=27">
 </head>
 <body>
 <div class="shell">
@@ -394,7 +394,7 @@
       <div class="topbar">
         <div>
           <h1>Gouvernance &amp; conformité</h1>
-          <p>Fiche institution, organes, dirigeants, mandats, sessions et procès-verbaux, résolutions — avec le tableau de bord de conformité.</p>
+          <p>Fiche institution, organes, dirigeants, mandats, sessions et procès-verbaux, résolutions — puis apparentés et conventions réglementées, risques et plan de continuité, échéancier réglementaire et exports CAC.</p>
         </div>
         <div class="topbar__actions">
           <button class="btn btn--ghost" id="btn-gouv-refresh" type="button">↻ Actualiser</button>
@@ -405,6 +405,25 @@
       <div class="card">
         <div id="gouv-kpis" class="kpi-grid"><div class="empty">Chargement…</div></div>
         <div id="gouv-alerts" class="chips" style="margin-top:14px"></div>
+      </div>
+
+      <!-- VAGUE 29 : conformite prudentielle, risques & PCA, reporting -->
+      <div class="card" style="padding:0;overflow:hidden">
+        <div class="gtabs" id="gouv-tabs-29">
+          <button class="gtab active" data-g29="apparentes" type="button">Apparentés &amp; conventions</button>
+          <button class="gtab" data-g29="risques" type="button">Risques, PCA &amp; incidents</button>
+          <button class="gtab" data-g29="conformite" type="button">Conformité &amp; reporting</button>
+        </div>
+        <div style="padding:20px">
+          <div class="g29-actions" style="margin-bottom:14px">
+            <button class="btn btn--sm btn--primary" id="btn-g29-cac-pdf" type="button">⭳ Rapport spécial CAC (PDF)</button>
+            <button class="btn btn--sm btn--ghost" id="btn-g29-cac-xls" type="button">⭳ Rapport CAC (Excel)</button>
+            <button class="btn btn--sm btn--ghost" id="btn-g29-pack" type="button">⭳ Pack Inspection (ZIP)</button>
+          </div>
+          <div id="g29-kpis" class="g29-grid"></div>
+          <div id="g29-alerts" style="margin-bottom:14px"></div>
+          <div id="g29-host"><div class="empty">Chargement…</div></div>
+        </div>
       </div>
 
       <div class="card" style="padding:0;overflow:hidden">
@@ -430,7 +449,7 @@
 </div>
 
 <div id="modal-root"></div>
-<script src="assets/app.js?v=25" defer></script>
+<script src="assets/app.js?v=27" defer></script>
 <script src="assets/keepalive.js" defer></script>
 </body>
 </html>
