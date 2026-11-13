@@ -52,8 +52,11 @@ services:
         value: hello@teebo.africa
       - key: PUBLIC_API_URL
         value: https://teebo-api-p825.onrender.com
+      # Site de connexion de secours utilisé UNIQUEMENT si la requête ne
+      # fournit aucune origine exploitable. Le site réellement utilisé
+      # (ex. https://teebo-imf.netlify.app) est détecté automatiquement.
       - key: PUBLIC_SITE_URL
-        value: https://www.teebo.africa
+        value: https://teebo-imf.netlify.app
       - key: DOC_LINK_SECRET
         sync: false        # secret de signature des liens de facture publics
       - key: GOOGLE_CLIENT_ID

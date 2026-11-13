@@ -1,0 +1,191 @@
+CORRECTIFS DU 13/11/2026 — « Conseil d'Administration », déconnexion et droits PCA
+=========================================================================
+
+Ce paquet contient TOUS vos fichiers d'origine + tous les correctifs
+précédents + les 4 correctifs ci-dessous.
+
+-------------------------------------------------------------------------
+1) DÉCONNEXION : 30 min -> 60 min, et JAMAIS pendant une activité
+-------------------------------------------------------------------------
+- Le délai d'inactivité passe à 60 minutes (réglable par la variable
+d' environnement IDLE_MINUTES côté serveur).
+- Toute action (clic, navigation, requête) repousse l'échéance.
+- Nouvelle balise de maintien de session (assets/keepalive.js) : tant que
+  l'onglet reste OUVERT, la session reste active même sans clic. Un
+  utilisateur qui travaille n'est donc plus déconnecté.
+- Tous les textes « 30 minutes » de l'interface (connexion, sécurité,
+  documentation) indiquent désormais 60 minutes.
+
+FICHIERS : backend/src/auth.js, backend/src/routes/auth.js,
+           assets/keepalive.js (nouveau), app.html, login.html
+
+-------------------------------------------------------------------------
+2) ORGANISATION : la carte « Conseil d'Administration » s'affiche
+-------------------------------------------------------------------------
+Onglet Organisation : si aucune unité « Conseil d'Administration »
+n'existe, un encart apparaît en haut de l'arbre avec deux boutons :
+   • « Créer le Conseil d'Administration »  -> crée UNIQUEMENT le CA
+   • « Générer la structure de base »       -> CA + Direction Générale
+                                               + Départements + Services
+L'encart disparaît dès que le CA existe. La carte CA est volontairement
+repliée par défaut pour que l'arbre reste lisible (le PCA apparaît
+dessous, avec la mention « (PCA) »).
+
+FICHIERS : assets/app.js, assets/app.css (style de l'encart)
+
+-------------------------------------------------------------------------
+3) BASE DE DONNÉES : table des unités + rattachement du PCA
+-------------------------------------------------------------------------
+Le script db/schema_v28.sql est ajouté à la liste des migrations
+(appliqué automatiquement au démarrage du serveur) :
+- création de l'unité « Conseil d'Administration » pour chaque IMF ;
+- libellés des postes harmonisés (« Président du Conseil d'Administration
+  (PCA) », « Directeur Général (DG) ») ;
+- le PCA est rattaché à cette unité, sans supérieur hiérarchique.
+ 'Migration réentrante : peut être rejouée sans risque.
+
+FICHIERS : db/schema_v28.sql, backend/src/migrate.js
+
+-------------------------------------------------------------------------
+4) DROITS : cohérence du rôle PCA (Président du Conseil)
+-------------------------------------------------------------------------
+Avant : le poste PCA était enregistré en « support administratif » alors
+que le catalogue des postes le déclarait « direction », ce qui donnait des
+accès incohérents (menu présent mais boutons en erreur 403).
+Après :
+ - le PCA est reconnu comme administrateur de SON institution
+   (structure, gouvernance, utilisateurs, paramètres) ;
+ - il lui est IMPOSSIBLE de toucher caisse, clients, comptabilité,
+   trésorerie, crédit — la séparation des tâches est conservée
+   (exigence BCEAO / contrôle interne) ;
+ - le serveur renvoie désormais un « rôle effectif » (pca_admin) que
+   l'interface utilise pour afficher le bon menu et les bons boutons.
+
+FICHIERS : backend/src/rbac.js, backend/src/auth.js,
+           backend/src/routes/governance.js, backend/src/routes/auth.js,
+           assets/app.js
+
+-------------------------------------------------------------------------
+CE QUI A ÉTÉ VÉRIFIÉ — ET CE QUI NE L'A PAS ÉTÉ
+-------------------------------------------------------------------------
+Vérifié automatiquement : syntaxe de tous les fichiers JavaScript
+(serveur + interface), délai d'inactivité = 60 min, règle du rôle PCA
+(administre sans opérer), présence des scripts de migration, cohérence
+des deux paquets (backend identique).
+
+NON vérifié : aucun test en conditions réelles sur Render / Netlify
+(pas de serveur accessible depuis l'environnement de préparation).
+La connexion réelle, l'envoi d'e-mails et la base PostgreSQL de
+production restent à confirmer après déploiement.
+
+-------------------------------------------------------------------------
+MISE EN LIGNE (ordre conseillé)
+-------------------------------------------------------------------------
+A. Render (serveur + base)
+   1. Déposez sur GitHub : backend/, db/, render.yaml
+   2. Render -> votre service -> Manual Deploy -> « Clear build cache &
+      deploy ».
+   3. Au démarrage, la migration du schéma n°28 s'applique seule (voir les logs :
+      « Schéma appliqué : schema_v28.sql »).
+B. Netlify (site)
+   1. Déposez les fichiers du paquet SITE (racine) en remplaçant les
+      anciens, puis redéployez.
+   2. Ouvrez le site et faites Ctrl + Maj + R (vidage du cache).
+C. Contrôle en 2 minutes
+   1. Connexion : rester 5 minutes sans clic -> AUCUNE déconnexion.
+   2. Organisations : l'encart « Conseil d'Administration » apparaît ->
+      bouton « Créer le Conseil d'Administration » -> la carte apparaît.
+   3. Personnel : un poste « Président du Conseil d'Administration (PCA) »
+      doit voir Gouvernance + Organisations et NE PAS voir Caisse.
+
+
+
+CORRECTIF — Création d'utilisateur (bouton « Créer et envoyer le code »)
+
+CONTENU
+  assets/app.js              -> remplace assets/app.js du site Netlify
+  assets/app.css             -> remplace assets/app.css du site Netlify
+  app.html                   -> remplace app.html (force le rechargement du script v24)
+  sw.js                      -> remplace sw.js (vide le cache navigateur)
+  backend/src/routes/org.js  -> remplace backend/src/routes/org.js sur Render
+
+INSTALLATION
+ 1. Netlify : uploader assets/app.js, assets/app.css, app.html, sw.js (mêmes dossiers).
+ 2. Render  : uploader backend/src/routes/org.js, puis "Manual Deploy".
+ 3. Ouvrir le site, Ctrl+Maj+R, Personnel -> + Nouvel utilisateur.
+
+
+--------------------------------------------------------------
+MISE À JOUR DU 13/11/2026 — deux correctifs cumulés dans ce paquet
+--------------------------------------------------------------
+1) Création d'utilisateur : la fenêtre affiche toujours une réponse
+   (message de statut, motif réel de l'échec, bouton « Réessayer »),
+   contrôle de l'e-mail déjà utilisé, délai maximal d'envoi côté
+   serveur (le bouton ne reste plus bloqué), unité facultative.
+2) Lien de connexion dans les messages : le code d'accès, le renvoi
+   de code et le mot de passe oublié contiennent désormais l'adresse
+   de VOTRE site (ex. https://teebo-imf.netlify.app/login) et non
+   plus www.teebo.africa. Si vous changez de domaine, le lien suit.
+
+FICHIERS (tous déjà à jour dans ce dossier) :
+  app.html, sw.js, assets/app.js, assets/app.css,
+  assets/auth.js, assets/essai.js,
+  backend/src/notify.js, backend/src/server.js,
+  backend/src/routes/org.js, backend/src/routes/auth.js,
+  backend/src/routes/teebo.js, render.yaml
+
+Les fichiers backend/src/... et render.yaml sont fournis ici pour
+mémoire : ils se déposent sur Render (dépôt GitHub), pas sur Netlify.
+
+INSTALLATION
+ 1. Netlify : déposer ce dossier complet (ou les fichiers modifiés)
+    puis redéployer.
+ 2. Render  : reprendre backend/src/*.js + render.yaml, puis
+    « Manual Deploy » -> « Clear build cache + deploy ».
+ 3. Site : Ctrl + Maj + R, puis se reconnecter.
+ 4. Test : créer un utilisateur avec VOTRE e-mail / WhatsApp et
+    vérifier la ligne « Connexion : » du message reçu.
+
+
+================================================================================
+MISE A JOUR DU 13/11/2026 - TABLEAU DE BORD (erreur + lenteur) ET AFFICHAGE MOBILE
+================================================================================
+1) CAUSE DE L'ERREUR "Une erreur est survenue" SUR LE TABLEAU DE BORD
+   - Le premier affichage du tableau de bord pouvait se produire AVANT l'arrivee
+     du profil (/me) et des listes d'unites/utilisateurs : le code lisait des
+     donnees absentes (profil vide, postes non charges), ce qui declenchait une
+     erreur technique affichee telle quelle au client.
+   - CORRECTIF : rendu "blinde". Chaque bloc (bandeaux, indicateurs, alerte,
+     liste des unites) est calcule separement ; une donnee manquante affiche un
+     tiret ou "Chargement..." avec un bouton "Reessayer", jamais une erreur.
+     Les indicateurs ne peuvent plus afficher NaN / undefined.
+
+2) CAUSE DE LA LENTEUR
+   - Le demarrage attendait l'un apres l'autre : profil, unites, utilisateurs,
+     essai -> plusieurs allers-retours reseau enchaines (et sur l'offre gratuite
+     le serveur peut demander ~30 s de reveil).
+   - L'arbre d'organisation reinstallait des boutons d'ecoute en double a chaque
+     re-affichage : certaines actions declenchaient plusieurs appels API.
+   - Le fichier keepalive.js etait charge DEUX FOIS dans app.html et login.html.
+   - CORRECTIF : affichage immediat du tableau de bord, puis /me, puis unites et
+     utilisateurs EN PARALLELE ; modules secondaires en tache de fond. Un seul
+     ecouteur par bouton. keepalive.js charge une seule fois. Indicateur discret
+     "Chargement : organisation - personnel..." au lieu d'un ecran fige.
+
+3) AFFICHAGE SUR TOUS LES ECRANS
+   - Indicateurs : 4 colonnes sur ordinateur, 2 sur telephone.
+   - Cartes, formulaires et fenetres empiles ; modales pleine largeur sur mobile.
+   - Boutons : hauteur tactile >= 44 px, actions pleine largeur sur mobile.
+   - Tableaux : defilement horizontal propre dans la carte.
+   - Champs : 16 px minimum (evite le zoom automatique iPhone).
+   - Plus de debordement horizontal de la page.
+
+4) VERIFICATIONS EFFECTUEES
+   - Controle de syntaxe : OK sur les deux versions (site Netlify et plateforme).
+   - Tests complets sur serveur Render/Netlify : NON possibles ici (aucun serveur
+     public dans cet environnement). A confirmer apres deploiement, telephone inclus.
+
+5) APRES MISE EN LIGNE
+   - Netlify : redeposer l'archive puis Deploys > Trigger deploy > Clear cache and deploy site.
+   - Render : Manual Deploy > Clear build cache and deploy.
+   - Navigateur : Ctrl + Maj + R (ou vider le cache) pour recharger app.js v=25 / app.css v=25.
