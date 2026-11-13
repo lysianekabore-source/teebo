@@ -930,6 +930,50 @@
     return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9]+/g, ' ').trim();
   }
+  // ------------------------------------------------------------------
+  // Resolution ROBUSTE du poste choisi dans la modale « Nouvel utilisateur ».
+  // Constat : le champ « Poste occupe » pouvait afficher un libelle correct
+  // alors que la valeur envoyee restait vide (liste re-rendue apres un choix).
+  // On resout donc le poste par CODE, puis par LIBELLE affiche (compare sans
+  // accents / ponctuation), puis par correspondance partielle sur le libelle.
+  // ------------------------------------------------------------------
+  function resolvePositionByLabel(raw) {
+    var n = normLabel(raw);
+    if (!n || !positions.length) return null;
+    var i, p, np;
+    for (i = 0; i < positions.length; i++) {
+      if (normLabel(positions[i].label) === n) return positions[i];
+    }
+    // Correspondance sur le libelle court (« President du Conseil
+    // d'Administration (PCA) » saisi sans la mention « (PCA) »).
+    for (i = 0; i < positions.length; i++) {
+      p = positions[i];
+      if (normLabel(posShortLabel(p)) === n) return p;
+    }
+    // Dernier recours : l'un contient l'autre et la longueur reste credible.
+    var best = null, bestLen = 0;
+    for (i = 0; i < positions.length; i++) {
+      p = positions[i]; np = normLabel(p.label);
+      if (!np) continue;
+      if ((np.indexOf(n) === 0 || n.indexOf(np) === 0) && np.length > bestLen) { best = p; bestLen = np.length; }
+    }
+    return best;
+  }
+  // Poste reellement selectionne : par valeur du champ, sinon par libelle.
+  function currentPositionChoice() {
+    var sel = $('u-pos');
+    if (!sel) return { code: '', pos: null, label: '' };
+    var code = String(sel.value || '');
+    var label = '';
+    if (sel.selectedIndex >= 0 && sel.options[sel.selectedIndex]) {
+      label = String(sel.options[sel.selectedIndex].textContent || '');
+    }
+    var pos = code ? (posByCode[code] || null) : null;
+    if (!pos && label) pos = resolvePositionByLabel(label);
+    if (pos) code = pos.code;
+    return { code: code, pos: pos, label: label };
+  }
+
   // Le PCA se rattache au Conseil d'Administration (unite dediee, vague 28).
   function homeUnitForPosition(p) {
     if (!p) return '';
@@ -1054,7 +1098,8 @@
       // À chaque choix de poste : on pré-remplit automatiquement le responsable
       // hiérarchique ET l'unité de rattachement correspondants.
       function syncFromPosition() {
-        var p = posByCode[$('u-pos').value];
+        var pick = currentPositionChoice();
+        var p = pick.pos;
         var wrap = $('u-sup-wrap'), sel = $('u-sup'), unitSel = $('u-unit');
         if (!p) { if (wrap) wrap.hidden = true; if (sel) sel.innerHTML = ''; return; }
         // Unité de rattachement : on l'affecte tout de suite, même si la liste
@@ -1103,16 +1148,26 @@
       $('u-pos').addEventListener('change', syncFromPosition);
       // À l'ouverture : un poste est souvent déjà sélectionné (présélection) —
       // on synchronise immédiatement le responsable et l'unité correspondants.
+      // Choix par defaut : le premier poste reste « — Choisir un poste — », mais
+      // un clic sans selection ne doit jamais echouer en silence (voir plus bas).
       try { syncFromPosition(); } catch (_) {}
       // Si les postes n'étaient pas encore chargés, on rafraîchit la liste dès
       // qu'ils arrivent : plus de liste vide ni de « — Choisir un poste — »
       // bloquant en silence.
       loadPositions().then(function () {
         var sel = $('u-pos');
-        if (!sel) return;
-        var keep = sel.value;
+        if (!sel || !positions.length) return;
+        // On memorise le choix par CODE et par LIBELLE : si la liste etait vide
+        // a l'ouverture, elle est remplie ICI, puis le choix est restaure.
+        var keep = currentPositionChoice();
+        if (!keep.code && !keep.label) return;
         sel.innerHTML = '<option value="">— Choisir un poste —</option>' + positionOptionsHtml();
-        if (keep) sel.value = keep;
+        if (keep.code && posByCode[keep.code]) {
+          sel.value = keep.code;
+        } else if (keep.label) {
+          var found = resolvePositionByLabel(keep.label);
+          if (found) sel.value = found.code;
+        }
         try { syncFromPosition(); } catch (_) {}
       }).catch(function () {});
       // Garde-fou : si la liste ne contient qu'un seul choix, il reste
@@ -1135,8 +1190,11 @@
         // erreur silencieuse qui interrompt le clic AVANT tout appel serveur.
         // On lit donc chaque champ séparément, avec protection.
         function val(id) { var el = $(id); return el ? String(el.value || '') : ''; }
-        var posCode = val('u-pos');
-        var pos = posByCode[posCode];
+        // Resolution robuste : la valeur du champ, sinon le libelle affiche.
+        var pick = currentPositionChoice();
+        var posCode = pick.code || val('u-pos');
+        var pos = pick.pos || posByCode[posCode] || null;
+        if (pos && pos.code) posCode = pos.code;
         var body = { full_name: val('u-name').trim(), position_code: posCode || null,
           org_unit_id: val('u-unit') || null, email: val('u-email').trim(), phone: val('u-phone').trim() };
         var supEl = $('u-sup'), supWrap = $('u-sup-wrap');
@@ -1146,8 +1204,20 @@
         // Rôle de secours : si le poste n'a pas encore été résolu (chargement
         // des postes plus lent que la saisie), on l'envoie explicitement.
         if (pos && pos.role) body.role = pos.role;
+        // Filet de securite serveur : si le code manquait, le libelle permet
+        // au serveur de retrouver le poste exact au lieu de refuser.
+        if (pos && pos.label) body.position_label = pos.label;
 
-        if (!body.full_name || !body.email || !body.position_code) { modalNotice('Nom complet, e-mail et poste sont obligatoires.', 'err'); notify('Nom, e-mail et poste sont requis.', 'err'); return; }
+        if (!body.full_name || !body.email || !body.position_code) {
+          var manque = [];
+          if (!body.full_name) manque.push('le nom complet');
+          if (!body.email) manque.push('l’adresse e-mail');
+          if (!body.position_code) manque.push('le poste (« — Choisir un poste — » est vide)');
+          var mReq = 'Champ manquant : ' + manque.join(', ') + '.';
+          modalNotice(mReq, 'err'); notify(mReq, 'err');
+          if (!body.position_code) { try { $('u-pos').focus(); } catch (_) {} }
+          return;
+        }
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(body.email)) { modalNotice('Adresse e-mail invalide : vérifiez la saisie.', 'err'); notify('Adresse e-mail invalide.', 'err'); return; }
         if (isSelfSupervisor(supId)) { modalNotice('Vous ne pouvez pas être votre propre responsable hiérarchique.', 'err'); return; }
         if (pos && pos.needsSupervisor && !supId) {

@@ -144,7 +144,7 @@
     // Service worker : uniquement pour permettre l'installation de l'application.
     // VERSION +1 a chaque mise a jour du site pour forcer le renouvellement du cache.
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js?v=25', { updateViaCache: 'none' }).then(function (reg) {
+      navigator.serviceWorker.register('/sw.js?v=27', { updateViaCache: 'none' }).then(function (reg) {
         try { reg.update(); } catch (e) {}
       }).catch(function () {});
     }

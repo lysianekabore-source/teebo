@@ -8,7 +8,7 @@
    - pages HTML et scripts   : reseau en priorite, cache uniquement en secours
    - echec hors ligne        : erreur 503 explicite (jamais de page de secours)
 */
-var CACHE = 'teebo-v25';
+var CACHE = 'teebo-v27';
 var CORE = ['/index.html', '/login.html', '/app.html', '/assets/app-icon-192.png',
             '/assets/app-icon-512.png', '/manifest.webmanifest'];
 
