@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS personnes_apparentees (
     app_user_id           UUID REFERENCES app_user(id) ON DELETE SET NULL,
     nom_complet           TEXT NOT NULL,
     type_lien             TEXT NOT NULL DEFAULT 'AUTRE'
-        CHECK (type_lien IN ('CONJOINT','ENFANT','ASCENDANT','FRATRIE','BELLE_FAMILLE','
+        CHECK (type_lien IN ('CONJOINT','ENFANT','ASCENDANT','FRATRIE','BELLE_FAMILLE',
                              'SOCIETE_CONTROLEE','SOCIETE_AFFILIEE','REPRESENTANT_LEGAL','AUTRE')),
     nature_personne       TEXT NOT NULL DEFAULT 'PHYSIQUE'
         CHECK (nature_personne IN ('PHYSIQUE','MORALE')),
@@ -142,8 +142,8 @@ CREATE TABLE IF NOT EXISTS conventions_reglementees (
     conditions               TEXT,
     -- Autorisation
     statut                   TEXT NOT NULL DEFAULT 'PROJET'
-        CHECK (statut IN ('PROJET','EN_ATTENTE_AUTORISATION','AUTORISEE','REFUSEE','
-                          'EN_COURS','CLOTUREE','ANNULEE')),
+        CHECK (statut IN ('PROJET','EN_ATTENTE_AUTORISATION','AUTORISEE','REFUSEE',
+                                   'EN_COURS','CLOTUREE','ANNULEE')),
     autorisation_requise     BOOLEAN NOT NULL DEFAULT true,
     organe_autorisation      TEXT,
     date_autorisation        DATE,
@@ -319,8 +319,8 @@ CREATE TABLE IF NOT EXISTS echeancier_reglementaire (
     code_obligation       TEXT,
     libelle               TEXT NOT NULL,
     autorite              TEXT NOT NULL DEFAULT 'BCEAO'
-        CHECK (autorite IN ('BCEAO','COMMISSION_BANCAIRE','MINISTERE_FINANCES','
-                            'CENTIF','CONSEIL_REGIONAL','AUTRE')),
+        CHECK (autorite IN ('BCEAO','COMMISSION_BANCAIRE','MINISTERE_FINANCES',
+                               'CENTIF','CONSEIL_REGIONAL','AUTRE')),
     categorie             TEXT NOT NULL DEFAULT 'NORMALE'
         CHECK (categorie IN ('NORMALE','PRUDENTIELLE','COMPTABLE','LBC_FT','STATISTIQUE','FISCALE','SOCIALE')),
     pays                  TEXT,
