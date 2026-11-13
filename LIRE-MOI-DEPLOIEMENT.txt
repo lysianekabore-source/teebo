@@ -1,0 +1,170 @@
+=====================================================================
+ teebo — SERVEUR (Render) + SITE (Netlify), 13/11/2026 (version E)
+ Tout votre projet, entier, avec les correctifs.
+=====================================================================
+
+Lisez 3 minutes. Si vous ne lisez qu'une chose : allez à l'étape 4
+(« LE SEUL POINT QUI A ÉCHOUÉ »).
+
+---------------------------------------------------------------------
+1) CE QUE CONTIENNENT LES ZIP (vos fichiers, rien de supprimé)
+---------------------------------------------------------------------
+Vous m'avez remis au début :
+   • teebo-SITE-CORRIGE_(2).zip     → le site + le serveur
+   • teebo-render-CORRIGE_(1).zip   → votre projet dans son arborescence
+   • teebo-CAPITAL-WIP-partiel.zip  → les derniers modules (capital,
+                                       actionnariat, feuille de présence)
+
+Les trois ont été FUSIONNÉS en un seul projet, puis corrigés. Dans chaque
+paquet vous retrouvez donc TOUS vos fichiers : pages, assets, docs, guides,
+src/ (30 modules), db/ (29 scripts SQL), tests, tools… et les derniers
+modules de capital/actionnariat qui manquaient dans certains paquets.
+
+Trois archives sont livrées :
+
+  A. teebo-COMPLET.zip               ← LE PAQUET À DÉPOSER (recommandé)
+     Tout le projet à plat, avec à la racine :
+        Dockerfile          (nouveau, à la racine)
+        render.yaml
+        backend/  db/  assets/  docs/  frontend/  index.html …
+     Ce paquet se dépose tel quel sur GitHub. AUCUN réglage de dossier
+     n'est nécessaire dans Render.
+
+  B. teebo-SERVEUR-backend.zip       (le serveur seul, si vous préférez)
+        Dockerfile  render.yaml  backend/  db/
+
+  C. teebo-SITE-netlify.zip          (le site seul, pour Netlify)
+        index.html, app.html, assets/, docs/, pages publiques…
+
+---------------------------------------------------------------------
+2) CE QUI A ÉTÉ CORRIGÉ DEPUIS VOTRE DERNIÈRE CAPTURE
+---------------------------------------------------------------------
+Votre capture s'arrête sur :
+     #12 [7/7] COPY db* ./db/  DONE 0.0s
+     ===> failed to calculate checksum ...
+
+Cela signifie que la construction ne trouvait pas, dans le dossier envoyé à
+Render, les pièces attendues par l'ancienne recette (dont un dossier /docs).
+
+Correctifs apportés :
+
+  1. UN SEUL Dockerfile, À LA RACINE du projet. Il ne copie que ce qui est
+     indispensable (backend/package*.json, backend/src, db/) et ne réclame
+     plus aucun dossier facultatif. Il ne peut donc plus échouer sur un
+     fichier manquant.
+
+  2. LE SERVEUR DÉMARRE EN PREMIER, LA BASE SUIT. Avant, la migration de la
+     base passait avant le démarrage : base endormie = service injoignable
+     ou « Application exited early ». Maintenant le port s'ouvre en une
+     seconde, puis la migration tourne en arrière-plan et se réessaie toute
+     seule (3 fois, toutes les 20 s).
+
+  3. PLUS D'ERREUR DE FICHIER INTROUVABLE. Le serveur ne cherche plus un
+     dossier /frontend absent : il redirige vers votre site Netlify.
+
+  4. LA FAUTE QUI COUPAIT L'API EST CORRIGÉE (« req is not defined »).
+     Une erreur isolée n'arrête plus le service.
+
+  5. LA MIGRATION N'EST PLUS BLOQUANTE : elle vérifie la base en 3 x 4 s,
+     ne rejoue pas 29 scripts si la base est déjà à jour, et affiche en
+     clair le dossier db/ qu'elle utilise.
+
+---------------------------------------------------------------------
+3) NOUVEAUTÉ POUR VOUS DIAGNOSTIQUER : /ready
+---------------------------------------------------------------------
+Ouvrez dans le navigateur :   https://VOTRE-API.onrender.com/ready
+
+   {"pret":true, "base":"connectee", "tables":34, "migration":"terminee"}
+
+  • pret:true      → la base répond et les tables existent : tout va bien.
+  • base:injoignable → la base Render dort ou DATABASE_URL est fausse : copiez
+                       moi le texte affiché.
+  • migration:"reportee" → elle réessaiera seule ; attendez 1 minute.
+
+Et :  https://VOTRE-API.onrender.com/healthz   →  {"ok":true}
+      https://VOTRE-API.onrender.com/          →  vous renvoie vers le site
+
+---------------------------------------------------------------------
+4) LE SEUL POINT QUI A ÉCHOUÉ — À VÉRIFIER AVANT DE RELANCER
+---------------------------------------------------------------------
+Sur Render, un service Docker a DEUX réglages de dossier :
+
+   • Root Directory  (Réglages du service → onglet « Build & Deploy »)
+   • Dockerfile Path
+
+Si Root Directory contient encore « backend » (réglage d'une tentative
+précédente), Render cherche alors « backend/Dockerfile » et ne trouve pas
+le Dockerfile de la racine → même erreur qu'avant.
+
+AVEC LE PAQUET A (teebo-COMPLET) :
+   Root Directory      : laissez VIDE
+   Dockerfile Path     : Dockerfile
+   (ou ./Dockerfile)
+
+AVEC LE PAQUET B (teebo-SERVEUR-backend) :
+   identique, tout est à la racine de l'archive.
+
+Puis : Manual Deploy → « Clear build cache & deploy ».
+
+---------------------------------------------------------------------
+5) DÉPÔT SUR GITHUB (dossier A)
+---------------------------------------------------------------------
+  1. Décompressez teebo-COMPLET.zip.
+  2. Dans votre dépôt GitHub : « Add file » → « Upload files ».
+  3. Glissez TOUT le contenu du dossier décompressé (Dockerfile,
+     render.yaml, index.html, backend, db, assets, docs, frontend…).
+  4. Commit sur la branche main.
+
+Vérification en 5 secondes, sur GitHub : à la racine vous devez voir
+« Dockerfile », « render.yaml » et les dossiers « backend » et « db »
+côte à côte. Si « Dockerfile » n'apparaît pas, Render échouera encore.
+
+---------------------------------------------------------------------
+6) DANS RENDER
+---------------------------------------------------------------------
+  a. Base : le service PostgreSQL teebo-db doit exister (Blueprint
+     render.yaml le crée). Sinon : New → PostgreSQL → nom « teebo »,
+     région Frankfurt.
+  b. Variables à saisir (Environment) :
+        DATABASE_URL     = Internal Database URL de votre base
+        TEEBO_ADMIN_PASSWORD = votre mot de passe administrateur
+     Les autres (PUBLIC_SITE_URL, TEEBO_WHATSAPP, etc.) sont déjà dans
+     render.yaml.
+  c. Deploy, puis surveillez les journaux. Vous devez voir, dans cet ordre :
+        teebo API en écoute sur 0.0.0.0:3000
+        Dossier des migrations : /app/db
+        Schéma appliqué : schema.sql … schema_v33.sql
+        Migration terminée.
+  d. Ouvrez /ready puis /healthz.
+
+---------------------------------------------------------------------
+7) NETLIFY (le site)
+---------------------------------------------------------------------
+Décompressez teebo-SITE-netlify.zip et glissez le dossier sur
+https://app.netlify.com/drop, ou poussez-le dans un second dépôt relié à
+Netlify. Le site appelle déjà votre API (PUBLIC_API_URL).
+Ordre conseillé : Render d'abord, Netlify ensuite.
+
+---------------------------------------------------------------------
+8) CE QUI EST VÉRIFIÉ, ET CE QUI NE L'EST PAS
+---------------------------------------------------------------------
+Vérifié ici, en simulant l'image de production (base absente, pas de
+dossier frontend) :
+  • tous les fichiers passent le contrôle de syntaxe (30 modules + routes) ;
+  • le serveur répond en 1,5 s avec « teebo API en écoute » ;
+  • /healthz → {"ok":true} ; /ready → état détaillé ;
+  • /, /app, /login → redirection vers le site (302) ;
+  • adresse inconnue → page claire (404), aucune erreur « req is not defined » ;
+  • base absente → migration reportée proprement, serveur toujours actif ;
+  • la migration reconnaît le dossier db/ (29 scripts) même sans réglage.
+
+NON vérifié : la construction Docker elle-même et le déploiement sur Render
+(je n'ai pas accès à Docker ni à votre compte). Si une erreur apparaît,
+envoyez-moi la capture : les messages sont maintenant explicites.
+
+---------------------------------------------------------------------
+9) RAPPEL OFFRE (inchangée)
+---------------------------------------------------------------------
+Une seule offre forfaitaire par IMF, mensuel ou annuel (−15 %), licence
+après l'essai, démo gratuite + essai de 30 jours.
+=====================================================================
