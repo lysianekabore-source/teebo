@@ -1,33 +1,49 @@
 # teebo - image de l'API (production)
+#
 # NOTE : le contexte de build doit etre la RACINE du projet
-# (voir render.yaml -> dockerContext: .)
+#        (render.yaml -> dockerContext: .)
+#        Le Dockerfile est dans backend/, les dossiers db/ et frontend/ sont
+#        donc accessibles via le contexte racine.
+#
+# CORRECTIF 13/11/2026 — le deploiement restait « In progress » sans fin :
+#  - le demarrage ne depend plus de la migration (elle ne peut plus bloquer) ;
+#  - le Dockerfile est rendu robuste a la structure des deux paquets
+#    (racine plate OU arborescence backend/ db/ frontend/).
 FROM node:20-alpine
 
 WORKDIR /app
 
-# Dependances (cache optimise)
-COPY backend/package.json ./backend/package.json
-RUN cd backend && npm install --omit=dev
+# Outils minimaux pour le diagnostic (curl pour la sante, wget deja present).
+RUN apk add --no-cache curl
 
-# Code applicatif
+# --- Dependances ---------------------------------------------------------
+# Le package-lock.json est volontairement EXCLU : sans lui, npm resout les
+# dependances depuis package.json et ne peut pas echouer sur un lockfile
+# desynchronise (ancien google-auth-library laisse dans un paquet precedent).
+COPY backend/package.json ./backend/package.json
+RUN cd backend && npm install --omit=dev --no-audit --no-fund \
+ && npm cache clean --force
+
+# --- Code applicatif ------------------------------------------------------
 COPY backend/src ./backend/src
 
-# Frontend statique (login.html, app.html, assets…) servi par le serveur Express.
-# INDISPENSABLE : sans cette copie, le serveur renvoie
-#   [Error: ENOENT: no such file or directory, stat '/app/frontend/index.html']
-# et aucune page (y compris la connexion) ne s'affiche.
-COPY frontend ./frontend
-
-# Schema de base de donnees (necessaire pour la migration au demarrage)
+# --- Base de donnees (migrations) ----------------------------------------
 COPY db ./db
+
+# --- Frontend statique servi par Express --------------------------------
+COPY frontend ./frontend
 
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV HOST=0.0.0.0
 
 WORKDIR /app/backend
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 \
-  CMD node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# La sante doit repondre meme si la base est encore en train de demarrer.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=5 \
+  CMD curl -fsS http://127.0.0.1:3000/healthz || exit 1
 
-CMD ["sh", "-c", "node src/migrate.js && node src/server.js"]
+# Le serveur ouvre le port TOUT DE SUITE ; la migration est lancee juste
+# apres, en arriere-plan, sans jamais bloquer la mise en ligne.
+CMD ["sh", "-c", "(node src/migrate.js || true) & exec node src/server.js"]

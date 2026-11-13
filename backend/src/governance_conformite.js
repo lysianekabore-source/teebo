@@ -18,6 +18,7 @@ import crypto from 'crypto';
 import { Router } from 'express';
 import { q } from './db.js';
 import { authenticate, requireFreshPassword, rolesOf } from './auth.js';
+import { setDocumentCsp } from './documents.js';
 
 export const gcRouter = Router();
 gcRouter.use(authenticate, requireFreshPassword);
@@ -776,6 +777,9 @@ gcRouter.get('/governance/exports/rapport-cac.pdf', guardExport, async (req, res
     const d = await collectDossier(req.user.imf_id);
     const html = rapportCacHtml(d);
     await logExport(req.user.imf_id, req.user.id, 'RAPPORT_CAC_PDF', { institution: d.inst.raison_sociale || d.imf.name });
+    // Aperçu HTML autonome (styles + impression dans la page) : la CSP globale
+    // de l'application est assouplie pour cette seule réponse, sans script inline.
+    setDocumentCsp(res, { allowFrame: true });
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.send(html);
@@ -799,6 +803,8 @@ gcRouter.get('/governance/exports/rapport-cac.xlsx', guardExport, async (req, re
 gcRouter.get('/governance/exports/pack-inspection.zip', guardExport, async (req, res, next) => {
   try {
     const { files, soc, jour } = await collectPackInspection(req.user.imf_id);
+    // L'archive est construite AVANT toute autre operation : si la trace
+    // d'export echoue, le fichier doit malgre tout etre livre.
     const zip = buildZip(files);
     await logExport(req.user.imf_id, req.user.id, 'PACK_INSPECTION_ZIP', { fichiers: files.length });
     const base = safeName(soc) + '_PACK-INSPECTION-' + jour;

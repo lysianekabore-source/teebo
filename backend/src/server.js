@@ -161,9 +161,55 @@ app.use((err, _req, res, _next) => {
   // précis ; les erreurs non maîtrisées (sans statut) restent génériques.
   const status = err.status || 500;
   const code = err.code || (err.status ? err.message : null) || 'server_error';
+  // Un fichier (PDF, Excel, ZIP) demandé depuis le site affichait auparavant
+  // un simple {"error":"server_error"} en texte brut : on renvoie désormais
+  // une page lisible qui explique quoi faire, au lieu de cette réponse muette.
+  const wantsFile = /\/exports\//.test(String(req.originalUrl || req.url || ''));
+  if (wantsFile && !req.accepts(['json'])) {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(status).send(`<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Export indisponible — teebo</title>
+<style>body{font-family:'Segoe UI',system-ui,Arial,sans-serif;background:#eef0f6;color:#0b0c26;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px}
+ .card{background:#fff;border-radius:12px;box-shadow:0 14px 44px rgba(11,12,38,.14);max-width:560px;padding:32px 34px}
+ h1{font-size:19px;margin:0 0 10px}p{font-size:13.5px;line-height:1.7;color:#3c3f57;margin:0 0 10px}
+ ul{font-size:13px;line-height:1.8;color:#3c3f57;padding-left:20px;margin:8px 0 14px}
+ .tag{display:inline-block;background:#fdeceb;color:#b3261e;font-weight:700;font-size:11px;padding:5px 11px;border-radius:999px;margin-bottom:14px}
+ a{display:inline-block;background:#0b0c26;color:#fff;text-decoration:none;font-weight:700;font-size:13px;padding:11px 18px;border-radius:9px}</style>
+</head><body><div class="card"><div class="tag">Export indisponible</div>
+<h1>Le fichier n'a pas pu être généré</h1>
+<p>L'export a rencontré une erreur côté serveur et n'a produit aucun fichier.</p>
+<ul><li>Rechargez la page et relancez l'export.</li>
+<li>Si le message persiste, la base de données est peut-être encore en cours de mise à jour (migration) : réessayez dans une minute.</li>
+<li>Les rapports restent accessibles depuis <b>Gouvernance › Conformité</b>.</li></ul>
+<a href="/app">Retour à l'application</a></div></body></html>`);
+  }
   res.status(status).json({ error: code });
 });
 
 const port = process.env.PORT || 3000;
-const host = process.env.HOST || '127.0.0.1';
-app.listen(port, host, () => console.log(`teebo API en écoute sur ${host}:${port}`));
+const host = process.env.HOST || '0.0.0.0';
+
+// Le serveur écoute IMMÉDIATEMENT : la santé (/healthz) répond sans attendre la
+// base. C'est ce qui garantit une mise en ligne rapide sur Render (offre
+// gratuite) même si PostgreSQL est encore en train de se réveiller.
+const server = app.listen(port, host, () => {
+  console.log(`teebo API en écoute sur ${host}:${port}`);
+  // Rattrapage des schémas en tâche de fond : si la migration au démarrage a
+  // été interrompue (base lente, verrou), on réessaie ici SANS jamais bloquer
+  // le service. Idempotent : relancer ne casse rien.
+  if (process.env.TEEBO_AUTO_MIGRATE !== '0') {
+    import('./migrate.js').catch((e) => console.error('Rattrapage migration :', e && e.message));
+  }
+});
+
+// Un dernier incident ne doit pas tuer le service silencieusement.
+process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e && (e.message || e)));
+process.on('uncaughtException', (e) => console.error('uncaughtException:', e && (e.message || e)));
+
+// Arrêt propre demandé par Render (SIGTERM) : on rend la main vite.
+['SIGTERM', 'SIGINT'].forEach((sig) => process.on(sig, () => {
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 8000).unref();
+}));

@@ -5,7 +5,7 @@ import { authenticate, requireFreshPassword, requireRole } from '../auth.js';
 import { notifyWhatsApp, notifyEmail, waLink, mailtoLink, loginUrlFor, emailGatewayReady } from '../notify.js';
 import { getBranding } from '../documents.js';
 import { defaultPermissionKeysForRole, buildProfilesMatrix } from '../permissions.js';
-import { positionInfo } from '../org_structure.js';
+import { positionInfo, POSITIONS as POSITIONS_IN_SOCLE } from '../org_structure.js';
 
 const router = express.Router();
 router.use(authenticate, requireFreshPassword);
@@ -234,13 +234,41 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
     const position = bodyIn.position || null;
     let role = bodyIn.role || null;
     let position_code = bodyIn.position_code || null;
+    let traceLabelNote = null;
+    // Filet de securite : si l'interface n'a transmis que le LIBELLE du poste
+    // (« Pilotage strategique - President du Conseil d'Administration (PCA) »),
+    // on retrouve le code exact dans le socle puis dans le catalogue de l'IMF.
+    // On ne refuse plus jamais une creation pour un simple libelle.
+    if (!position_code && (bodyIn.position_label || position)) {
+      const raw = String(bodyIn.position_label || position || '');
+      const norm = (v) => String(v || '').toLowerCase().normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+      const target = norm(raw);
+      const stripShort = (v) => norm(String(v || '').replace(/\s*[/(].*$/, ''));
+      let hit = POSITIONS_IN_SOCLE.find((p) => norm(p.label) === target);
+      if (!hit) hit = POSITIONS_IN_SOCLE.find((p) => stripShort(p.label) === target ||
+        target.indexOf(stripShort(p.label)) === 0 || norm(p.label).indexOf(target) === 0);
+      if (!hit && raw.indexOf(' — ') > 0) {
+        // L'interface prefixe parfois le service : on reprend la partie droite.
+        const tail = raw.split(' — ').pop();
+        hit = POSITIONS_IN_SOCLE.find((p) => norm(p.label) === norm(tail));
+      }
+      if (hit) position_code = hit.code;
+      else {
+        const row = (await q(
+          `SELECT code FROM position_catalog WHERE imf_id=$1 ORDER BY label`, [req.user.imf_id]))
+          .rows.find((x) => norm(x.code) === target || norm(x.code) === norm(String(raw).split(' — ').pop()));
+        if (row) position_code = row.code;
+      }
+      if (position_code) traceLabelNote = String(raw);
+    }
     let supervisor_id = bodyIn.supervisor_id || null;
     // DIAGNOSTIC : la création d'un utilisateur échouait « sans rien afficher ».
     // Le compte qui crée et le contenu reçu sont désormais tracés côté serveur
     // (sans mot de passe) pour permettre de retrouver la cause exacte.
     const trace = { who: { id: req.user.id, role: req.user.role, imf_id: req.user.imf_id },
       body: { full_name: !!full_name, email: !!email, phone: !!phone, position_code,
-        position: position, org_unit_id, supervisor_id, role } };
+        position: position, position_label: traceLabelNote, org_unit_id, supervisor_id, role } };
     // Validation explicite : message clair en français, jamais un 422 muet.
     if (!full_name || !email) {
       return res.status(422).json({ error: 'missing_fields', field: !full_name ? 'full_name' : 'email',

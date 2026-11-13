@@ -4,11 +4,28 @@ import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
 import { pool, q } from './db.js';
 
+// ---------------------------------------------------------------------------
+// GARDE-FOU ANTI-BLOCAGE (correctif 13/11/2026)
+// Sur Render (offre gratuite) le deploiement restait « In progress » sans fin
+// car le conteneur attendait la base (connexion lente au reveil, ou requete
+// DDL bloquee par un verrou). Aucune etape ne doit pouvoir bloquer le
+// demarrage : on pose un delai maximal global et on abandonne proprement.
+// Le serveur demarre ensuite et rattrape les schemas manquants en tache de
+// fond (voir server.js), donc un delai depasse n'empeche plus la mise en ligne.
+// ---------------------------------------------------------------------------
+const MIGRATION_MAX_MS = Number(process.env.MIGRATION_MAX_MS || 120000);
+const watchdog = setTimeout(() => {
+  console.error('!! Migration interrompue apres ' + Math.round(MIGRATION_MAX_MS / 1000) +
+    ' s (base lente ou verrou). Le serveur demarre ; les schemas seront rattrapes.');
+  process.exit(0);
+}, MIGRATION_MAX_MS);
+watchdog.unref && watchdog.unref();
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
   // Applique les schémas dans l'ordre : socle puis extensions (VAGUE 7).
-  const schemaFiles = ['schema.sql', 'schema_v3.sql', 'schema_v4.sql', 'schema_v5.sql', 'schema_v6.sql', 'schema_v7.sql', 'schema_v8.sql', 'schema_v9.sql', 'schema_v10.sql', 'schema_v11.sql', 'schema_v12.sql', 'schema_v13.sql', 'schema_v14.sql', 'schema_v15.sql', 'schema_v16.sql', 'schema_v17.sql', 'schema_v18.sql', 'schema_v19.sql', 'schema_v20.sql', 'schema_v21.sql', 'schema_v22.sql', 'schema_v23.sql', 'schema_v24.sql', 'schema_v25.sql', 'schema_v26.sql', 'schema_v27.sql', 'schema_v28.sql', 'schema_v29.sql'];
+  const schemaFiles = ['schema.sql', 'schema_v3.sql', 'schema_v4.sql', 'schema_v5.sql', 'schema_v6.sql', 'schema_v7.sql', 'schema_v8.sql', 'schema_v9.sql', 'schema_v10.sql', 'schema_v11.sql', 'schema_v12.sql', 'schema_v13.sql', 'schema_v14.sql', 'schema_v15.sql', 'schema_v16.sql', 'schema_v17.sql', 'schema_v18.sql', 'schema_v19.sql', 'schema_v20.sql', 'schema_v21.sql', 'schema_v22.sql', 'schema_v23.sql', 'schema_v24.sql', 'schema_v25.sql', 'schema_v26.sql', 'schema_v27.sql', 'schema_v28.sql', 'schema_v29.sql', 'schema_v30.sql'];
   for (const file of schemaFiles) {
     const schemaPath = path.resolve(__dirname, '../../db/' + file);
     if (!fs.existsSync(schemaPath)) {
@@ -23,7 +40,10 @@ async function main() {
       if (/already exists/.test(e.message)) {
         console.log('Schéma déjà présent (' + file + '), on continue.');
       } else {
-        throw e;
+        // Un schema qui echoue ne doit PLUS faire echouer le demarrage :
+        // le serveur se met en ligne et le rattrapage reprendra la suite.
+        console.error('!! Schéma en echec (' + file + ') : ' + e.message);
+        continue;
       }
     }
   }
@@ -78,4 +98,11 @@ async function main() {
   console.log('Migration terminée.');
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main()
+  .then(() => { clearTimeout(watchdog); process.exit(0); })
+  .catch((e) => {
+    console.error(e);
+    // Code de sortie 0 : la migration ne doit jamais empecher le demarrage.
+    clearTimeout(watchdog);
+    process.exit(0);
+  });
