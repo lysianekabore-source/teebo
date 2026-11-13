@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { detecterApparente } from '../credit_apparentes.js';
 import { q, tx } from '../db.js';
 import { requireRole, requirePermission, userHasPermission } from '../auth.js';
 import {
@@ -597,6 +598,10 @@ r.post('/credits', requireRole(...STAFF), async (req, res, next) => {
     const amount = int(b.amount_cents);
     if (!(amount > 0)) return res.status(400).json({ error: 'montant_invalide' });
     const origin = ['client', 'collectrice', 'guichet'].includes(b.origin) ? b.origin : 'collectrice';
+    // VAGUE 29 — DETECTION AUTOMATIQUE A L'OCTROI : un dossier dont le client (ou
+    // l'un de ses ayants droit) est une personne apparentee est marque et une
+    // convention reglementee est ouverte pour le suivi du CAC.
+    const det = await detecterApparente(req.user.imf_id, b.client_id, amount);
     const out = await tx(async (c) => {
       const cl = (await c.query('SELECT * FROM client WHERE id=$1 AND imf_id=$2',
         [b.client_id, req.user.imf_id])).rows[0];
@@ -613,7 +618,11 @@ r.post('/credits', requireRole(...STAFF), async (req, res, next) => {
          cl.collectrice_user_id || req.user.id, cl.superviseur_user_id,
          amount, b.duration_months || null, b.purpose || null, b.activity || null,
          b.collateral || null, b.comments || null,
-         JSON.stringify(Array.isArray(b.documents) ? b.documents : [])])).rows[0];
+         JSON.stringify(Array.isArray(b.documents) ? b.documents : []), Boolean(det.apparente)])).rows[0];
+      if (det.convention_id) {
+        await c.query('UPDATE conventions_reglementees SET credit_file_id=$1 WHERE id=$2 AND imf_id=$3',
+          [f.id, det.convention_id, req.user.imf_id]);
+      }
       await logCreditEvent(c, f.id, null, 'en_attente', req.user, 'Dossier soumis (' + origin + ')');
       return { file: f, client: cl };
     });
@@ -621,6 +630,10 @@ r.post('/credits', requireRole(...STAFF), async (req, res, next) => {
       credit: { id: out.file.id, reference: out.file.reference, status: out.file.status,
         amount_cents: Number(out.file.amount_cents) },
       client: { id: out.client.id, full_name: out.client.full_name, code_client: out.client.code_client },
+      conformite: { apparente: Boolean(det.apparente), apparentes: det.apparentes || [],
+        alerte: det.alerte || null, convention_reference: det.convention_reference || null,
+        plafond_individuel_pct: det.situation ? det.situation.plafond_individuel_pct : null,
+        ratio_individuel_pct: det.ratio_individuel_pct || null },
       workflow: { en_attente: 'En attente', a_l_etude: 'À l\'étude', approuve: 'Approuvé', rejete: 'Rejeté', decaisse: 'Décaissé' },
       note: 'Dossier de crédit enregistré. Visible en temps réel par le Client, la Collectrice et le Superviseur.',
     });
@@ -731,6 +744,16 @@ r.post('/credits/:id/process', requireRole(...OFFICER), async (req, res, next) =
       const f = (await c.query('SELECT * FROM credit_file WHERE id=$1 AND imf_id=$2 FOR UPDATE',
         [req.params.id, req.user.imf_id])).rows[0];
       if (!f) { const e = new Error('dossier_introuvable'); e.status = 404; throw e; }
+      // VAGUE 29 — CREDIT A UN APPARENTE : l'approbation est subordonnee a
+      // l'autorisation prealable de la convention par l'organe competent.
+      if (f.apparente && ['approuve', 'decaisse'].includes(decision)) {
+        const cv = (await c.query(
+          `SELECT statut FROM conventions_reglementees WHERE imf_id=$1 AND credit_file_id=$2 ORDER BY created_at DESC LIMIT 1`,
+          [req.user.imf_id, f.id])).rows[0];
+        if (cv && !['AUTORISEE', 'EN_COURS', 'CLOTUREE'].includes(cv.statut)) {
+          const e = new Error('convention_non_autorisee'); e.status = 409; throw e;
+        }
+      }
       const note = b.note || null;
       const officer = to === 'a_l_etude' ? req.user.id : f.officer_user_id;
       const approved = to === 'approuve' ? (b.approved_amount_cents !== undefined ? int(b.approved_amount_cents) : Number(f.amount_cents)) : f.approved_amount_cents;

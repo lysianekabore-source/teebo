@@ -226,9 +226,29 @@ async function maySuperviseCollectors(c, positionCode, imfId) {
 
 router.post('/users', requireRole('admin_imf','direction'), async (req, res, next) => {
   try {
-    const { full_name, position, email, phone, org_unit_id } = req.body || {};
-    let { role, position_code, supervisor_id } = req.body || {};
-    if (!full_name || !email) return res.status(422).json({ error: 'missing_fields' });
+    const bodyIn = req.body || {};
+    const full_name = typeof bodyIn.full_name === 'string' ? bodyIn.full_name.trim() : bodyIn.full_name;
+    const email = typeof bodyIn.email === 'string' ? bodyIn.email.trim().toLowerCase() : bodyIn.email;
+    const phone = typeof bodyIn.phone === 'string' ? bodyIn.phone.trim() : bodyIn.phone;
+    const org_unit_id = bodyIn.org_unit_id || null;
+    const position = bodyIn.position || null;
+    let role = bodyIn.role || null;
+    let position_code = bodyIn.position_code || null;
+    let supervisor_id = bodyIn.supervisor_id || null;
+    // DIAGNOSTIC : la création d'un utilisateur échouait « sans rien afficher ».
+    // Le compte qui crée et le contenu reçu sont désormais tracés côté serveur
+    // (sans mot de passe) pour permettre de retrouver la cause exacte.
+    const trace = { who: { id: req.user.id, role: req.user.role, imf_id: req.user.imf_id },
+      body: { full_name: !!full_name, email: !!email, phone: !!phone, position_code,
+        position: position, org_unit_id, supervisor_id, role } };
+    // Validation explicite : message clair en français, jamais un 422 muet.
+    if (!full_name || !email) {
+      return res.status(422).json({ error: 'missing_fields', field: !full_name ? 'full_name' : 'email',
+        message: !full_name ? 'Le nom complet est obligatoire.' : 'L’adresse e-mail est obligatoire.' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email))) {
+      return res.status(422).json({ error: 'invalid_email', field: 'email', message: 'Adresse e-mail invalide.' });
+    }
 
     // --- Dérivation à partir du POSTE (source de vérité si fourni) -----------
     // Le poste impose son rôle-archetype, son département et son service ;
@@ -244,7 +264,16 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
              FROM position_catalog
             WHERE code=$1 AND (imf_id=$2 OR imf_id IS NULL)`,
           [position_code, req.user.imf_id])).rows[0];
-        if (!row) return res.status(422).json({ error: 'invalid_position' });
+        if (!row) {
+          try {
+            await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, payload)
+                     VALUES ($1,$2,$3,$4,$5)`,
+              [req.user.imf_id, req.user.id, 'user.create.refused', 'app_user',
+               JSON.stringify({ ...trace, reason: 'invalid_position' })]);
+          } catch (_) { /* le journal ne doit jamais bloquer la réponse */ }
+          return res.status(422).json({ error: 'invalid_position',
+            message: 'Ce poste n’existe pas dans le catalogue de votre institution. Choisissez un autre poste.' });
+        }
         pos = { code: row.code, label: row.label, role: row.role_key, dept: row.dept_code,
           service: row.service_code, supervisesCollectors: row.can_supervise_collectors,
           needsSupervisor: row.needs_supervisor };
@@ -259,8 +288,14 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
     if (supervisor_id && String(supervisor_id) === String(req.user.id)) {
       return res.status(422).json({ error: 'self_supervisor' });
     }
-    if (!role) return res.status(422).json({ error: 'missing_fields' });
+    if (!role) return res.status(422).json({ error: 'missing_fields', field: 'position_code',
+      message: 'Choisissez un poste : c’est lui qui détermine le rôle et les permissions du compte.' });
     if (role === 'teebo_admin') return res.status(422).json({ error: 'invalid_role' });
+    // Poste « Président du Conseil d'Administration » : le socle lui attribue le
+    // rôle-archetype superadmin, réservé au compte de l'éditeur. Créé DEPUIS
+    // l'espace d'une IMF il devient donc « pca_admin » (l'administrateur de
+    // l'institution), exactement comme le fait la connexion (auth.js).
+    if (position_code === 'POS_PCA' && (role === 'superadmin' || role === 'office_staff')) role = 'pca_admin';
 
     const out = await tx(async (c) => {
       if (org_unit_id) {

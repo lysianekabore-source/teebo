@@ -6,7 +6,7 @@
 set -e
 cd "$(dirname "$0")"
 
-echo "==> Migration de la base (schemas 01 .. 28) ..."
+echo "==> Migration de la base (schemas 01 .. 29) ..."
 node src/migrate.js || echo "!! Migration partielle (base indisponible ?) - le serveur demarre quand meme."
 
 echo "==> Demarrage du serveur API ..."

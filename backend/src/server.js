@@ -27,6 +27,7 @@ import objectiveRoutes from './routes/objectives.js';
 import structureRoutes from './routes/structure.js';
 import accessRoutes from './routes/access.js';
 import governanceRoutes from './routes/governance.js';
+import { gcRouter as governanceConformiteRoutes } from './governance_conformite.js';
 import bankingRoutes from './routes/banking.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -131,6 +132,8 @@ app.use('/api/v1', accessRoutes);
 // VAGUE 27 : gouvernance & conformite (loi-cadre UMOA) — 6 registres
 // cloisonnes par IMF + tableau de bord et rapport imprimable.
 app.use('/api/v1', governanceRoutes);
+// VAGUE 29 — conformite prudentielle, risques & PCA, echeancier, exports reglementaires
+app.use('/api/v1', governanceConformiteRoutes);
 
 // ----------------------------- Frontend -----------------------------------
 const pub = path.resolve(__dirname, '../../frontend');
