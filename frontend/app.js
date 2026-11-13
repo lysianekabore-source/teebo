@@ -34,6 +34,11 @@
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  // Site réellement affiché dans le navigateur : transmis au serveur pour que
+  // les messages envoyés portent le BON lien de connexion.
+  function siteUrl() {
+    try { return (window.location && window.location.origin) || ''; } catch (e) { return ''; }
+  }
   function api(path, method, body, onRetry) {
     method = method || 'GET';
     // On ne RE-ESSAIE automatiquement que les lectures (GET) : rejouer un POST
@@ -52,7 +57,8 @@
       var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
       var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 30000) : null;
       return fetch(path, { method: method, credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json',
+          'X-Site-URL': siteUrl() },
         body: body ? JSON.stringify(body) : undefined,
         signal: ctrl ? ctrl.signal : undefined })
         .then(function (r) {
@@ -83,7 +89,7 @@
     bad_parent: 'Unité parente invalide.', bad_unit: 'Unité invalide.', missing_fields: 'Champs obligatoires manquants.',
     invalid_kind: 'Type d’unité invalide.', missing_name: 'Le nom de l’unité est requis.', not_found: 'Élément introuvable.',
     weak_password: 'Mot de passe trop faible (10 car., majuscule, minuscule, chiffre).', invalid_current_password: 'Mot de passe actuel incorrect.',
-    password_change_required: 'Votre mot de passe doit être changé.', idle_timeout: 'Session expirée (30 min d’inactivité).',
+    password_change_required: 'Votre mot de passe doit être changé.', idle_timeout: 'Session expirée (60 min d’inactivité).',
     session_expired: 'Session expirée.', invalid_session: 'Session invalide.', not_authenticated: 'Non connecté.',
     invalid_position: 'Poste invalide.', supervisor_required: 'Un superviseur est requis pour ce poste.',
     invalid_supervisor: 'Le superviseur choisi doit être un Chef d’agence ou un Agent de crédit.',
@@ -926,7 +932,7 @@
     var rows = [['Nom', me.user.full_name], ['Identifiant', me.user.code_user], ['E-mail', me.user.email],
       ['Rôle', ROLE_LABEL[me.user.role] || me.user.role], ['Mot de passe défini le', me.password_set_at ? new Date(me.password_set_at).toLocaleString('fr-FR') : '—'],
       ['Expiration du mot de passe', me.password_expires_at ? new Date(me.password_expires_at).toLocaleString('fr-FR') : '—'],
-      ['Déconnexion auto', 'après 30 minutes d’inactivité']];
+      ['Déconnexion auto', 'après 60 minutes d’inactivité']];
     $('session-info').innerHTML = rows.map(function (r) { return '<div><dt style="font-size:12px;color:var(--muted)">' + r[0] + '</dt><dd style="font-weight:600">' + esc(r[1]) + '</dd></div>'; }).join('');
     render2fa();
   }

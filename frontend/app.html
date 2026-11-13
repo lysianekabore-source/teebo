@@ -71,7 +71,7 @@
           <h2 style="font-size:16px;margin-bottom:14px">Règles de sécurité appliquées</h2>
           <ul class="checks" style="list-style:none;display:grid;gap:10px;font-size:13.5px">
             <li>Mot de passe expiré automatiquement après 60 jours</li>
-            <li>Déconnexion automatique après 30 minutes d’inactivité</li>
+            <li>Déconnexion automatique après 60 minutes d’inactivité</li>
             <li>Code d’identification généré automatiquement pour l’IMF et chaque agence</li>
             <li>Cloisonnement strict : aucune donnée partagée entre utilisateurs</li>
             <li>Aucune donnée partagée entre entités sans autorisation de l’admin</li>
@@ -430,6 +430,7 @@
 </div>
 
 <div id="modal-root"></div>
-<script src="assets/app.js?v=23" defer></script>
+<script src="assets/app.js?v=25" defer></script>
+<script src="assets/keepalive.js" defer></script>
 </body>
 </html>

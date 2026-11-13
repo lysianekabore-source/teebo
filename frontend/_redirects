@@ -1,0 +1,25 @@
+# ===================================================================
+# teebo — Regles Netlify (SITE + REDIRECTION VERS LE SERVEUR RENDER)
+#
+# >>> UNE SEULE CHOSE A VERIFIER <<<
+# Remplacez teebo-api.onrender.com par l'adresse EXACTE de votre
+# service Render si elle est differente (voir GUIDE-REDIRECTION-API.md).
+# ===================================================================
+
+# 1) SERVEUR (API) : tout /api/* est transmis au serveur Render.
+#    L'ordre est important : cette ligne DOIT etre AVANT la regle /*.
+/api/*   https://teebo-api-p825.onrender.com/api/:splat   200
+
+# 2) Pages du site (URLs propres)
+/login          /login.html          200
+/app            /app.html            200
+/terrain        /terrain.html        200
+/demo           /demo.html           200
+/teebo          /teebo.html          200
+/essai          /essai.html          200
+/documentation  /documentation.html  200
+/securite       /securite.html       200
+/autorisations  /autorisations.html  200
+
+# 3) Toute autre adresse inconnue -> accueil (jamais de 404 brut)
+/*              /index.html          200

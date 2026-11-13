@@ -18,7 +18,7 @@
     clearTimeout(notify._t); notify._t = setTimeout(function () { a.hidden = true; }, 12000); }
   var MSG = { proforma_not_validated: 'La facture proforma n’a pas été validée par le prospect.', not_found: 'Élément introuvable.',
     no_admin: 'Aucun administrateur IMF pour cette institution.', no_code: 'Aucun code d’accès à renvoyer.',
-    invalid_status: 'Statut invalide.', forbidden: 'Réservé aux administrateurs teebo.', idle_timeout: 'Session expirée (30 min d’inactivité).',
+    invalid_status: 'Statut invalide.', forbidden: 'Réservé aux administrateurs teebo.', idle_timeout: 'Session expirée (60 min d’inactivité).',
     session_expired: 'Session expirée.', not_authenticated: 'Non connecté.', invalid_session: 'Session invalide.',
     cannot_delete_system_tenant: 'Le tenant système teebo ne peut pas être supprimé.',
     confirm_code_mismatch: 'Le code saisi ne correspond pas au code de l’IMF.' };

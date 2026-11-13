@@ -5,7 +5,8 @@
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   async function api(p, o) {
-    const r = await fetch('/api/v1' + p, Object.assign({ credentials: 'include', headers: { 'Content-Type': 'application/json' } }, o || {}));
+    const site = (() => { try { return window.location.origin || ''; } catch (e) { return ''; } })();
+    const r = await fetch('/api/v1' + p, Object.assign({ credentials: 'include', headers: { 'Content-Type': 'application/json', 'X-Site-URL': site } }, o || {}));
     let j = null; try { j = await r.json(); } catch (e) {}
     if (!r.ok) { const e = new Error((j && (j.error || j.message)) || ('Erreur ' + r.status)); e.status = r.status; e.data = j; throw e; }
     return j;

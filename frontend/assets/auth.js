@@ -12,9 +12,14 @@
     a.hidden = false;
   }
   function hide() { $('alert').hidden = true; }
+  // Origine du site (Netlify, domaine propre) : le serveur s'en sert pour
+  // écrire le bon lien de connexion dans les messages envoyés.
+  function siteUrl() {
+    try { return (window.location && window.location.origin) || ''; } catch (e) { return ''; }
+  }
   function post(path, body) {
     return fetch(API + path, { method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) })
+      headers: { 'Content-Type': 'application/json', 'X-Site-URL': siteUrl() }, body: JSON.stringify(body || {}) })
       .then(function (r) { return r.json().catch(function(){return{};}).then(function (d) { if (!r.ok) throw new Error(d.error || 'error'); return d; }); });
   }
   function msgFr(code) {
@@ -25,7 +30,7 @@
       weak_password: 'Mot de passe trop faible (10 caractères min., majuscule, minuscule, chiffre).',
       missing_fields: 'Veuillez remplir tous les champs.',
       invalid_current_password: 'Mot de passe actuel incorrect.',
-      idle_timeout: 'Session expirée après 30 minutes d’inactivité. Reconnectez-vous.',
+      idle_timeout: 'Session expirée après 60 minutes d’inactivité. Reconnectez-vous.',
       twofa_required: 'Double authentification obligatoire : activez-la dans votre espace. Contactez votre administrateur si besoin.',
       session_expired: 'Votre session a expiré. Reconnectez-vous.',
       password_change_required: 'Vous devez changer votre mot de passe.',
@@ -98,7 +103,8 @@
   }
 
   function routeAfterLogin() {
-    return fetch(API + '/api/v1/auth/me', { credentials: 'same-origin' })
+    return fetch(API + '/api/v1/auth/me', { credentials: 'same-origin',
+      headers: { 'X-Site-URL': siteUrl() } })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         var role = d && d.user && d.user.role;

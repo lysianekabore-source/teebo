@@ -17,7 +17,7 @@
     credit_director: 'Direction Crédit', credit_analyst: 'Crédit', recovery_agent: 'Recouvrement',
     operations_director: 'Direction Opérations', teller: 'Caisse / Guichet', customer_agent: 'Clientèle',
     cfo: 'Direction Financière', treasurer: 'Trésorerie', accountant: 'Comptabilité', auditor: 'Audit',
-    hr_logistics_manager: 'RH & Logistique', office_staff: 'Support administratif', collectrice: 'Collecte' };
+    hr_logistics_manager: 'RH & Logistique', office_staff: 'Support administratif', collectrice: 'Collecte', pca_admin: "Président du Conseil d'Administration" };
 
   // Libellé d'un rôle : on retombe d'abord sur le catalogue des postes, puis sur
   // une mise en forme lisible, au lieu d'afficher un code brut « ops_caisse ».
@@ -32,8 +32,18 @@
     return t.charAt(0).toUpperCase() + t.slice(1);
   }
 
+  // Rôle effectif d'un utilisateur : le serveur renvoie « effective_role »
+  // (ex. pca_admin pour le Président du Conseil d'Administration).
+  function effRole(u) { return (u && (u.effective_role || u.role)) || ''; }
+
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  // Site réellement affiché dans le navigateur (https://mon-imf.netlify.app,
+  // domaine propre…). Transmis au serveur pour que les messages envoyés
+  // (code d'accès, mot de passe oublié) contiennent le BON lien de connexion.
+  function siteUrl() {
+    try { return (window.location && window.location.origin) || ''; } catch (e) { return ''; }
+  }
   function api(path, method, body, onRetry) {
     method = method || 'GET';
     // On ne RE-ESSAIE automatiquement que les lectures (GET) : rejouer un POST
@@ -52,7 +62,8 @@
       var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
       var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 30000) : null;
       return fetch(path, { method: method, credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json',
+          'X-Site-URL': siteUrl() },
         body: body ? JSON.stringify(body) : undefined,
         signal: ctrl ? ctrl.signal : undefined })
         .then(function (r) {
@@ -83,7 +94,7 @@
     bad_parent: 'Unité parente invalide.', bad_unit: 'Unité invalide.', missing_fields: 'Champs obligatoires manquants.',
     invalid_kind: 'Type d’unité invalide.', missing_name: 'Le nom de l’unité est requis.', not_found: 'Élément introuvable.',
     weak_password: 'Mot de passe trop faible (10 car., majuscule, minuscule, chiffre).', invalid_current_password: 'Mot de passe actuel incorrect.',
-    password_change_required: 'Votre mot de passe doit être changé.', idle_timeout: 'Session expirée (30 min d’inactivité).',
+    password_change_required: 'Votre mot de passe doit être changé.', idle_timeout: 'Session expirée (60 min d’inactivité).',
     session_expired: 'Session expirée.', invalid_session: 'Session invalide.', not_authenticated: 'Non connecté.',
     invalid_position: 'Poste invalide.', supervisor_required: 'Un superviseur est requis pour ce poste.',
     invalid_supervisor: 'Le superviseur choisi doit être un Chef d’agence ou un Agent de crédit.',
@@ -154,53 +165,105 @@
 
   // ----- Tableau de bord -----
   function renderDash() {
-    // Sécurité : ce rendu est aussi appelé après le chargement des unités et des
-    // utilisateurs ; si le profil (/me) n'est pas encore arrivé, on affiche des
-    // valeurs neutres au lieu de provoquer une « erreur » à l'écran.
-    if (!me) me = { user: {}, permissions: [] };
+    try { renderDashInner(); } catch (e) {
+      if (window.console && console.warn) console.warn('dashboard:', e && e.message);
+      try { renderDashFallback(); } catch (_) {}
+    }
+  }
+  function kpiSafe(fn, dflt) {
+    try { var v = fn(); return (v === undefined || v === null) ? dflt : v; } catch (e) { return dflt; }
+  }
+  function dashCardState(el, msg, action, onAction) {
+    if (!el) return;
+    el.innerHTML = '<div class="empty">' + esc(msg) + (action ? '<br><button class="btn btn--ghost btn--sm" type="button" style="margin-top:10px">' + esc(action) + '</button>' : '') + '</div>';
+    var b = action ? el.querySelector('button') : null;
+    if (b && onAction) b.addEventListener('click', onAction);
+  }
+  function renderDashFallback() {
+    var box = $('dash-kpis');
+    if (box && !box.innerHTML) dashCardState(box, 'Chargement des informations…', 'Réessayer', function () { refreshDash(); });
+  }
+  function renderDashInner() {
+    // Profil (/me) pas encore arrivé : valeurs neutres au lieu d'une erreur.
+    if (!me || !me.user) me = me || { user: {}, permissions: [] };
     var u0 = me.user || {};
     var chips = $('dash-chips');
-    if (!chips) return;
-    chips.innerHTML =
-      '<span class="chip">IMF <b>' + esc(me.imf_code || '—') + '</b></span>' +
-      '<span class="chip ' + (me.trial_active ? 'chip--warn' : 'chip--ok') + '">' +
-        (me.trial_active ? 'Essai gratuit — <b>' + esc(me.trial_days_left) + ' j restants</b>' : 'Accès actif') + '</span>' +
-      '<span class="chip">Rôle <b>' + esc(roleLabelForCode(u0.role)) + '</b></span>' +
-      (u0.position ? '<span class="chip">Poste <b>' + esc((posByCode[u0.position] && posByCode[u0.position].label) || roleLabelForCode(u0.position)) + '</b></span>' : '');
-    var tiers = { direction: 0, department: 0, service: 0, agency: 0 };
-    units.forEach(function (u) { tiers[u.kind] = (tiers[u.kind] || 0) + 1; });
-    $('dash-kpis').innerHTML =
-      kpi(units.length, 'Unités organisationnelles', true) +
-      kpi(units.filter(function (u) { return u.kind === 'agency'; }).length, 'Agences') +
-      kpi(users.length, 'Utilisateurs') +
-      kpi(users.filter(function (u) { return u.must_change_password; }).length, 'Mot de passe à créer');
-    // Alerte de synthèse : agents sans responsable hiérarchique.
-    var noSup = users.filter(function (x) { return !x.parent_id; });
-    var crit = noSup.filter(function (x) { var p = posOf(x) || {}; return Boolean(p.needsSupervisor || p.id === 'collectrice'); });
+    if (chips) {
+      var chipsHtml = '<span class="chip">IMF <b>' + esc(me.imf_code || '—') + '</b></span>';
+      if (me.trial_active) chipsHtml += '<span class="chip chip--warn">Essai gratuit — <b>' + esc(me.trial_days_left == null ? '—' : me.trial_days_left) + ' j restants</b></span>';
+      else if (me.imf_status || me.trial_active === false) chipsHtml += '<span class="chip chip--ok">Accès actif</span>';
+      if (u0.role) chipsHtml += '<span class="chip">Rôle <b>' + esc(roleLabelForCode(effRole(u0))) + '</b></span>';
+      var pc = u0.position_code || u0.position;
+      if (pc) chipsHtml += '<span class="chip">Poste <b>' + esc((posByCode[pc] && posByCode[pc].label) || roleLabelForCode(pc)) + '</b></span>';
+      chips.innerHTML = chipsHtml;
+    }
+    // --- Indicateurs : uniquement des valeurs fiables, jamais NaN/undefined --
+    var U = Array.isArray(units) ? units : [];
+    var W = Array.isArray(users) ? users : [];
+    var unitsOk = U.length > 0;
+    var usersOk = Array.isArray(users);
+    var kpis = $('dash-kpis');
+    if (kpis) {
+      kpis.innerHTML = kpi(U.length, 'Unités organisationnelles', true) +
+        kpi(U.filter(function (u) { return u && u.kind === 'agency'; }).length, 'Agences') +
+        kpi(usersOk ? W.length : '—', 'Utilisateurs') +
+        kpi(usersOk ? W.filter(function (u) { return u && u.must_change_password; }).length : '—', 'Mot de passe à créer');
+      kpis.classList.toggle('is-loading', !unitsOk && !usersOk);
+    }
+    // --- Alerte « sans responsable hiérarchique » ---
     var alertBox = $('dash-alert');
     if (alertBox) {
-      alertBox.innerHTML = noSup.length
-        ? '<div class="alert ' + (crit.length ? 'alert--err' : 'alert--warn') + '" style="margin-bottom:14px">' +
-            '<b>' + noSup.length + ' utilisateur' + (noSup.length > 1 ? 's' : '') + ' sans responsable hiérarchique' +
-            (crit.length ? ' (dont ' + crit.length + ' agent' + (crit.length > 1 ? 's' : '') + ' de collecte)' : '') +
-            '.</b> <a href="#users" data-goto-users style="font-weight:700">Ouvrir le personnel pour les rattacher →</a></div>'
-        : '';
-      var gl = alertBox.querySelector('[data-goto-users]');
-      if (gl) gl.addEventListener('click', function (ev) { ev.preventDefault(); switchView('users');
-        try { history.replaceState(null, '', '#users'); } catch (e) {} });
+      if (!usersOk) { alertBox.innerHTML = ''; }
+      else {
+        var noSup = W.filter(function (x) { return x && !x.parent_id; });
+        var crit = noSup.filter(function (x) { var p = (kpiSafe(function () { return posOf(x); }, null)) || {}; return Boolean(p.needsSupervisor || p.id === 'collectrice'); });
+        alertBox.innerHTML = noSup.length
+          ? '<div class="alert ' + (crit.length ? 'alert--err' : 'alert--warn') + '" style="margin-bottom:14px">' +
+              '<b>' + noSup.length + ' utilisateur' + (noSup.length > 1 ? 's' : '') + ' sans responsable hiérarchique' +
+              (crit.length ? ' (dont ' + crit.length + ' agent' + (crit.length > 1 ? 's' : '') + ' de collecte)' : '') +
+              '.</b> <a href="#users" data-goto-users style="font-weight:700">Ouvrir le personnel pour les rattacher →</a></div>'
+          : '';
+        var gl = alertBox.querySelector('[data-goto-users]');
+        if (gl) gl.addEventListener('click', function (ev) { ev.preventDefault(); switchView('users');
+          try { history.replaceState(null, '', '#users'); } catch (e) {} });
+      }
     }
-    var mini = units.slice().sort(function (a, b) { return KIND_ORDER[a.kind] - KIND_ORDER[b.kind]; }).slice(0, 6);
-    $('dash-units-mini').innerHTML = mini.length
-      ? '<table class="tbl"><tbody>' + mini.map(function (u) {
-          return '<tr><td><b>' + esc(u.name) + '</b><br><small style="color:var(--muted)">' + esc((KIND_META[u.kind] || {}).label || u.kind) + '</small></td><td style="text-align:right"><code>' + esc(displayCode(u.code_unit)) + '</code></td></tr>';
-        }).join('') + '</tbody></table>'
-      : '<div class="empty">Aucune unité créée pour le moment. Rendez-vous dans « Organisation ».</div>';
+    // --- Mini-liste des unités ---
+    var miniBox = $('dash-units-mini');
+    if (miniBox) {
+      if (!unitsOk) {
+        dashCardState(miniBox, 'Chargement de l’organisation…', 'Réessayer', function () { refreshDash(); });
+      } else {
+        var KINDS = (typeof KIND_ORDER === 'object' && KIND_ORDER) ? KIND_ORDER : {};
+        var mini = U.slice().sort(function (a, b) {
+          return ((KINDS[a.kind] || 0) - (KINDS[b.kind] || 0)) || String(a.name || '').localeCompare(String(b.name || ''));
+        }).slice(0, 6);
+        miniBox.innerHTML = mini.length
+          ? '<table class="tbl"><tbody>' + mini.map(function (u) {
+              return '<tr><td><b>' + esc(u.name) + '</b><br><small style="color:var(--muted)">' + esc((KIND_META[u.kind] || {}).label || u.kind) + '</small></td><td style="text-align:right" data-code><code>' + esc(displayCode(u.code_unit)) + '</code></td></tr>';
+            }).join('') + '</tbody></table>'
+          : '<div class="empty">Aucune unité créée pour le moment. Rendez-vous dans « Organisation ».</div>';
+      }
+    }
   }
-  function kpi(v, l, dark) { return '<div class="kpi' + (dark ? ' kpi--dark' : '') + '"><b>' + v + '</b><span>' + l + '</span></div>'; }
+  // Rechargement des données du tableau de bord (bouton « Réessayer »).
+  var dashBusy = false;
+  function refreshDash() {
+    if (dashBusy) return Promise.resolve();
+    dashBusy = true;
+    return Promise.all([loadUnits(true), loadUsers(true)]).then(function () { renderDash(); })
+      .catch(function () {}).then(function () { dashBusy = false; });
+  }
+  function kpiVal(v) {
+    if (typeof v === 'number' && isFinite(v)) return String(v);
+    if (typeof v === 'string' && v) return esc(v);
+    return '—';
+  }
+  function kpi(v, l, dark) { return '<div class="kpi' + (dark ? ' kpi--dark' : '') + '"><b>' + kpiVal(v) + '</b><span>' + esc(l) + '</span></div>'; }
 
   // ----- Organisation (arbre) -----
-  function loadUnits() {
-    var root = $('org-tree');
+  function loadUnits(silent) {
+    var root = silent ? null : $('org-tree');
     // État visible immédiat au premier chargement (arbre encore vide), pour ne
     // pas laisser un « Chargement… » statique donner l'impression d'un blocage.
     if (root && !units.length) root.innerHTML = '<div class="empty">Chargement de l’organisation…</div>';
@@ -217,7 +280,11 @@
       // transformer l'ouverture de l'onglet Organisation en « Une erreur est
       // survenue ».
       try { renderDash(); } catch (e) { /* dash non bloquant */ }
-    }).catch(function (e) { if (!guard(e)) { renderUnitsError(e); notify(fr(e), 'err'); } });
+    }).catch(function (e) {
+      if (guard(e)) return;
+      if (silent) throw e;
+      renderUnitsError(e); notify(fr(e), 'err');
+    });
   }
   // Au lieu de laisser le libellé « Chargement… » tourner indéfiniment lorsque
   // l'appel échoue, on affiche la raison et un bouton « Réessayer ».
@@ -247,6 +314,29 @@
     return (m ? m.label : String(u.kind || 'Unité')) + ' · ' + u.name;
   }
 
+  // ---- Conseil d'Administration (vague 28) -------------------------------
+  // L'unité Conseil d'Administration est la seule racine qui ne soit pas une
+  // Direction : son étiquette courte est donc « CA ».
+  function normCA(s) {
+    return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+  function isCA(u) {
+    if (!u) return false;
+    if (unitKey(u) === 'CA') return true;
+    return normCA(u.name).indexOf('conseil d administration') >= 0;
+  }
+  function shortKind(u) {
+    if (isCA(u)) return 'CA';
+    return String((u && u.kind) || '?').slice(0, 3).toUpperCase();
+  }
+  function caUnit() {
+    var list = units.filter(isCA);
+    if (!list.length) return null;
+    var preferred = list.filter(function (x) { return unitKey(x) === 'CA'; })[0];
+    return preferred || list[0];
+  }
+
   var orgQuery = '';
   var orgOpen = {};              // unités dont les sous-unités sont dépliées
 
@@ -255,7 +345,10 @@
     if (!root) return;
     if (!units.length) {
       root.classList.remove('tree--dense');
-      root.innerHTML = '<div class="empty">Aucune unité. Créez d’abord la direction, puis les départements, services et agences.</div>';
+      root.innerHTML = '<div class="empty">Aucune unité. Créez d’abord le Conseil d’Administration et la Direction Générale, puis les départements, services et agences.' +
+        '<br><button class="btn btn--primary btn--sm" id="org-seed" type="button" style="margin-top:10px">Générer la structure de base</button></div>';
+      var sb = $('org-seed');
+      if (sb) sb.addEventListener('click', seedStructure);
       return;
     }
     // Parcours robuste : une unité dont le parent est introuvable (parent
@@ -290,8 +383,11 @@
       if (seen[u.id]) return '';
       seen[u.id] = true;
       var kids = kidsOf(u.id);
-      var m = KIND_META[u.kind] || { label: u.kind || 'Unité', short: String(u.kind || '?').slice(0, 3).toUpperCase() };
-      var showKids = kids.length && (orgQuery ? true : (depth === 0 || orgOpen[u.id]));
+      var m = KIND_META[u.kind] || { label: u.kind || 'Unite', short: shortKind(u) };
+      // La carte « Conseil d'Administration » est repliée par défaut (elle n'a
+      // qu'un enfant) pour que la Direction Générale reste visible d'emblée.
+      var autoOpen = depth === 0 && !isCA(u);
+      var showKids = kids.length && (orgQuery ? true : (autoOpen || orgOpen[u.id]));
       var collapsed = kids.length && !showKids;
       var canAdd = u.kind !== 'agency';
       var sub = m.label + (u.city ? ' · ' + esc(u.city) : '') + ' · ' + esc(displayCode(u.code_unit));
@@ -324,7 +420,7 @@
         '<button class="btn btn--ghost btn--sm" id="org-expand">Tout déplier</button>' +
         '<button class="btn btn--ghost btn--sm" id="org-collapse">Tout replier</button>' +
         '<div class="org-search"><input id="org-filter" type="search" placeholder="Rechercher une unité, une ville…" value="' + esc(orgQuery) + '" autocomplete="off"></div>' +
-      '</div>' +
+      '</div>' + caBanner() +
       (html || '<div class="org-nomatch">Aucune unité ne correspond à « ' + esc(orgQuery) + ' ».</div>');
 
     var f = $('org-filter');
@@ -334,6 +430,15 @@
       renderTree();
       var nf = $('org-filter');
       if (nf) { nf.focus(); try { nf.setSelectionRange(nf.value.length, nf.value.length); } catch (_) {} }
+    });
+    // Boutons d'action de l'arbre : un seul écouteur par bouton, quelle que soit
+    // la fréquence de re-rendu (avant : un écouteur ajouté à chaque rendu, d'où
+    // des appels API en double).
+    ['org-ca-create','org-seed2'].forEach(function (id) {
+      var el = $(id); if (!el) return;
+      var handler = id === 'org-ca-create' ? createCAUnit : seedStructure;
+      el._teeboBound = handler;
+      if (!el.dataset.bound) { el.dataset.bound = '1'; el.addEventListener('click', function (ev) { el._teeboBound(ev); }); }
     });
     var ex = $('org-expand'); if (ex) ex.addEventListener('click', function () {
       units.forEach(function (u) { orgOpen[u.id] = true; }); renderTree();
@@ -404,6 +509,38 @@
       }).catch(function (e) { self.disabled = false; if (!guard(e)) notify(fr(e), 'err'); });
     });
   }
+  // Rappel visible : le PCA se rattache au Conseil d'Administration.
+  function caBanner() {
+    if (caUnit()) return '';
+    return '<div class="org-ca">' +
+      '<div><b>Conseil d’Administration</b><br><small>Unité de rattachement du Président du Conseil d’Administration (PCA), au-dessus de la Direction Générale.</small></div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+        '<button class="btn btn--primary btn--sm" id="org-ca-create" type="button">Créer le Conseil d’Administration</button>' +
+        '<button class="btn btn--ghost btn--sm" id="org-seed2" type="button">Générer la structure de base</button>' +
+      '</div></div>';
+  }
+  function seedStructure(ev) {
+    var btn = (ev && ev.currentTarget) || null;
+    if (!confirm('Créer le Conseil d’Administration, la Direction Générale, les Départements et Services de base ? Vous pourrez tout modifier ensuite.')) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Génération...'; }
+    api('/api/v1/structure/seed', 'POST', {}).then(function (d) {
+      notify((d && d.units ? d.units.length : 0) + ' unités de base créées.', 'ok'); return loadUnits();
+    }).catch(function (e) { if (btn) { btn.disabled = false; btn.textContent = 'Générer la structure de base'; } if (!guard(e)) notify(fr(e) || srv(e), 'err'); });
+  }
+  function createCAUnit(ev) {
+    var btn = (ev && ev.currentTarget) || null;
+    if (btn) { btn.disabled = true; btn.textContent = 'Création...'; }
+    api('/api/v1/units', 'POST', { kind: 'direction', name: 'Conseil d’Administration', parent_id: null })
+      .then(function () { notify('Conseil d’Administration créé.', 'ok'); return loadUnits(); })
+      .catch(function (e) {
+        if (guard(e)) return;
+        if (btn) { btn.disabled = false; btn.textContent = 'Creer le Conseil d’Administration'; }
+        // Deja presente sous un autre libelle : on recharge, l'encart disparait.
+        notify(fr(e) || srv(e), 'err');
+        return loadUnits().catch(function () {});
+      });
+  }
+
   function unitModal(parent) {
     var kinds = parent
       ? Object.keys(KIND_META).filter(function (k) { return KIND_ORDER[k] === KIND_ORDER[parent.kind] + 1; })
@@ -474,9 +611,13 @@
   }
 
   // ----- Personnel -----
-  function loadUsers() {
+  function loadUsers(silent) {
     return api('/api/v1/users').then(function (d) { users = d.users || []; renderUsers(); renderDash(); })
-      .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+      .catch(function (e) {
+        if (guard(e)) return;
+        if (silent) throw e;
+        notify(fr(e), 'err');
+      });
   }
   // Alerte visible : agents qui n'ont aucun responsable hiérarchique.
   // Un agent de collecte SANS responsable est un cas bloquant (sa collecte ne
@@ -694,8 +835,20 @@
     return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9]+/g, ' ').trim();
   }
+  // Le PCA se rattache au Conseil d'Administration (unite dediee, vague 28).
+  function homeUnitForPosition(p) {
+    if (!p) return '';
+    var lbl = normCA(p.label || '');
+    if (p.code === 'POS_PCA' || lbl.indexOf('president du conseil d administration') === 0) {
+      var ca = caUnit();
+      return ca ? ca.id : '';
+    }
+    return '';
+  }
   function autoUnitForPosition(p) {
     if (!p) return '';
+    var home = homeUnitForPosition(p);
+    if (home) return home;
     var byKey = function (kind, key) {
       var u = units.find(function (x) { return x.kind === kind && unitKey(x) === key; });
       return u ? u.id : '';
@@ -838,9 +991,9 @@
   // ----- Sécurité -----
   function renderSession() {
     var rows = [['Nom', me.user.full_name], ['Identifiant', me.user.code_user], ['E-mail', me.user.email],
-      ['Rôle', ROLE_LABEL[me.user.role] || me.user.role], ['Mot de passe défini le', me.password_set_at ? new Date(me.password_set_at).toLocaleString('fr-FR') : '—'],
+      ['Rôle', roleLabelForCode(effRole(me.user))], ['Mot de passe défini le', me.password_set_at ? new Date(me.password_set_at).toLocaleString('fr-FR') : '—'],
       ['Expiration du mot de passe', me.password_expires_at ? new Date(me.password_expires_at).toLocaleString('fr-FR') : '—'],
-      ['Déconnexion auto', 'après 30 minutes d’inactivité']];
+      ['Déconnexion auto', 'après 60 minutes d’inactivité']];
     $('session-info').innerHTML = rows.map(function (r) { return '<div><dt style="font-size:12px;color:var(--muted)">' + r[0] + '</dt><dd style="font-weight:600">' + esc(r[1]) + '</dd></div>'; }).join('');
     render2fa();
   }
@@ -1515,44 +1668,83 @@
   }
 
   // ----- Démarrage -----
-  api('/api/v1/auth/me').then(function (d) {
-    me = d;
-    if (d.password_change_required) { window.location.assign('/login.html'); return; }
-    $('u-name').textContent = d.user.full_name;
-    $('u-code').textContent = d.user.code_user + ' · ' + (d.imf_code || '');
-    // Paramètres IMF : accessible à l'admin et à la direction.
-    var canSee = ['admin_imf', 'direction'].indexOf(d.user.role) >= 0;
+  // Objectif : un tableau de bord AFFICHÉ TOUT DE SUITE, puis complété.
+  // 1) Rendu immédiat du squelette (plus d'attente devant un écran vide).
+  // 2) /me (indispensable) puis unités + utilisateurs EN PARALLÈLE.
+  // 3) Modules secondaires (essai) en arrière-plan, jamais bloquants.
+  var BOOT = { units: false, users: false };
+
+  function bootProgress() {
+    var box = $('dash-kpis');
+    if (!box) return;
+    var txt = [];
+    if (!BOOT.units) txt.push('organisation');
+    if (!BOOT.users) txt.push('personnel');
+    if (txt.length) box.setAttribute('data-loading', txt.join(' · '));
+    else box.removeAttribute('data-loading');
+  }
+
+  function setupMe(d) {
+    me = d || { user: {}, permissions: [] };
+    if (me.password_change_required) { window.location.assign('/login.html'); return false; }
+    var u = me.user || {};
+    var nU = $('u-name'); if (nU) nU.textContent = u.full_name || '—';
+    var nC = $('u-code'); if (nC) nC.textContent = (u.code_user || '—') + (me.imf_code ? ' · ' + me.imf_code : '');
+    // Paramètres IMF : accessible à l'admin, à la direction et au PCA.
+    var canSee = ['admin_imf', 'direction', 'superadmin', 'pca_admin'].indexOf(effRole(u)) >= 0;
     var navS = $('nav-settings'); if (navS) navS.hidden = !canSee;
     var navD = $('nav-dispatches'); if (navD) navD.hidden = !canSee;
     var navP = $('nav-profiles'); if (navP) navP.hidden = !canSee;
     // Validation finale des crédits : réservée aux postes habilités.
-    var canFinal = !!d.can_validate_credit_final || canSee;
+    var canFinal = !!me.can_validate_credit_final || canSee;
     var navC = $('nav-credits'); if (navC) navC.hidden = !canFinal;
-    // VAGUE 15 : menus opérationnels, affichés selon les habilitations du poste.
-    setupBankingNav();
-    initSettingsHandlers();
+    // Menus opérationnels selon les habilitations du poste.
+    try { setupBankingNav(); } catch (e) {}
+    try { initSettingsHandlers(); } catch (e) {}
     var bnP = $('btn-new-perm'); if (bnP) bnP.addEventListener('click', openNewPermModal);
     var bnPos = $('btn-new-position'); if (bnPos) bnPos.addEventListener('click', openNewPositionModal);
     var bnCr = $('btn-credits-refresh'); if (bnCr) bnCr.addEventListener('click', loadCreditsQueue);
-    return Promise.all([loadUnits(), loadUsers(), loadTrial()]);
-  }).then(function () {
-    renderDash(); renderSession();
-    // 2FA obligatoire : si l'enrôlement est signalé comme requis, on ouvre
-    // directement « Mon accès » et on invite l'utilisateur à l'activer.
-    var pending = false;
-    try { pending = sessionStorage.getItem('teebo_2fa_enroll') === '1'; } catch (e) {}
-    if (pending) { try { sessionStorage.removeItem('teebo_2fa_enroll'); } catch (e) {}
-      switchView('security');
-      notify('Activation de la double authentification requise pour continuer.', 'info');
-      return;
-    }
-    // Lien direct (ex. « /app#org » depuis une autre page) : on ouvre
-    // l'onglet demandé au lieu de retomber systématiquement sur le tableau de bord.
-    var wanted = '';
-    try { wanted = String(location.hash || '').replace(/^#/, ''); } catch (e) {}
-    switchView(VIEWS.indexOf(wanted) >= 0 ? wanted : 'dash');
-  })
-    .catch(function (e) { if (!guard(e)) notify(fr(e), 'err'); });
+    return true;
+  }
+
+  function boot() {
+    renderDash();
+    bootProgress();
+    api('/api/v1/auth/me').then(function (d) {
+      if (!setupMe(d)) return null;
+      // Catalogue des postes : en tâche de fond, sans retarder l'affichage.
+      loadPositions().catch(function () {});
+      renderDash();
+      // Données du tableau de bord en PARALLÈLE (avant : l'une après l'autre).
+      var pUnits = loadUnits(true).then(function () { BOOT.units = true; })
+        .catch(function (e) { BOOT.units = true; if (!guard(e)) notify(fr(e), 'err'); });
+      var pUsers = loadUsers(true).then(function () { BOOT.users = true; })
+        .catch(function (e) { BOOT.users = true; if (!guard(e)) notify(fr(e), 'err'); });
+      return Promise.all([pUnits, pUsers]);
+    }).then(function () {
+      renderDash(); bootProgress(); renderSession();
+      // Bandeau d'essai : jamais bloquant pour l'affichage.
+      loadTrial();
+      var pending = false;
+      try { pending = sessionStorage.getItem('teebo_2fa_enroll') === '1'; } catch (e) {}
+      if (pending) {
+        try { sessionStorage.removeItem('teebo_2fa_enroll'); } catch (e) {}
+        switchView('security');
+        notify('Activation de la double authentification requise pour continuer.', 'info');
+        return;
+      }
+      var wanted = '';
+      try { wanted = String(location.hash || '').replace(/^#/, ''); } catch (e) {}
+      switchView(VIEWS.indexOf(wanted) >= 0 ? wanted : 'dash');
+    }).catch(function (e) {
+      if (guard(e)) return;
+      notify(fr(e), 'err');
+      // Même si /me échoue, la page reste utilisable avec « Réessayer ».
+      var k = $('dash-kpis');
+      if (k) dashCardState(k, fr(e), 'Réessayer', function () { window.location.reload(); });
+    });
+  }
+  boot();
 
   // ----- Essai & échéances : bandeau J25 + blocage J31 -----
   function loadTrial() {
@@ -1584,7 +1776,7 @@
   /* ===== VAGUE 15 : modules opérationnels (clients, caisse, coffre, compta, recouvrement, audit) ===== */
   function has(p) {
     if (!me) return false;
-    if (['admin_imf', 'direction'].indexOf(me.user.role) >= 0) return true;
+    if (['admin_imf', 'direction', 'superadmin', 'pca_admin'].indexOf(effRole(me.user)) >= 0) return true;
     return Array.isArray(me.permissions) && me.permissions.indexOf(p) >= 0;
   }
   function digits(s) { return String(s == null ? '' : s).replace(/[^0-9]/g, ''); }
