@@ -45,7 +45,13 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       imgSrc: ["'self'", 'data:'],
-      styleSrc: ["'self'"],
+      // CORRECTIF 13/11/2026-E bis — les pages HTML servies par l'API
+      // (page d'information /, page « Export indisponible », 404, redirections)
+      // contiennent des styles INLINE. Avec « style-src 'self' » seul, le
+      // navigateur BLOQUAIT ces styles : pages affichées sans mise en forme,
+      // impression illisible. On autorise donc les styles inline (le texte
+      // reste échappé, aucun script inline n'est admis).
+      styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'"],
       connectSrc: ["'self'"],
       frameAncestors: ["'none'"],
@@ -145,15 +151,31 @@ app.get('/ready', async (_req, res) => {
   // le service). Ne bloque pas : 3 s maximum.
   let base = 'injoignable';
   let tables = 0;
+  let manquantes = [];
   try {
     await Promise.race([q('SELECT 1'), new Promise((_, rj) => setTimeout(() => rj(new Error('timeout')), 3000))]);
     base = 'connectee';
     const t = await q("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema='public'");
     tables = t.rows[0].n;
+    // CORRECTIF 13/11/2026-E bis : /ready ne dit plus seulement « prêt ou
+    // pas », il NOMME les tables essentielles absentes. C'est ce qui manquait
+    // pour comprendre pourquoi un écran renvoyait une erreur 500
+    // (« relation ... does not exist ») alors que /healthz répondait ok.
+    try {
+      const ess = ['imf', 'app_user', 'client', 'session', 'detenteurs_capital',
+        'mouvements_titres', 'parametres_capital', 'ag_quorum', 'sessions_et_pv'];
+      const r = await q(
+        "SELECT t.n AS nom, (SELECT 1 FROM information_schema.tables i " +
+        "WHERE i.table_schema='public' AND i.table_name=t.n) AS present " +
+        'FROM unnest($1::text[]) AS t(n)', [ess]);
+      manquantes = r.rows.filter((x) => !x.present).map((x) => x.nom);
+    } catch (e) { /* le détail est facultatif : ne bloque pas /ready */ }
   } catch (e) { base = 'injoignable (' + (e && e.message) + ')'; }
-  const pret = base === 'connectee' && tables > 10;
+  const pret = base === 'connectee' && tables > 10 && manquantes.length === 0;
   res.status(pret ? 200 : 503).json({
-    pret, base, tables, migration: etat.migration, erreur: etat.erreur, depuis: etat.demarre
+    pret, base, tables,
+    ...(manquantes.length ? { tables_manquantes: manquantes } : {}),
+    migration: etat.migration, erreur: etat.erreur, depuis: etat.demarre
   });
 });
 

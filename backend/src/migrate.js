@@ -123,18 +123,31 @@ async function main() {
       continue;
     }
     const sql = fs.readFileSync(schemaPath, 'utf8');
+    // CORRECTIF 13/11/2026-E bis : chaque fichier tourne dans SA PROPRE
+    // transaction. Avant, un script sans BEGIN/COMMIT pouvait laisser une
+    // requete en erreur dans la session : toutes les instructions suivantes
+    // echouaient alors en cascade (« current transaction is aborted »), et
+    // des tables valides n'etaient jamais creees. Desormais un echec isole
+    // reste isole. Un script venu d'ailleurs sans BEGIN reste couvert :
+    // le savepoint de debut de transaction suffit.
+    const client = await pool.connect();
     try {
-      await pool.query(sql);
+      await client.query('BEGIN');
+      await client.query(sql);
+      await client.query('COMMIT');
       console.log('Schéma appliqué : ' + file);
     } catch (e) {
+      try { await client.query('ROLLBACK'); } catch (_) { /* session déjà fermée */ }
       if (/already exists/.test(e.message)) {
         console.log('Schéma déjà présent (' + file + '), on continue.');
       } else {
-        // Un schema qui echoue ne doit PLUS faire echouer le demarrage :
-        // le serveur se met en ligne et le rattrapage reprendra la suite.
-        console.error('!! Schéma en echec (' + file + ') : ' + e.message);
-        continue;
+        // Un schema qui echoue ne doit PAS faire echouer le demarrage :
+        // le serveur se met en ligne, l'etat reste visible dans /ready,
+        // et les scripts suivants sont quand meme appliques.
+        console.error('!! Schéma en échec (' + file + ') : ' + e.message);
       }
+    } finally {
+      client.release();
     }
   }
 
