@@ -558,7 +558,8 @@ export async function logExport(imfId, userId, type, details) {
   //     500 au lieu de produire le fichier) ;
   //  2) si la table ou sa contrainte divergente subsiste en base, la trace est
   //     simplement abandonnée après un avertissement dans les journaux.
-  const TYPES = ['RAPPORT_CAC_PDF', 'RAPPORT_CAC_EXCEL', 'PACK_INSPECTION_ZIP'];
+  const TYPES = ['RAPPORT_CAC_PDF', 'RAPPORT_CAC_EXCEL', 'PACK_INSPECTION_ZIP',
+    'FEUILLE_PRESENCE_AG_PDF', 'FEUILLE_PRESENCE_AG_EXCEL'];
   const safeType = TYPES.includes(type) ? type : 'PACK_INSPECTION_ZIP';
   try {
     await q(`INSERT INTO gouvernance_export_log (imf_id, type_export, details, created_by) VALUES ($1,$2,$3::jsonb,$4)`,

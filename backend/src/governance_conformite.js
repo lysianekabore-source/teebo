@@ -761,6 +761,9 @@ gcRouter.get('/governance/conformite/dashboard', async (req, res, next) => {
 import {
   collectDossier, rapportCacHtml, rapportCacXlsx, collectPackInspection, buildZip, logExport
 } from './governance_exports.js';
+import {
+  collectFeuillePresence, feuillePresenceHtml, feuillePresenceXlsx
+} from './governance_presence.js';
 
 const EXPORT_ROLES = ['superadmin', 'pca_admin', 'admin_imf', 'direction', 'finance', 'audit'];
 const guardExport = (req, res, next) => (Boolean(req.user) && rolesOf(req.user.role).some((x) => EXPORT_ROLES.includes(x))
@@ -781,6 +784,8 @@ gcRouter.get('/governance/exports/rapport-cac.pdf', guardExport, async (req, res
     // de l'application est assouplie pour cette seule réponse, sans script inline.
     setDocumentCsp(res, { allowFrame: true });
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Content-Disposition', 'inline; filename="' + safeName(d.institution.raison_sociale || d.imf.name)
+      + '_Feuille-presence-AG_' + String(d.session.date_session || today()).slice(0, 10) + '.pdf"');
     res.setHeader('Cache-Control', 'no-store');
     res.send(html);
   } catch (e) { next(e); }
@@ -794,6 +799,48 @@ gcRouter.get('/governance/exports/rapport-cac.xlsx', guardExport, async (req, re
     await logExport(req.user.imf_id, req.user.id, 'RAPPORT_CAC_EXCEL', { institution: d.inst.raison_sociale || d.imf.name });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="' + safeName(d.inst.raison_sociale || d.imf.name) + '_Rapport-special-CAC_' + today() + '.xlsx"');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(buf);
+  } catch (e) { next(e); }
+});
+
+// ---------------------------------------------------------------------------
+// FEUILLE DE PRÉSENCE D'AG — PDF (A4 paysage imprimable) et Excel
+// Le quorum imprimé est celui du moteur (recalculerQuorum) : même valeur qu'à
+// l'écran. Le type d'export est tracé dans gouvernance_export_log (vague 32).
+// ---------------------------------------------------------------------------
+gcRouter.get('/governance/exports/feuille-presence.pdf', guardExport, async (req, res, next) => {
+  try {
+    const d = await collectFeuillePresence(req.user.imf_id, txt(req.query.session_id));
+    if (d.error) return res.status(404).json({ error: d.error });
+    const html = feuillePresenceHtml(d);
+    await logExport(req.user.imf_id, req.user.id, 'FEUILLE_PRESENCE_AG_PDF', {
+      session: d.session.id,
+      date_session: String(d.session.date_session || '').slice(0, 10),
+      lignes: d.lignes.length
+    });
+    setDocumentCsp(res, { allowFrame: true });
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Content-Disposition', 'inline; filename="' + safeName(d.institution.raison_sociale || d.imf.name)
+      + '_Feuille-presence-AG_' + String(d.session.date_session || today()).slice(0, 10) + '.pdf"');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(html);
+  } catch (e) { next(e); }
+});
+
+gcRouter.get('/governance/exports/feuille-presence.xlsx', guardExport, async (req, res, next) => {
+  try {
+    const d = await collectFeuillePresence(req.user.imf_id, txt(req.query.session_id));
+    if (d.error) return res.status(404).json({ error: d.error });
+    const buf = feuillePresenceXlsx(d);
+    await logExport(req.user.imf_id, req.user.id, 'FEUILLE_PRESENCE_AG_EXCEL', {
+      session: d.session.id,
+      date_session: String(d.session.date_session || '').slice(0, 10),
+      lignes: d.lignes.length
+    });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + safeName(d.institution.raison_sociale || d.imf.name)
+      + '_Feuille-presence-AG_' + String(d.session.date_session || today()).slice(0, 10) + '.xlsx"');
     res.setHeader('Cache-Control', 'no-store');
     res.end(buf);
   } catch (e) { next(e); }

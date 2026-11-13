@@ -31,7 +31,20 @@ async function main() {
   // creees, et les routes renvoyaient une erreur 500. On lit desormais le
   // dossier db/ : toute nouvelle version de schema est appliquee
   // automatiquement, dans l'ordre numerique.
-  const dbDir = path.resolve(__dirname, '../../db');
+  // Emplacements possibles du dossier db/ :
+  //   1) /app/db            (image Docker : db/ copie a la racine de l'image)
+  //   2) ../db              (paquet arborescent backend/ + db/)
+  //   3) ../../db           (ancienne arborescence backend/src + db/)
+  // Le premier dossier contenant des fichiers schema*.sql est retenu.
+  const candidates = [
+    process.env.TEEBO_DB_DIR,
+    path.resolve(process.cwd(), 'db'),
+    path.resolve(__dirname, '../../../db'),
+    path.resolve(__dirname, '../../db')
+  ].filter(Boolean);
+  const dbDir = candidates.find((d) => {
+    try { return fs.readdirSync(d).some((f) => /^schema.*\.sql$/i.test(f)); } catch (e) { return false; }
+  }) || candidates[2];
   const numOf = (f) => {
     const m = /^schema(?:_v(\d+))?\.sql$/i.exec(f);
     return m ? Number(m[1] || 1) : null;
@@ -45,11 +58,11 @@ async function main() {
     console.error('!! Dossier db/ illisible : ' + (e && e.message));
   }
   if (!schemaFiles.length) {
-    schemaFiles = ['schema.sql', 'schema_v3.sql', 'schema_v30.sql', 'schema_v31.sql', 'schema_v32.sql'];
+    schemaFiles = ['schema.sql', 'schema_v30.sql', 'schema_v31.sql', 'schema_v32.sql', 'schema_v33.sql'];
   }
   console.log('Schemas a appliquer : ' + schemaFiles.join(', '));
   for (const file of schemaFiles) {
-    const schemaPath = path.resolve(__dirname, '../../db/' + file);
+    const schemaPath = path.resolve(dbDir, file);
     if (!fs.existsSync(schemaPath)) {
       console.log('Schéma absent, ignoré : ' + file);
       continue;
