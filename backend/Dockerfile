@@ -31,7 +31,20 @@ COPY backend/src ./backend/src
 COPY db ./db
 
 # --- Frontend statique servi par Express --------------------------------
-COPY frontend ./frontend
+# Ce paquet-ci est a plat : les pages (index.html, app.html, assets/…) sont
+# a la RACINE. On les copie explicitement dans ./frontend (jamais « COPY . »
+# qui recopierait backend/, db/ et les fichiers de documentation).
+COPY index.html ./frontend/
+COPY app.html ./frontend/
+COPY login.html ./frontend/
+COPY terrain.html ./frontend/
+COPY demo.html ./frontend/
+COPY 404.html ./frontend/
+COPY manifest.webmanifest ./frontend/
+COPY sw.js ./frontend/
+COPY _redirects ./frontend/
+COPY assets ./frontend/assets
+COPY docs ./frontend/docs
 
 ENV NODE_ENV=production
 ENV PORT=3000

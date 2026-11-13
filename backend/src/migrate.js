@@ -25,7 +25,29 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
   // Applique les schémas dans l'ordre : socle puis extensions (VAGUE 7).
-  const schemaFiles = ['schema.sql', 'schema_v3.sql', 'schema_v4.sql', 'schema_v5.sql', 'schema_v6.sql', 'schema_v7.sql', 'schema_v8.sql', 'schema_v9.sql', 'schema_v10.sql', 'schema_v11.sql', 'schema_v12.sql', 'schema_v13.sql', 'schema_v14.sql', 'schema_v15.sql', 'schema_v16.sql', 'schema_v17.sql', 'schema_v18.sql', 'schema_v19.sql', 'schema_v20.sql', 'schema_v21.sql', 'schema_v22.sql', 'schema_v23.sql', 'schema_v24.sql', 'schema_v25.sql', 'schema_v26.sql', 'schema_v27.sql', 'schema_v28.sql', 'schema_v29.sql', 'schema_v30.sql'];
+  // CORRECTIF VAGUE 34 : la liste etait ecrite a la main et s'arretait a
+  // schema_v30. Les tables de l'actionnariat/societariat (detenteurs_capital,
+  // mouvements_titres, parametres_capital, ag_quorum…) n'etaient donc JAMAIS
+  // creees, et les routes renvoyaient une erreur 500. On lit desormais le
+  // dossier db/ : toute nouvelle version de schema est appliquee
+  // automatiquement, dans l'ordre numerique.
+  const dbDir = path.resolve(__dirname, '../../db');
+  const numOf = (f) => {
+    const m = /^schema(?:_v(\d+))?\.sql$/i.exec(f);
+    return m ? Number(m[1] || 1) : null;
+  };
+  let schemaFiles = [];
+  try {
+    schemaFiles = fs.readdirSync(dbDir)
+      .filter((f) => numOf(f) != null)
+      .sort((a, b) => numOf(a) - numOf(b));
+  } catch (e) {
+    console.error('!! Dossier db/ illisible : ' + (e && e.message));
+  }
+  if (!schemaFiles.length) {
+    schemaFiles = ['schema.sql', 'schema_v3.sql', 'schema_v30.sql', 'schema_v31.sql', 'schema_v32.sql'];
+  }
+  console.log('Schemas a appliquer : ' + schemaFiles.join(', '));
   for (const file of schemaFiles) {
     const schemaPath = path.resolve(__dirname, '../../db/' + file);
     if (!fs.existsSync(schemaPath)) {
