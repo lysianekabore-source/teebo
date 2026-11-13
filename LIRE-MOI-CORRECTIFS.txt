@@ -237,3 +237,85 @@ SI LE CLIGNOTEMENT PERSISTE APRES MISE EN LIGNE (ancien cache du navigateur)
   2. F12 > onglet Application > Service Workers > Unregister, puis Storage >
      Clear site data, et recharger.
   3. Desinstaller l'application installee (PWA) puis la reinstaller.
+
+NOUVEAU 13/11/2026 (soir) — VAGUE 29 : GOUVERNANCE, CONFORMITÉ PRUDENTIELLE,
+RISQUES, PCA ET REPORTING  +  CORRECTIF « Créer et envoyer le code »
+=========================================================================
+
+A. CORRECTIF URGENT — le bouton « Créer et envoyer le code » ne répondait pas
+-------------------------------------------------------------------------
+Cause : plusieurs défauts se cumulaient à la création d'un utilisateur.
+  1. Le bouton restait bloqué (« this » perdu dans la chaîne de promesses) et
+     une erreur survenue pendant le clic n'affichait RIEN : la modale semblait
+     figée. Un bandeau rouge s'affiche désormais DANS la modale, avec le motif
+     exact en français.
+  2. Les postes n'étaient pas encore chargés à l'ouverture : la liste
+     « Poste occupé » pouvait être vide et le refus se faisait en silence.
+     La liste se recharge automatiquement dès que les postes arrivent.
+  3. Le responsable hiérarchique et l'unité de rattachement sont maintenant
+     pré-remplis DÈS l'ouverture (et non seulement après un changement).
+  4. Poste « Président du Conseil d'Administration (PCA) » : le socle lui
+     donne le rôle technique « superadmin » (réservé à l'éditeur), d'où un
+     refus. Depuis l'espace d'une IMF, ce poste est créé en « pca_admin »
+     (administrateur de l'institution) — comme le fait la connexion.
+  5. Côté serveur : validation explicite (nom, e-mail valide, poste existant)
+     avec message clair et enregistrement du refus dans le journal d'audit
+     (action user.create.refused) pour diagnostic.
+  6. Si le réseau coupe pendant la réponse : message « Création incertaine,
+     vérifiez la liste » au lieu d'un échec muet.
+  > Si le bouton ne répond toujours pas : ouvrez la console du navigateur
+    (F12 > Console), réessayez, et envoyez la ligne rouge affichée.
+
+B. NOUVEAU — trois blocs dans le module « Gouvernance »
+-------------------------------------------------------------------------
+Onglet 1 — Apparentés & conventions (cohérence parts sociales / actions)
+  * Registre des personnes apparentées (lien de parenté ou de société,
+    rattachement à un administrateur, vérification).
+  * Situation des crédits aux apparentés en % des fonds propres effectifs
+    (FPE), plafond individuel et plafond global, alerte de dépassement.
+  * Conventions réglementées : référence, type, montant, autorisation
+    préalable, EXCLUSION DU VOTE de l'administrateur intéressé, information
+    du Commissaire aux Comptes.
+  * Un crédit accordé à un apparenté est détecté automatiquement ; une
+    approbation sans convention autorisée est bloquée (erreur 409).
+  * En coopérative : « parts sociales », 1 membre = 1 voix.
+    En société anonyme : « actions », seuil d'information des participations.
+
+Onglet 2 — Risques, PCA & incidents
+  * Cartographie des risques avec matrice 4 x 4 (probabilité x impact),
+    cliquable, score de risque résiduel et seuil paramétrable.
+  * Plans de continuité (PCA/PRA/PGI) : revue due au-delà du délai fixé
+    (365 jours par défaut), statut automatique « révision requise » ;
+    alerte si aucun exercice de simulation depuis plus de 12 mois.
+  * Incidents majeurs : gravité, pertes, notification BCEAO avec délai
+    (24 h par défaut) et alerte rouge si la notification est en retard.
+  * Taux de formation LBC/FT du personnel (objectif 80 %).
+
+Onglet 3 — Conformité & reporting
+  * Échéancier réglementaire par autorité (BCEAO, Commission Bancaire,
+    Ministère des Finances, CENTIF...) avec rappels automatiques
+    J-30 / J-15 / J-5 et alerte rouge « échéance dépassée » sans récépissé.
+  * Boutons d'export :
+      - Rapport spécial du Commissaire aux Comptes (PDF, imprimable)
+      - Rapport CAC (Excel .xlsx)
+      - Pack Inspection « Commission Bancaire » (.ZIP) : 7 dossiers normés
+        01_GOUVERNANCE, 02_CONVENTIONS_APPARENTES, 03_RISQUES_PCA,
+        04_CONFORMITE_LBCFT, 05_CREDITS, 06_CLIENTS, 07_ETATS_FINANCIERS
+        + 00_SOMMAIRE.
+
+C. BASE DE DONNÉES
+-------------------------------------------------------------------------
+Nouveau script db/schema_v29.sql, appliqué AUTOMATIQUEMENT au démarrage du
+serveur (migration idempotente : on peut redémarrer sans risque).
+
+D. À CONFIRMER AVANT PRODUCTION
+-------------------------------------------------------------------------
+Les plafonds (% des fonds propres), les seuils d'information et les délais
+(J-30/15/5, 365 jours, 24 h) sont PARAMÉTRABLES par pays et par IMF, mais
+leurs VALEURS doivent être confirmées auprès de la BCEAO / de la Commission
+Bancaire avant une mise en production.
+
+E. LIMITE DE VALIDATION
+-------------------------------------------------------------------------
+Code vérifié en syntaxe, exports ZIP/Excel testés hors ligne. Aucun essai
+réel sur Render ni dans un navigateur n'a été effectué.
