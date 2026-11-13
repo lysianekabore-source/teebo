@@ -16,15 +16,23 @@
 #
 # Le contexte de build est LE DOSSIER backend/ : aucun fichier du site n'est
 # recopié (c'est Netlify qui sert les pages).
-FROM node:20-alpine
+# CORRECTIF 13/11/2026-C — « ENOENT stat '/frontend/index.html' » et
+# « ReferenceError: req is not defined » : le serveur cherchait un dossier
+# /frontend inexistant et sa gestion d'erreurs plantait. Corrigé dans
+# src/server.js (détection du dossier + redirection vers le site Netlify).
+#
+# On force node:20-bookworm-slim (Debian) : l'image alpine est très lente à
+# démarrer sous Render et a provoqué des sorties prématurées.
+FROM node:20-bookworm-slim
 
 WORKDIR /app
 
-RUN apk add --no-cache curl
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
 # --- Dépendances ---
-COPY package.json ./package.json
-RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
 # --- Code applicatif ---
 COPY src ./src

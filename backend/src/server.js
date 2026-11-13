@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import fs from 'fs';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
@@ -136,26 +137,71 @@ app.use('/api/v1', governanceRoutes);
 app.use('/api/v1', governanceConformiteRoutes);
 
 // ----------------------------- Frontend -----------------------------------
-const pub = path.resolve(__dirname, '../../frontend');
-app.use(express.static(pub, { extensions: ['html'] }));
+// CORRECTIF 13/11/2026-C — « ENOENT ... stat '/frontend/index.html' »
+// L'API cherchait les pages web dans un dossier /frontend qui n'existe pas
+// dans l'image (les pages sont servies par Netlify). Toute visite de
+// l'adresse du serveur (.onrender.com) declenchait donc une erreur 404 en
+// boucle. Desormais : si les pages sont presentes (developpement local, APP_DIR)
+// on les sert ; sinon on repond proprement par une page d'information.
+const pub = process.env.APP_DIR && process.env.APP_DIR !== '/app'
+  ? path.resolve(process.env.APP_DIR)
+  : path.resolve(__dirname, '../../frontend');
+const hasSite = (() => {
+  try { return fs.existsSync(path.join(pub, 'index.html')); } catch (e) { return false; }
+})();
+if (hasSite) {
+  app.use(express.static(pub, { extensions: ['html'], index: 'index.html' }));
+} else {
+  console.log('Pages web non embarquees : le site est servi par ' +
+    (process.env.PUBLIC_SITE_URL || 'Netlify') + ' (API seule sur ce serveur).');
+}
 
-// Santé
+// Sante
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
 // Pages (fallback HTML)
-app.get(['/', '/index.html'], (_req, res) => res.sendFile(path.join(pub, 'index.html')));
-app.get('/login', (_req, res) => res.sendFile(path.join(pub, 'login.html')));
-app.get('/app', (_req, res) => res.sendFile(path.join(pub, 'app.html')));
-app.get('/teebo', (_req, res) => res.sendFile(path.join(pub, 'teebo.html')));
-app.get('/terrain', (_req, res) => res.sendFile(path.join(pub, 'terrain.html')));
-app.get('/essai', (_req, res) => res.sendFile(path.join(pub, 'essai.html')));
-app.get('/autorisations', (_req, res) => res.sendFile(path.join(pub, 'autorisations.html')));
-app.get('/securite', (_req, res) => res.sendFile(path.join(pub, 'securite.html')));
-app.get('/documentation', (_req, res) => res.sendFile(path.join(pub, 'documentation.html')));
+const SITE = process.env.PUBLIC_SITE_URL || 'https://teebo-imf.netlify.app';
+function page(file) {
+  return (_req, res) => {
+    if (!hasSite) return res.redirect(302, SITE);
+    res.sendFile(path.join(pub, file), (e) => { if (e && !res.headersSent) res.redirect(302, SITE); });
+  };
+}
+app.get(['/', '/index.html'], page('index.html'));
+app.get('/login', page('login.html'));
+app.get('/app', page('app.html'));
+app.get('/teebo', page('teebo.html'));
+app.get('/terrain', page('terrain.html'));
+app.get('/essai', page('essai.html'));
+app.get('/autorisations', page('autorisations.html'));
+app.get('/securite', page('securite.html'));
+app.get('/documentation', page('documentation.html'));
+// Toute autre adresse inconnue : explication claire au lieu d'une erreur brute.
+app.use((req, res, next) => {
+  if (req.method !== 'GET' || String(req.path || '').startsWith('/api/')) return next();
+  res.status(404).send('<!doctype html><html lang="fr"><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<title>teebo — API</title><style>body{font-family:system-ui,Arial,sans-serif;'
+    + 'background:#eef0f6;color:#0b0c26;display:flex;align-items:center;justify-content:center;'
+    + 'min-height:100vh;margin:0}.c{background:#fff;border-radius:14px;padding:30px 34px;'
+    + 'max-width:520px;box-shadow:0 14px 44px rgba(11,12,38,.12)}h1{font-size:18px;margin:0 0 10px}'
+    + 'p{font-size:13.5px;line-height:1.7;color:#3c3f57;margin:0 0 12px}'
+    + 'a{display:inline-block;background:#0b0c26;color:#fff;text-decoration:none;font-weight:700;'
+    + 'font-size:13px;padding:11px 18px;border-radius:9px}</style></head><body><div class="c">'
+    + '<h1>Serveur API teebo — en fonctionnement</h1>'
+    + '<p>Cette adresse sert uniquement l’interface de programmation (API). '
+    + 'L’application et les pages publiques sont sur le site teebo.</p>'
+    + '<p><a href="' + SITE + '">Ouvrir l’application teebo</a></p></div></body></html>');
+});
 
 // Gestion d'erreurs
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
+  // CORRECTIF 13/11/2026-C : la signature etait (err, _req, res, _next) mais le
+  // corps utilisait « req » -> « ReferenceError: req is not defined » a chaque
+  // erreur, ce qui faisait tomber le service. Signature corrigee + garde-fou
+  // si la reponse est deja envoyee (fichier statique introuvable, etc.).
   console.error(err);
+  if (res.headersSent) return;
   // Les erreurs métier sont levées avec un statut (ex. 403/422) et un libellé
   // de code via Error('bad_parent'). On expose ce code au front pour un message
   // précis ; les erreurs non maîtrisées (sans statut) restent génériques.
@@ -211,7 +257,11 @@ const server = app.listen(port, host, () => {
 
 // Un dernier incident ne doit pas tuer le service silencieusement.
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e && (e.message || e)));
-process.on('uncaughtException', (e) => console.error('uncaughtException:', e && (e.message || e)));
+process.on('uncaughtException', (e) => {
+  console.error('uncaughtException (service maintenu):', e && (e.stack || e.message || e));
+  // CORRECTIF 13/11/2026-C : un incident isole ne doit plus arreter le service.
+  // (Un ReferenceError dans la gestion d'erreurs avait coupe l'API.)
+});
 
 // Arrêt propre demandé par Render (SIGTERM) : on rend la main vite.
 ['SIGTERM', 'SIGINT'].forEach((sig) => process.on(sig, () => {
