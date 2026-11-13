@@ -31,6 +31,13 @@ RUN cd backend && npm ci --omit=dev --no-audit --no-fund && npm cache clean --fo
 # --- Code du serveur ---
 COPY backend/src ./backend/src
 
+# --- Script de démarrage (CORRECTIF 14/11/2026) ---
+# Sans cette copie, le conteneur s'arrêtait au lancement avec :
+#     sh: 0: cannot open ./start.sh: No such file
+# car WORKDIR est /app/backend et CMD est ["sh", "./start.sh"].
+COPY backend/start.sh ./backend/start.sh
+RUN chmod +x ./backend/start.sh
+
 # --- Migrations SQL (dossier db/ à la racine) ---
 COPY db ./db
 
