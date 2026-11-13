@@ -141,7 +141,13 @@
 <script>
   /* Installation de l'application (PWA) : propose « Installer » au premier clic */
   (function () {
-    if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js').catch(function () {}); }
+    // Service worker : uniquement pour permettre l'installation de l'application.
+    // VERSION +1 a chaque mise a jour du site pour forcer le renouvellement du cache.
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js?v=25', { updateViaCache: 'none' }).then(function (reg) {
+        try { reg.update(); } catch (e) {}
+      }).catch(function () {});
+    }
     var deferred = null;
     window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); deferred = e; showInstallBar(); });
     window.addEventListener('appinstalled', function () { var b = document.getElementById('install-bar'); if (b) b.parentNode.removeChild(b); });
@@ -163,6 +169,6 @@
     }
   })();
 </script>
-<script src="assets/keepalive.js" defer></script>
+
 </body>
 </html>

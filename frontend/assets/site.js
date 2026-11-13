@@ -640,7 +640,7 @@
   // 1) Enregistrement du service worker (hors file:// et aperçu local).
   if ('serviceWorker' in navigator && !isFile) {
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('sw.js').catch(function () { /* silencieux */ });
+      navigator.serviceWorker.register('sw.js?v=25', { updateViaCache: 'none' }).catch(function () { /* silencieux */ });
     });
   }
 

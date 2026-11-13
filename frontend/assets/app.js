@@ -164,6 +164,21 @@
   function closeModal() { $('modal-root').innerHTML = ''; }
 
   // ----- Tableau de bord -----
+  // Une session invalide ne doit JAMAIS produire un aller-retour en boucle
+  // entre la page et la connexion ("la page clignote sans fin").
+  function sessionGone(err) {
+    var m = (err && err.message) || '';
+    return ['not_authenticated', 'invalid_session', 'session_expired', 'idle_timeout',
+      'session_revoked', 'missing_token', 'no_session'].indexOf(m) >= 0;
+  }
+  var SESSION_ENDED = false;
+  function endSessionQuietly() {
+    if (SESSION_ENDED) return;
+    SESSION_ENDED = true;
+    var box = $('dash-kpis');
+    if (box) dashCardState(box, 'Votre session est terminee. Cliquez sur « Se reconnecter » pour revenir a la page de connexion.', 'Se reconnecter', function () { window.location.assign('/login.html'); });
+    notify('Votre session est terminee. Reconnectez-vous pour continuer.', 'info');
+  }
   function renderDash() {
     try { renderDashInner(); } catch (e) {
       if (window.console && console.warn) console.warn('dashboard:', e && e.message);
@@ -1738,10 +1753,12 @@
       switchView(VIEWS.indexOf(wanted) >= 0 ? wanted : 'dash');
     }).catch(function (e) {
       if (guard(e)) return;
+      // Session absente ou expiree : message clair + bouton, SANS rechargement
+      // automatique (avant : la page se rechargeait en boucle).
+      if (sessionGone(e)) { endSessionQuietly(); return; }
       notify(fr(e), 'err');
-      // Même si /me échoue, la page reste utilisable avec « Réessayer ».
       var k = $('dash-kpis');
-      if (k) dashCardState(k, fr(e), 'Réessayer', function () { window.location.reload(); });
+      if (k) dashCardState(k, fr(e), 'Réessayer', function () { boot(); });
     });
   }
   boot();
