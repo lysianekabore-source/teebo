@@ -1,30 +1,30 @@
 # ===================================================================
-# teebo - Deploiement automatique sur Render (https://render.com)
+# teebo — déploiement du serveur API sur Render
 #
-# IMPORTANT : ce fichier NE contient AUCUNE ligne "branch".
-# Render utilise alors la branche choisie dans l'interface (main).
-# C'est ce qui corrige l'erreur :
-#   "services[0].branch  branch principal could not be found"
-#
-# Etapes :
-#   1. Ce fichier doit etre a la RACINE du depot GitHub.
-#   2. Sur Render : New + > Blueprint > choisissez le depot, branche "main".
-#   3. Render cree : la base PostgreSQL + le serveur API.
-#   4. Renseignez TEEBO_ADMIN_PASSWORD (variable marquee "sync: false").
+# CORRECTIF 14/11/2026 :
+#   - le contexte de build est LE DOSSIER backend/ (dossier du Dockerfile).
+#     Render échouait avec « failed to calculate checksum … "/docs": not found »
+#     parce que l'image recopiait un à un des fichiers de l'interface web.
+#     Ce n'est plus nécessaire : le site est servi par Netlify.
+#   - rootDir est fixé à backend : le service fonctionne même si, dans
+#     Render, le champ « Root Directory » contient encore une ancienne valeur.
+#   - db/ (migrations) est lu à la racine du dépôt : uploadez donc AUSSI le
+#     dossier db/ à la racine de votre dépôt GitHub (voir LIRE-MOI).
 # ===================================================================
 
 databases:
   - name: teebo-db
     databaseName: teebo
     user: teebo
-    plan: free             # base PostgreSQL geree (offre gratuite)
+    plan: free
     region: frankfurt
 
 services:
   - type: web
     name: teebo-api
     runtime: docker
-    dockerfilePath: ./backend/Dockerfile
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
     dockerContext: .
     plan: free
     region: frankfurt
@@ -45,24 +45,21 @@ services:
       - key: TEEBO_ADMIN_EMAIL
         value: hello@teebo.africa
       - key: TEEBO_ADMIN_PASSWORD
-        sync: false        # a saisir dans Render (mot de passe fort)
+        sync: false
       - key: TEEBO_WHATSAPP
         value: "+22650321432"
       - key: TEEBO_EMAIL
         value: hello@teebo.africa
       - key: PUBLIC_API_URL
         value: https://teebo-api-p825.onrender.com
-      # Site de connexion de secours utilisé UNIQUEMENT si la requête ne
-      # fournit aucune origine exploitable. Le site réellement utilisé
-      # (ex. https://teebo-imf.netlify.app) est détecté automatiquement.
       - key: PUBLIC_SITE_URL
         value: https://teebo-imf.netlify.app
       - key: DOC_LINK_SECRET
-        sync: false        # secret de signature des liens de facture publics
+        sync: false
       - key: GOOGLE_CLIENT_ID
-        sync: false        # optionnel
+        sync: false
       - key: WHATSAPP_TOKEN
-        sync: false        # optionnel (sinon mode degrade)
+        sync: false
       - key: WHATSAPP_PHONE_ID
         sync: false
       - key: SMTP_HOST

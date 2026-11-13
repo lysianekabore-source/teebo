@@ -1,321 +1,207 @@
-CORRECTIFS DU 13/11/2026 — « Conseil d'Administration », déconnexion et droits PCA
+teebo — MISE EN LIGNE DU 13/11/2026
 =========================================================================
+CORRECTIF DU DÉPLOIEMENT (Render) + ACTIONNARIAT / SOCIÉTARIAT + FEUILLE DE
+PRÉSENCE EN AG
 
-Ce paquet contient TOUS vos fichiers d'origine + tous les correctifs
-précédents + les 4 correctifs ci-dessous.
-
--------------------------------------------------------------------------
-1) DÉCONNEXION : 30 min -> 60 min, et JAMAIS pendant une activité
--------------------------------------------------------------------------
-- Le délai d'inactivité passe à 60 minutes (réglable par la variable
-d' environnement IDLE_MINUTES côté serveur).
-- Toute action (clic, navigation, requête) repousse l'échéance.
-- Nouvelle balise de maintien de session (assets/keepalive.js) : tant que
-  l'onglet reste OUVERT, la session reste active même sans clic. Un
-  utilisateur qui travaille n'est donc plus déconnecté.
-- Tous les textes « 30 minutes » de l'interface (connexion, sécurité,
-  documentation) indiquent désormais 60 minutes.
-
-FICHIERS : backend/src/auth.js, backend/src/routes/auth.js,
-           assets/keepalive.js (nouveau), app.html, login.html
+Lisez ce fichier en entier avant de déposer quoi que ce soit.
+L'ordre est IMPORTANT : on commence par le serveur (Render), on termine par
+le site (Netlify).
 
 -------------------------------------------------------------------------
-2) ORGANISATION : la carte « Conseil d'Administration » s'affiche
+0) CE QUI A ÉTÉ CORRIGÉ — l'erreur « failed to calculate checksum »
 -------------------------------------------------------------------------
-Onglet Organisation : si aucune unité « Conseil d'Administration »
-n'existe, un encart apparaît en haut de l'arbre avec deux boutons :
-   • « Créer le Conseil d'Administration »  -> crée UNIQUEMENT le CA
-   • « Générer la structure de base »       -> CA + Direction Générale
-                                               + Départements + Services
-L'encart disparaît dès que le CA existe. La carte CA est volontairement
-repliée par défaut pour que l'arbre reste lisible (le PCA apparaît
-dessous, avec la mention « (PCA) »).
+Message reçu sur Render :
 
-FICHIERS : assets/app.js, assets/app.css (style de l'encart)
+   failed to calculate checksum of ref ...: /docs: not found
+   (idem pour /404.html, /assets, /_redirects)
 
--------------------------------------------------------------------------
-3) BASE DE DONNÉES : table des unités + rattachement du PCA
--------------------------------------------------------------------------
-Le script db/schema_v28.sql est ajouté à la liste des migrations
-(appliqué automatiquement au démarrage du serveur) :
-- création de l'unité « Conseil d'Administration » pour chaque IMF ;
-- libellés des postes harmonisés (« Président du Conseil d'Administration
-  (PCA) », « Directeur Général (DG) ») ;
-- le PCA est rattaché à cette unité, sans supérieur hiérarchique.
- 'Migration réentrante : peut être rejouée sans risque.
+Cause exacte : l'image Docker du serveur recopiait, fichier par fichier, des
+pages du site web (docs/, 404.html, assets/, _redirects). Ces fichiers ne se
+trouvaient PAS dans le dossier envoyé à Render : la construction de l'image
+s'arrêtait donc avant même de compiler le serveur.
 
-FICHIERS : db/schema_v28.sql, backend/src/migrate.js
+Trois corrections :
+  1. Le serveur ne recopie PLUS aucun fichier du site. Il n'en a pas besoin :
+     c'est Netlify qui sert les pages. Le dossier envoyé à Render ne contient
+     que le serveur (backend/) et la base de données (db/).
+  2. Le fichier de déploiement (render.yaml) indique désormais explicitement
+     que le dossier de travail est « backend ». Même si l'ancienne valeur
+     traîne encore dans vos réglages Render, le déploiement passe.
+  3. La migration de la base devient INDESTRUCTIBLE : si le dossier des
+     scripts SQL n'est pas trouvé, le serveur démarre quand même et l'API
+     reste accessible (plus de mise en ligne bloquée).
 
 -------------------------------------------------------------------------
-4) DROITS : cohérence du rôle PCA (Président du Conseil)
+1) CE QUE CONTIENT LE PAQUET « SERVEUR » (backend)
 -------------------------------------------------------------------------
-Avant : le poste PCA était enregistré en « support administratif » alors
-que le catalogue des postes le déclarait « direction », ce qui donnait des
-accès incohérents (menu présent mais boutons en erreur 403).
-Après :
- - le PCA est reconnu comme administrateur de SON institution
-   (structure, gouvernance, utilisateurs, paramètres) ;
- - il lui est IMPOSSIBLE de toucher caisse, clients, comptabilité,
-   trésorerie, crédit — la séparation des tâches est conservée
-   (exigence BCEAO / contrôle interne) ;
- - le serveur renvoie désormais un « rôle effectif » (pca_admin) que
-   l'interface utilise pour afficher le bon menu et les bons boutons.
+teebo-backend-13-11-2026.zip
+   backend/   -> le serveur (Dockerfile, src/)
+   db/        -> les scripts de base de données (schema.sql, schema_v10 … v33)
+   render.yaml
 
-FICHIERS : backend/src/rbac.js, backend/src/auth.js,
-           backend/src/routes/governance.js, backend/src/routes/auth.js,
-           assets/app.js
+C'est exactement ce dossier-là qu'on dépose sur Render (voir étape 3).
 
 -------------------------------------------------------------------------
-CE QUI A ÉTÉ VÉRIFIÉ — ET CE QUI NE L'A PAS ÉTÉ
+2) CE QUE CONTIENT LE PAQUET « SITE » (Netlify)
 -------------------------------------------------------------------------
-Vérifié automatiquement : syntaxe de tous les fichiers JavaScript
-(serveur + interface), délai d'inactivité = 60 min, règle du rôle PCA
-(administre sans opérer), présence des scripts de migration, cohérence
-des deux paquets (backend identique).
+teebo-site-netlify-13-11-2026.zip
+   index.html, app.html, login.html, terrain.html, essai.html, demo.html,
+   documentation.html, securite.html, autorisations.html, teebo.html,
+   404.html, _redirects, netlify.toml, manifest.webmanifest, sw.js,
+   assets/, docs/
 
-NON vérifié : aucun test en conditions réelles sur Render / Netlify
-(pas de serveur accessible depuis l'environnement de préparation).
-La connexion réelle, l'envoi d'e-mails et la base PostgreSQL de
-production restent à confirmer après déploiement.
+On dépose le CONTENU de ce dossier (pas le dossier lui-même) sur Netlify
+(voir étape 4).
 
 -------------------------------------------------------------------------
-MISE EN LIGNE (ordre conseillé)
+3) DÉPLOIEMENT DU SERVEUR SUR RENDER — à faire EN PREMIER
 -------------------------------------------------------------------------
-A. Render (serveur + base)
-   1. Déposez sur GitHub : backend/, db/, render.yaml
-   2. Render -> votre service -> Manual Deploy -> « Clear build cache &
-      deploy ».
-   3. Au démarrage, la migration du schéma n°28 s'applique seule (voir les logs :
-      « Schéma appliqué : schema_v28.sql »).
-B. Netlify (site)
-   1. Déposez les fichiers du paquet SITE (racine) en remplaçant les
-      anciens, puis redéployez.
-   2. Ouvrez le site et faites Ctrl + Maj + R (vidage du cache).
-C. Contrôle en 2 minutes
-   1. Connexion : rester 5 minutes sans clic -> AUCUNE déconnexion.
-   2. Organisations : l'encart « Conseil d'Administration » apparaît ->
-      bouton « Créer le Conseil d'Administration » -> la carte apparaît.
-   3. Personnel : un poste « Président du Conseil d'Administration (PCA) »
-      doit voir Gouvernance + Organisations et NE PAS voir Caisse.
+   1. Décompressez teebo-backend-13-11-2026.zip.
+   2. Dans votre dépôt GitHub, mettez à la racine :
+        - le dossier  backend/   (remplacez l'ancien)
+        - le dossier  db/        (obligatoire : les migrations)
+        - le fichier  render.yaml (remplacez l'ancien)
+   3. Sur Render, ouvrez le service teebo-api :
+        Settings > Build & Deploy
+        - Root Directory :  backend
+        - Dockerfile Path : ./Dockerfile
+        - Docker Build Context Directory : .
+      Puis « Manual Deploy > Clear build cache & deploy ».
+   4. Laissez le service travailler. Vous devez voir dans les journaux :
+        == Migrations appliquées
+        ==> Demarrage du serveur API ...
+        teebo api ... listening on 3000
+      puis le statut « Live » et la sonde /healthz en vert.
 
+   VARIABLES D'ENVIRONNEMENT (Render > Environment) — celles marquées
+   « à saisir » ne sont pas dans le fichier et doivent être remplies :
+     NODE_ENV=production
+     PORT=3000
+     HOST=0.0.0.0
+     DATABASE_URL        (fournie automatiquement par la base teebo-db)
+     CORS_ORIGIN=true
+     TEEBO_ADMIN_EMAIL=hello@teebo.africa
+     TEEBO_ADMIN_PASSWORD      -> À SAISIR (mot de passe du premier compte)
+     DOC_LINK_SECRET           -> À SAISIR (chaîne aléatoire longue)
+     PUBLIC_API_URL=https://teebo-api-p825.onrender.com
+     PUBLIC_SITE_URL=https://teebo-imf.netlify.app
+     TEEBO_WHATSAPP=+22650321432
+     TEEBO_EMAIL=hello@teebo.africa
+   Facultatives (WhatsApp Cloud API, Google, e-mail SMTP) : laissez vides
+   tant que vous n'en avez pas besoin — l'application fonctionne sans.
 
+   SI LE SERVEUR NE DÉMARRE TOUJOURS PAS :
+     - Dans les journaux, cherchez la PREMIÈRE ligne « ERROR » et non la
+       dernière (une erreur en entraîne souvent dix autres).
+     - « Cannot find module » : une dépendance manque dans package.json.
+     - « relation ... does not exist » : db/ n'est pas à la racine du dépôt
+       ou la migration n'a pas tourné ; relancez un déploiement complet.
 
-CORRECTIF — Création d'utilisateur (bouton « Créer et envoyer le code »)
-
-CONTENU
-  assets/app.js              -> remplace assets/app.js du site Netlify
-  assets/app.css             -> remplace assets/app.css du site Netlify
-  app.html                   -> remplace app.html (force le rechargement du script v24)
-  sw.js                      -> remplace sw.js (vide le cache navigateur)
-  backend/src/routes/org.js  -> remplace backend/src/routes/org.js sur Render
-
-INSTALLATION
- 1. Netlify : uploader assets/app.js, assets/app.css, app.html, sw.js (mêmes dossiers).
- 2. Render  : uploader backend/src/routes/org.js, puis "Manual Deploy".
- 3. Ouvrir le site, Ctrl+Maj+R, Personnel -> + Nouvel utilisateur.
-
-
---------------------------------------------------------------
-MISE À JOUR DU 13/11/2026 — deux correctifs cumulés dans ce paquet
---------------------------------------------------------------
-1) Création d'utilisateur : la fenêtre affiche toujours une réponse
-   (message de statut, motif réel de l'échec, bouton « Réessayer »),
-   contrôle de l'e-mail déjà utilisé, délai maximal d'envoi côté
-   serveur (le bouton ne reste plus bloqué), unité facultative.
-2) Lien de connexion dans les messages : le code d'accès, le renvoi
-   de code et le mot de passe oublié contiennent désormais l'adresse
-   de VOTRE site (ex. https://teebo-imf.netlify.app/login) et non
-   plus www.teebo.africa. Si vous changez de domaine, le lien suit.
-
-FICHIERS (tous déjà à jour dans ce dossier) :
-  app.html, sw.js, assets/app.js, assets/app.css,
-  assets/auth.js, assets/essai.js,
-  backend/src/notify.js, backend/src/server.js,
-  backend/src/routes/org.js, backend/src/routes/auth.js,
-  backend/src/routes/teebo.js, render.yaml
-
-Les fichiers backend/src/... et render.yaml sont fournis ici pour
-mémoire : ils se déposent sur Render (dépôt GitHub), pas sur Netlify.
-
-INSTALLATION
- 1. Netlify : déposer ce dossier complet (ou les fichiers modifiés)
-    puis redéployer.
- 2. Render  : reprendre backend/src/*.js + render.yaml, puis
-    « Manual Deploy » -> « Clear build cache + deploy ».
- 3. Site : Ctrl + Maj + R, puis se reconnecter.
- 4. Test : créer un utilisateur avec VOTRE e-mail / WhatsApp et
-    vérifier la ligne « Connexion : » du message reçu.
-
-
-================================================================================
-MISE A JOUR DU 13/11/2026 - TABLEAU DE BORD (erreur + lenteur) ET AFFICHAGE MOBILE
-================================================================================
-1) CAUSE DE L'ERREUR "Une erreur est survenue" SUR LE TABLEAU DE BORD
-   - Le premier affichage du tableau de bord pouvait se produire AVANT l'arrivee
-     du profil (/me) et des listes d'unites/utilisateurs : le code lisait des
-     donnees absentes (profil vide, postes non charges), ce qui declenchait une
-     erreur technique affichee telle quelle au client.
-   - CORRECTIF : rendu "blinde". Chaque bloc (bandeaux, indicateurs, alerte,
-     liste des unites) est calcule separement ; une donnee manquante affiche un
-     tiret ou "Chargement..." avec un bouton "Reessayer", jamais une erreur.
-     Les indicateurs ne peuvent plus afficher NaN / undefined.
-
-2) CAUSE DE LA LENTEUR
-   - Le demarrage attendait l'un apres l'autre : profil, unites, utilisateurs,
-     essai -> plusieurs allers-retours reseau enchaines (et sur l'offre gratuite
-     le serveur peut demander ~30 s de reveil).
-   - L'arbre d'organisation reinstallait des boutons d'ecoute en double a chaque
-     re-affichage : certaines actions declenchaient plusieurs appels API.
-   - Le fichier keepalive.js etait charge DEUX FOIS dans app.html et login.html.
-   - CORRECTIF : affichage immediat du tableau de bord, puis /me, puis unites et
-     utilisateurs EN PARALLELE ; modules secondaires en tache de fond. Un seul
-     ecouteur par bouton. keepalive.js charge une seule fois. Indicateur discret
-     "Chargement : organisation - personnel..." au lieu d'un ecran fige.
-
-3) AFFICHAGE SUR TOUS LES ECRANS
-   - Indicateurs : 4 colonnes sur ordinateur, 2 sur telephone.
-   - Cartes, formulaires et fenetres empiles ; modales pleine largeur sur mobile.
-   - Boutons : hauteur tactile >= 44 px, actions pleine largeur sur mobile.
-   - Tableaux : defilement horizontal propre dans la carte.
-   - Champs : 16 px minimum (evite le zoom automatique iPhone).
-   - Plus de debordement horizontal de la page.
-
-4) VERIFICATIONS EFFECTUEES
-   - Controle de syntaxe : OK sur les deux versions (site Netlify et plateforme).
-   - Tests complets sur serveur Render/Netlify : NON possibles ici (aucun serveur
-     public dans cet environnement). A confirmer apres deploiement, telephone inclus.
-
-5) APRES MISE EN LIGNE
-   - Netlify : redeposer l'archive puis Deploys > Trigger deploy > Clear cache and deploy site.
-   - Render : Manual Deploy > Clear build cache and deploy.
-   - Navigateur : Ctrl + Maj + R (ou vider le cache) pour recharger app.js v=25 / app.css v=25.
-
-
-================================================================================
-MISE A JOUR DU 13/11/2026 (2) - CORRECTIF "LA PAGE DE CONNEXION CLIGNOTE SANS FIN"
-================================================================================
-CAUSE REELLE (3 defauts qui se cumulaient)
-  1. login.html chargeait keepalive.js (maintien de session). Sur la page de
-     connexion il n'y a AUCUNE session : le serveur repondait 401, et le script
-     de session renvoyait l'utilisateur vers /login.html?expired=1 -> la page se
-     rechargeait sans arret (clignotement).
-  2. Le service worker (sw.js) renvoyait /index.html comme page de secours pour
-     TOUTE ressource indisponible, y compris un script. Le navigateur recevait du
-     HTML la ou il attendait du JavaScript et redemandait la page en boucle.
-  3. auth.js redirigeait vers /app.html sans verifier la session ; app.js, en
-     l'absence de session, renvoyait vers la connexion : aller-retour infini.
-
-CORRECTIFS APPLIQUES
-  - keepalive.js ne fonctionne PLUS que sur les pages de l'espace connecte
-    (app.html, terrain.html, teebo.html). Aucun appel sur login, accueil, essai,
-    documentation, securite, autorisations, demo. Apres 3 refus, il s'arrete.
-  - sw.js reecrit : l'API n'est jamais mise en cache, les pages et scripts sont
-    pris sur le reseau en priorite, et en cas de coupure on renvoie une erreur
-    explicite (503) au lieu d'une autre page. Version de cache teebo-v25.
-  - login.html : plus de keepalive, enregistrement du service worker avec
-    updateViaCache: none (mise a jour immediate du cache).
-  - auth.js : gestion du serveur injoignable (message clair "serveur en veille ou
-    coupure Internet"), et redirection vers l'application SEULEMENT apres
-    verification du profil. En cas d'echec, on reste sur la page avec un message.
-  - app.js : session absente ou expiree = message + bouton "Se reconnecter"
-    (plus aucun rechargement automatique en boucle).
-  - netlify.toml : aucun cache navigateur sur sw.js, /assets/*, login.html et
-    app.html, pour eviter de melanger anciens et nouveaux fichiers.
-  - Versions de fichiers incrementees (app.js v=25) pour forcer le rechargement.
-
-VERIFICATIONS EFFECTUEES
-  - Controle de syntaxe : OK (app.js, auth.js, keepalive.js, sw.js, site.js).
-  - Simulation automatique : keepalive ne declenche 0 appel sur la connexion et
-    l'accueil, 1 seul appel sur l'espace connecte (resultat : OK).
-  - Simulation du service worker : l'API n'est jamais interceptee, aucune page de
-    secours substituee (resultat : OK).
-  - Test dans un vrai navigateur sur le site en ligne : NON possible ici.
-    A confirmer apres deploiement.
-
-SI LE CLIGNOTEMENT PERSISTE APRES MISE EN LIGNE (ancien cache du navigateur)
-  1. Ouvrir le site, puis Ctrl + Maj + R (ou Cmd + Maj + R sur Mac).
-  2. F12 > onglet Application > Service Workers > Unregister, puis Storage >
-     Clear site data, et recharger.
-  3. Desinstaller l'application installee (PWA) puis la reinstaller.
-
-NOUVEAU 13/11/2026 (soir) — VAGUE 29 : GOUVERNANCE, CONFORMITÉ PRUDENTIELLE,
-RISQUES, PCA ET REPORTING  +  CORRECTIF « Créer et envoyer le code »
-=========================================================================
-
-A. CORRECTIF URGENT — le bouton « Créer et envoyer le code » ne répondait pas
 -------------------------------------------------------------------------
-Cause : plusieurs défauts se cumulaient à la création d'un utilisateur.
-  1. Le bouton restait bloqué (« this » perdu dans la chaîne de promesses) et
-     une erreur survenue pendant le clic n'affichait RIEN : la modale semblait
-     figée. Un bandeau rouge s'affiche désormais DANS la modale, avec le motif
-     exact en français.
-  2. Les postes n'étaient pas encore chargés à l'ouverture : la liste
-     « Poste occupé » pouvait être vide et le refus se faisait en silence.
-     La liste se recharge automatiquement dès que les postes arrivent.
-  3. Le responsable hiérarchique et l'unité de rattachement sont maintenant
-     pré-remplis DÈS l'ouverture (et non seulement après un changement).
-  4. Poste « Président du Conseil d'Administration (PCA) » : le socle lui
-     donne le rôle technique « superadmin » (réservé à l'éditeur), d'où un
-     refus. Depuis l'espace d'une IMF, ce poste est créé en « pca_admin »
-     (administrateur de l'institution) — comme le fait la connexion.
-  5. Côté serveur : validation explicite (nom, e-mail valide, poste existant)
-     avec message clair et enregistrement du refus dans le journal d'audit
-     (action user.create.refused) pour diagnostic.
-  6. Si le réseau coupe pendant la réponse : message « Création incertaine,
-     vérifiez la liste » au lieu d'un échec muet.
-  > Si le bouton ne répond toujours pas : ouvrez la console du navigateur
-    (F12 > Console), réessayez, et envoyez la ligne rouge affichée.
-
-B. NOUVEAU — trois blocs dans le module « Gouvernance »
+4) DÉPLOIEMENT DU SITE SUR NETLIFY — à faire ENSUITE
 -------------------------------------------------------------------------
-Onglet 1 — Apparentés & conventions (cohérence parts sociales / actions)
-  * Registre des personnes apparentées (lien de parenté ou de société,
-    rattachement à un administrateur, vérification).
-  * Situation des crédits aux apparentés en % des fonds propres effectifs
-    (FPE), plafond individuel et plafond global, alerte de dépassement.
-  * Conventions réglementées : référence, type, montant, autorisation
-    préalable, EXCLUSION DU VOTE de l'administrateur intéressé, information
-    du Commissaire aux Comptes.
-  * Un crédit accordé à un apparenté est détecté automatiquement ; une
-    approbation sans convention autorisée est bloquée (erreur 409).
-  * En coopérative : « parts sociales », 1 membre = 1 voix.
-    En société anonyme : « actions », seuil d'information des participations.
+   1. Décompressez teebo-site-netlify-13-11-2026.zip.
+   2. Netlify > votre site > Deploys > « Deploy manually » : glissez le
+      CONTENU du dossier (index.html doit être visible à la racine du
+      glisser-déposer, pas dans un sous-dossier).
+   3. Vérifiez que le site connaît l'adresse du serveur : le fichier
+      netlify.toml et les pages pointent vers
+      https://teebo-api-p825.onrender.com . Si votre service Render porte un
+      autre nom, remplacez l'adresse dans netlify.toml puis redéployez.
+   4. Ouvrez le site, puis app.html : la connexion doit aboutir.
 
-Onglet 2 — Risques, PCA & incidents
-  * Cartographie des risques avec matrice 4 x 4 (probabilité x impact),
-    cliquable, score de risque résiduel et seuil paramétrable.
-  * Plans de continuité (PCA/PRA/PGI) : revue due au-delà du délai fixé
-    (365 jours par défaut), statut automatique « révision requise » ;
-    alerte si aucun exercice de simulation depuis plus de 12 mois.
-  * Incidents majeurs : gravité, pertes, notification BCEAO avec délai
-    (24 h par défaut) et alerte rouge si la notification est en retard.
-  * Taux de formation LBC/FT du personnel (objectif 80 %).
+   NE DÉPLOIEZ PAS NETLIFY AVANT QUE RENDER SOIT « Live » : le site
+   afficherait « serveur indisponible ».
 
-Onglet 3 — Conformité & reporting
-  * Échéancier réglementaire par autorité (BCEAO, Commission Bancaire,
-    Ministère des Finances, CENTIF...) avec rappels automatiques
-    J-30 / J-15 / J-5 et alerte rouge « échéance dépassée » sans récépissé.
-  * Boutons d'export :
-      - Rapport spécial du Commissaire aux Comptes (PDF, imprimable)
-      - Rapport CAC (Excel .xlsx)
-      - Pack Inspection « Commission Bancaire » (.ZIP) : 7 dossiers normés
-        01_GOUVERNANCE, 02_CONVENTIONS_APPARENTES, 03_RISQUES_PCA,
-        04_CONFORMITE_LBCFT, 05_CREDITS, 06_CLIENTS, 07_ETATS_FINANCIERS
-        + 00_SOMMAIRE.
-
-C. BASE DE DONNÉES
 -------------------------------------------------------------------------
-Nouveau script db/schema_v29.sql, appliqué AUTOMATIQUEMENT au démarrage du
-serveur (migration idempotente : on peut redémarrer sans risque).
-
-D. À CONFIRMER AVANT PRODUCTION
+5) NOUVEAU MODULE — ONGLET « ACTIONNARIAT / SOCIÉTARIAT »
 -------------------------------------------------------------------------
-Les plafonds (% des fonds propres), les seuils d'information et les délais
-(J-30/15/5, 365 jours, 24 h) sont PARAMÉTRABLES par pays et par IMF, mais
-leurs VALEURS doivent être confirmées auprès de la BCEAO / de la Commission
-Bancaire avant une mise en production.
+Un septième onglet apparaît dans Gouvernance. Il s'adapte tout seul à votre
+forme juridique : « actions » pour une société anonyme, « parts sociales »
+pour une coopérative (SCOOPS).
 
-E. LIMITE DE VALIDATION
+   A. Vue d'ensemble
+      Titres en circulation, capital libéré / souscrit / restant à libérer,
+      conformité au minimum réglementaire, part du premier détenteur et des
+      cinq premiers, mouvements en attente d'autorisation.
+      Barres de répartition des douze principaux détenteurs.
+
+   B. Registre des détenteurs
+      Personne physique ou morale, qualité (actionnaire, membre, porteur de
+      parts), numéro de registre, date d'adhésion, compte client rattaché,
+      plafond individuel. Boutons : Modifier, Mouvement, Éligibilité
+      (contrôle automatique des conditions d'accès au conseil).
+
+   C. Mouvements de titres
+      Souscription, libération, cession, augmentation, remboursement de
+      sortie. Avant d'écrire, le serveur contrôle : plafond du membre,
+      crédit en cours, capital minimum, seuils de participation.
+      Franchissement de 10 / 20 / 33 / 50 % : le mouvement est enregistré
+      mais reste « en attente BCEAO » jusqu'à saisie de la référence de
+      l'autorisation préalable (bouton « Autorisation BCEAO »).
+
+   D. Bénéficiaires effectifs (LBC/FT)
+      Déclaration par personne morale, pourcentage de détention indirecte,
+      nature du contrôle, pays de résidence. Toute personne morale sans
+      bénéficiaire déclaré remonte en alerte.
+
+   E. Feuille de présence en assemblée générale
+      - choix de la session,
+      - émargement (présent ou représenté par procuration, avec mandataire),
+      - barre de quorum en direct : vert « quorum atteint », rouge « non
+        atteint » avec le nombre de points manquants,
+      - EXPORT PDF : feuille A4 paysage, en-tête institution, colonnes
+        nom / registre / participation / titres / voix / signature — prête
+        à imprimer et à signer,
+      - EXPORT EXCEL : la feuille, le récapitulatif de quorum et la liste
+        des non-émargés,
+      - la feuille n'est plus modifiable dès que le PV est signé et verrouillé.
+
+   F. Paramètres du capital
+      Valeur nominale d'une part, capital minimum réglementaire, plafond par
+      membre, procurations par mandataire, seuils surveillés, quorums AGO
+      (1re et 2e convocation) et AGE, blocages de sortie. Réglables par
+      institution.
+
+   RÈGLE DE VOTE appliquée automatiquement :
+       société anonyme -> 1 action = 1 voix
+       coopérative     -> 1 sociétaire = 1 voix
+
 -------------------------------------------------------------------------
-Code vérifié en syntaxe, exports ZIP/Excel testés hors ligne. Aucun essai
-réel sur Render ni dans un navigateur n'a été effectué.
+6) PAGE DE PRÉSENTATION (index.html)
+-------------------------------------------------------------------------
+Une section « Actionnariat et sociétariat, tenus au registre » a été ajoutée,
+avec un lien dans le menu. La grille tarifaire n'a PAS changé :
+   - une offre unique, sans palier, pour toutes les tailles d'IMF ;
+   - abonnement mensuel ou annuel (−15 % en annuel) ;
+   - licence d'activation unique, facturée après l'essai ;
+   - démonstration gratuite + essai gratuit de 30 jours.
+
+-------------------------------------------------------------------------
+7) CE QUI A ÉTÉ VÉRIFIÉ — ET CE QUI NE L'A PAS ÉTÉ
+-------------------------------------------------------------------------
+VÉRIFIÉ ici :
+  - tous les fichiers du serveur et de l'interface passent le contrôle de
+    syntaxe ; les modules du serveur se chargent sans erreur ;
+  - chaque appel de l'écran Actionnariat correspond à une route existante du
+    serveur (chemins et champs vérifiés un par un) ;
+  - les contrôles du moteur de capital (plafonds, seuils, quorum, voix) ont
+    été relus sur le code.
+
+PAS VÉRIFIÉ (impossible depuis mon environnement) :
+  - un déploiement réel sur Render et sur Netlify ;
+  - un essai dans un navigateur avec une base PostgreSQL réelle.
+Si une erreur survient au premier démarrage, envoyez-moi la première ligne
+« ERROR » des journaux : elle suffit pour corriger.
+
+-------------------------------------------------------------------------
+8) APRÈS LA MISE EN LIGNE — contrôle en 5 minutes
+-------------------------------------------------------------------------
+   1. https://teebo-api-p825.onrender.com/healthz  -> réponse OK.
+   2. Connectez-vous à app.html avec le compte administrateur.
+   3. Gouvernance > Actionnariat / Sociétariat : l'écran se remplit.
+   4. Paramètres du capital : saisissez la valeur nominale et le minimum
+      réglementaire, enregistrez.
+   5. Créez un détenteur, un mouvement de 1 titre, puis une session dans
+      « Sessions & PV », émargez deux détenteurs et téléchargez la feuille
+      de présence en PDF.
