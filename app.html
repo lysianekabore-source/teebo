@@ -8,7 +8,7 @@
 <title>Espace IMF — teebo</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="assets/favicon.ico" sizes="any">
-<link rel="stylesheet" href="assets/app.css">
+<link rel="stylesheet" href="assets/app.css?v=31">
 </head>
 <body>
 <div class="shell">
@@ -23,6 +23,14 @@
     <button class="nav-item" data-view="users"><span class="ic">☺</span> Personnel</button>
     <button class="nav-item" data-view="dispatches" id="nav-dispatches" hidden><span class="ic">✉</span> Suivi des envois</button>
     <button class="nav-item" data-view="profiles" id="nav-profiles" hidden><span class="ic">▦</span> Habilitations</button>
+    <button class="nav-item" data-view="credits" id="nav-credits" hidden><span class="ic">✔</span> Validation crédit</button>
+    <button class="nav-item" data-view="clients" id="nav-clients" hidden><span class="ic">☷</span> Clients</button>
+    <button class="nav-item" data-view="caisse" id="nav-caisse" hidden><span class="ic">▣</span> Caisse</button>
+    <button class="nav-item" data-view="coffre" id="nav-coffre" hidden><span class="ic">▦</span> Coffre</button>
+    <button class="nav-item" data-view="compta" id="nav-compta" hidden><span class="ic">∑</span> Comptabilité</button>
+    <button class="nav-item" data-view="recouvrement" id="nav-recouvrement" hidden><span class="ic">⚑</span> Impayés &amp; recouvrement</button>
+    <button class="nav-item" data-view="audit" id="nav-audit" hidden><span class="ic">☰</span> Journal d’audit</button>
+    <button class="nav-item" data-view="gouvernance" id="nav-gouvernance" hidden><span class="ic">⚖</span> Gouvernance</button>
     <button class="nav-item" data-view="settings" id="nav-settings" hidden><span class="ic">⚙</span> Paramètres IMF</button>
     <div class="side__label">Sécurité &amp; accès</div>
     <button class="nav-item" data-view="security"><span class="ic">⛨</span> Mon accès</button>
@@ -33,8 +41,8 @@
     <a class="nav-item" href="/documentation"><span class="ic">📘</span> Documentation</a>
     <div class="side__spacer"></div>
     <div class="side__user">
-      <b id="u-name">…</b>
-      <small id="u-code">…</small>
+      <b id="detail-u-name">…</b>
+      <small id="detail-u-code">…</small>
       <button class="btn btn--ghost btn--sm" id="btn-logout">Déconnexion</button>
     </div>
   </aside>
@@ -52,6 +60,7 @@
         </div>
         <div class="chips" id="dash-chips"></div>
       </div>
+      <div id="dash-alert"></div>
       <div class="grid grid--stats" id="dash-kpis"></div>
       <div class="grid grid--2" style="margin-top:16px">
         <div class="card">
@@ -62,7 +71,7 @@
           <h2 style="font-size:16px;margin-bottom:14px">Règles de sécurité appliquées</h2>
           <ul class="checks" style="list-style:none;display:grid;gap:10px;font-size:13.5px">
             <li>Mot de passe expiré automatiquement après 60 jours</li>
-            <li>Déconnexion automatique après 30 minutes d’inactivité</li>
+            <li>Déconnexion automatique après 60 minutes d’inactivité</li>
             <li>Code d’identification généré automatiquement pour l’IMF et chaque agence</li>
             <li>Cloisonnement strict : aucune donnée partagée entre utilisateurs</li>
             <li>Aucune donnée partagée entre entités sans autorisation de l’admin</li>
@@ -92,6 +101,7 @@
         </div>
         <button class="btn btn--dark" id="btn-new-user">+ Nouvel utilisateur</button>
       </div>
+      <div id="users-alert"></div>
       <div id="users-table"><div class="empty">Chargement…</div></div>
     </section>
 
@@ -177,7 +187,17 @@
           <div class="fld"><label for="s-vat_number">N° contribuable / TVA</label><input id="s-vat_number" type="text" placeholder="Optionnel"></div>
           <div class="fld"><label for="s-bceao_agreement_no">N° d’agrément BCEAO</label><input id="s-bceao_agreement_no" type="text" placeholder="Ex : 2024-XXX-IM-001"></div>
           <div class="fld"><label for="s-share_capital">Capital social (FCFA)</label><input id="s-share_capital" type="text" inputmode="numeric" placeholder="Ex : 25 000 000"></div>
+          <div class="fld"><label for="s-part-sociale">Valeur nominale de la part sociale (FCFA)</label><input id="s-part-sociale" type="text" inputmode="numeric" placeholder="SCOOP uniquement — ex : 10 000"><p class="hint">IMF coopérative (SCOOP) : un client souscrivant ≥ 1 part est « membre », sinon « usager ».</p></div>
           <div class="fld"><label for="s-legal_address">Siège social</label><input id="s-legal_address" type="text" placeholder="Adresse complète du siège"></div>
+        </div>
+        <div class="fld"><label>Durée de validité par défaut des pièces d’identité (en mois)</label>
+          <p class="hint">Selon la localité de l’IMF. Sert au calcul automatique de la date d’expiration lors de la création d’un client particulier.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+            <div class="fld"><label for="s-valid-cni">CNI</label><input id="s-valid-cni" type="text" inputmode="numeric" placeholder="Ex : 120"></div>
+            <div class="fld"><label for="s-valid-passeport">Passeport</label><input id="s-valid-passeport" type="text" inputmode="numeric" placeholder="Ex : 60"></div>
+            <div class="fld"><label for="s-valid-cedeao">Carte CEDEAO</label><input id="s-valid-cedeao" type="text" inputmode="numeric" placeholder="Ex : 120"></div>
+            <div class="fld"><label for="s-valid-consulaire_sejour">Carte consulaire / séjour</label><input id="s-valid-consulaire_sejour" type="text" inputmode="numeric" placeholder="Ex : 12"></div>
+          </div>
         </div>
         <div class="fld"><label for="s-bank_details">Coordonnées bancaires de règlement</label><textarea id="s-bank_details" rows="2" placeholder="Banque, IBAN / RIB, Mobile Money…"></textarea></div>
         <div class="fld"><label for="s-footer_note">Note de pied de document</label><input id="s-footer_note" type="text" placeholder="Ex : Merci de votre confiance"></div>
@@ -198,7 +218,9 @@
         <p class="hint">À la création d’un utilisateur (ou via « Renvoyer le code » dans l’onglet Personnel), le code est transmis par WhatsApp et e-mail. Si aucune passerelle automatique n’est configurée, un lien « prêt à envoyer » s’ouvre depuis votre compte.</p>
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
           <button class="btn btn--primary" id="btn-notify-save" type="button">Enregistrer ces canaux</button>
+          <button class="btn btn--ghost" id="btn-notify-test" type="button">Envoyer un e-mail de test à moi-même</button>
         </div>
+        <div id="notify-test-out" class="hint" style="margin-top:10px"></div>
       </div>
 
       <!-- Prévisualisation dynamique du PDF de facture -->
@@ -234,22 +256,203 @@
       </div>
     </section>
 
-    <!-- MATRICE DES HABILITATIONS -->
+    <!-- GESTION DES HABILITATIONS (éditable) -->
     <section class="view" id="view-profiles" hidden>
       <div class="topbar">
         <div>
-          <h1>Profils &amp; habilitations</h1>
-          <p>Habilitations accordées par défaut à chaque profil. Elles sont attachées automatiquement à la création d’un utilisateur.</p>
+          <h1>Habilitations &amp; profils</h1>
+          <p>Cochez / décochez les habilitations accordées par défaut à chaque poste. Créez de nouveaux postes et de nouvelles habilitations propres à votre IMF.</p>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--ghost" id="btn-new-perm" type="button">+ Habilitation</button>
+          <button class="btn" id="btn-new-position" type="button">+ Poste / profil</button>
         </div>
       </div>
       <div class="card">
-        <div id="profiles-matrix"><div class="empty">Chargement…</div></div>
+        <div id="access-matrix"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- VALIDATION FINALE DES CRÉDITS -->
+    <section class="view" id="view-credits" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Validation finale des crédits</h1>
+          <p>Dossiers en attente d’octroi définitif. Réservé aux postes habilités (DG, DGA, Directeur Crédit, Chef Octroi par défaut).</p>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--ghost" id="btn-credits-refresh" type="button">↻ Actualiser</button>
+        </div>
+      </div>
+      <div class="card">
+        <div id="credits-queue"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- CLIENTS : modifier la fiche -->
+    <section class="view" id="view-clients" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Clients</h1>
+          <p>Consulter et modifier les fiches clients de votre institution. Réservé aux postes habilités à la gestion client.</p>
+        </div>
+        <div class="topbar__actions"><button class="btn btn--primary" id="btn-client-new" type="button">+ Nouveau client</button> <button class="btn btn--ghost" id="btn-clients-refresh" type="button">↻ Actualiser</button></div>
+      </div>
+      <div class="card"><div id="clients-table"><div class="empty">Chargement…</div></div></div>
+    </section>
+
+    <!-- CAISSE : dépassement de plafond + arrêté de caisse -->
+    <section class="view" id="view-caisse" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Caisse</h1>
+          <p>Valider les dépassements de plafond et enregistrer les arrêtés de caisse (rapprochement théorique / réel).</p>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--ghost" id="btn-overrun-new" type="button">+ Demande de dépassement</button>
+          <button class="btn btn--dark" id="btn-closing-new" type="button">+ Arrêté de caisse</button>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Dépassements de plafond</h2></div>
+        <div id="overrun-table"><div class="empty">Chargement…</div></div>
+      </div>
+      <div class="card">
+        <div class="toolbar"><h2 style="font-size:16px">Arrêtés de caisse &amp; rapprochement</h2></div>
+        <div id="closing-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- COFFRE : approvisionner / délester -->
+    <section class="view" id="view-coffre" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Coffre</h1>
+          <p>Approvisionner ou délester le coffre. Chaque mouvement est tracé et le solde est recalculé automatiquement.</p>
+        </div>
+        <div class="topbar__actions"><button class="btn btn--dark" id="btn-vault-new" type="button">+ Mouvement de coffre</button></div>
+      </div>
+      <div class="grid grid--stats" id="vault-kpis"></div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Mouvements du coffre</h2></div>
+        <div id="vault-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- COMPTABILITÉ : écritures, clôture, états -->
+    <section class="view" id="view-compta" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Comptabilité</h1>
+          <p>Saisir les écritures (charges, taxes, produits), clôturer une période et consulter les états financiers.</p>
+        </div>
+        <div class="topbar__actions">
+          <label style="font-size:13px;color:var(--muted)">Période
+            <input id="compta-period" type="month" style="margin-left:6px">
+          </label>
+          <button class="btn btn--ghost" id="btn-entry-new" type="button">+ Écriture</button>
+          <button class="btn btn--dark" id="btn-period-close" type="button">Clôturer la période</button>
+        </div>
+      </div>
+      <div class="grid grid--stats" id="compta-kpis"></div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Écritures comptables</h2></div>
+        <div id="entries-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- IMPAYÉS & RECOUVREMENT -->
+    <section class="view" id="view-recouvrement" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Impayés &amp; recouvrement</h1>
+          <p>Suivre les dossiers en retard et enregistrer les actions de recouvrement (relance, promesse, échéancier, encaissement).</p>
+        </div>
+        <div class="topbar__actions"><button class="btn btn--ghost" id="btn-arrears-refresh" type="button">↻ Actualiser</button></div>
+      </div>
+      <div class="grid grid--stats" id="arrears-kpis"></div>
+      <div class="card" style="margin-top:16px">
+        <div class="toolbar"><h2 style="font-size:16px">Dossiers en impayé</h2></div>
+        <div id="arrears-table"><div class="empty">Chargement…</div></div>
+      </div>
+    </section>
+
+    <!-- JOURNAL D'AUDIT -->
+    <section class="view" id="view-audit" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Journal d’audit</h1>
+          <p>Traçabilité des actions sensibles de l’institution. Réservé aux postes habilités à la lecture de l’audit.</p>
+        </div>
+        <div class="topbar__actions"><button class="btn btn--ghost" id="btn-audit-refresh" type="button">↻ Actualiser</button></div>
+      </div>
+      <div class="card"><div id="audit-table"><div class="empty">Chargement…</div></div></div>
+    </section>
+
+    <!-- GOUVERNANCE & CONFORMITE (loi-cadre UMOA) -->
+    <section class="view" id="view-gouvernance" hidden>
+      <div class="topbar">
+        <div>
+          <h1>Gouvernance &amp; conformité</h1>
+          <p>Fiche institution, organes, dirigeants, mandats, sessions et procès-verbaux, résolutions — puis apparentés et conventions réglementées, risques et plan de continuité, échéancier réglementaire et exports CAC.</p>
+        </div>
+        <div class="topbar__actions">
+          <button class="btn btn--ghost" id="btn-gouv-refresh" type="button">↻ Actualiser</button>
+          <button class="btn btn--primary" id="btn-gouv-pdf" type="button">⭳ Exporter en PDF</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div id="gouv-kpis" class="kpi-grid"><div class="empty">Chargement…</div></div>
+        <div id="gouv-alerts" class="chips" style="margin-top:14px"></div>
+      </div>
+
+      <!-- VAGUE 29 : conformite prudentielle, risques & PCA, reporting -->
+      <div class="card" style="padding:0;overflow:hidden">
+        <div class="gtabs" id="gouv-tabs-29">
+          <button class="gtab active" data-g29="apparentes" type="button">Apparentés &amp; conventions</button>
+          <button class="gtab" data-g29="risques" type="button">Risques, PCA &amp; incidents</button>
+          <button class="gtab" data-g29="conformite" type="button">Conformité &amp; reporting</button>
+        </div>
+        <div style="padding:20px">
+          <div class="g29-actions" style="margin-bottom:14px">
+            <button class="btn btn--sm btn--primary" id="btn-g29-cac-pdf" type="button">⭳ Rapport spécial CAC (PDF)</button>
+            <button class="btn btn--sm btn--ghost" id="btn-g29-cac-xls" type="button">⭳ Rapport CAC (Excel)</button>
+            <button class="btn btn--sm btn--ghost" id="btn-g29-pack" type="button">⭳ Pack Inspection (ZIP)</button>
+          </div>
+          <div id="g29-kpis" class="g29-grid"></div>
+          <div id="g29-alerts" style="margin-bottom:14px"></div>
+          <div id="g29-host"><div class="empty">Chargement…</div></div>
+        </div>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div class="gtabs" id="gouv-tabs">
+          <button class="gtab active" data-gtab="institution" type="button">Institution</button>
+          <button class="gtab" data-gtab="organes" type="button">Organes</button>
+          <button class="gtab" data-gtab="membres" type="button">Membres</button>
+          <button class="gtab" data-gtab="mandats" type="button">Mandats</button>
+          <button class="gtab" data-gtab="sessions" type="button">Sessions &amp; PV</button>
+          <button class="gtab" data-gtab="resolutions" type="button">Résolutions</button>
+          <button class="gtab" data-gtab="actionnariat" type="button">Actionnariat / Sociétariat</button>
+        </div>
+        <div style="padding:20px">
+          <div id="gouv-pane-institution"></div>
+          <div id="gouv-pane-organes" hidden></div>
+          <div id="gouv-pane-membres" hidden></div>
+          <div id="gouv-pane-mandats" hidden></div>
+          <div id="gouv-pane-sessions" hidden></div>
+          <div id="gouv-pane-resolutions" hidden></div>
+          <div id="gouv-pane-actionnariat" hidden><div class="empty">Chargement…</div></div>
+        </div>
       </div>
     </section>
   </main>
 </div>
 
 <div id="modal-root"></div>
-<script src="assets/app.js" defer></script>
+<script src="assets/catalog.js?v=30"></script>
+<script src="assets/app.js?v=32" defer></script>
+<script src="assets/keepalive.js?v=32" defer></script>
 </body>
 </html>

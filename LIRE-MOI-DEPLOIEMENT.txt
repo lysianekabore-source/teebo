@@ -1,5 +1,5 @@
 =====================================================================
- teebo — SERVEUR (Render) + SITE (Netlify), 13/11/2026 (version E)
+ teebo — PAQUETS COMPLETS, 13/11/2026 (version E)
  Tout votre projet, entier, avec les correctifs.
 =====================================================================
 

@@ -1,0 +1,93 @@
+# ===================================================================
+# teebo - Configuration Netlify (SITE + REDIRECTION API vers RENDER)
+#
+# >>> UNE SEULE CHOSE A VERIFIER <<<
+# Remplacez teebo-api.onrender.com par l'adresse EXACTE de votre
+# service Render si elle est differente.
+# ===================================================================
+
+[build]
+  publish = "."
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# --- 1) REDIRECTION DU SERVEUR (API) — DOIT ETRE EN PREMIER ---
+# force = true : la regle s'applique meme si un fichier porte le meme nom.
+[[redirects]]
+  from = "/api/*"
+  to = "https://teebo-api-p825.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+# --- 2) URLs propres (pages du site) ---
+[[redirects]]
+  from = "/login"
+  to = "/login.html"
+  status = 200
+[[redirects]]
+  from = "/app"
+  to = "/app.html"
+  status = 200
+[[redirects]]
+  from = "/terrain"
+  to = "/terrain.html"
+  status = 200
+[[redirects]]
+  from = "/demo"
+  to = "/demo.html"
+  status = 200
+[[redirects]]
+  from = "/teebo"
+  to = "/teebo.html"
+  status = 200
+[[redirects]]
+  from = "/essai"
+  to = "/essai.html"
+  status = 200
+[[redirects]]
+  from = "/documentation"
+  to = "/documentation.html"
+  status = 200
+[[redirects]]
+  from = "/securite"
+  to = "/securite.html"
+  status = 200
+[[redirects]]
+  from = "/autorisations"
+  to = "/autorisations.html"
+  status = 200
+
+# --- 3) Toute autre adresse inconnue -> accueil ---
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# --- 4) JAMAIS DE CACHE sur les pages et les scripts de l application ---
+# Sans cela, un navigateur peut garder une ancienne version de app.js/app.css
+# melangee a la nouvelle page, ce qui provoque des rechargements en boucle.
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+    Service-Worker-Allowed = "/"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
+
+[[headers]]
+  for = "/login.html"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
+
+[[headers]]
+  for = "/app.html"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"

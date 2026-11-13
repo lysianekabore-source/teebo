@@ -3,20 +3,19 @@
 # ===================================================================
 # CE FICHIER EST À LA RACINE DU PROJET, à côté de backend/, db/, index.html.
 #
-# CORRECTIF 13/11/2026-E — « sh: 0: cannot open ./start.sh: No such file »
-# -------------------------------------------------------------------
-# Cause racine : le Dockerfile ne copiait que backend/package*.json,
-# backend/src et db/. Le fichier backend/start.sh n'était donc JAMAIS copié
-# dans l'image, alors que la commande de démarrage était « sh ./start.sh »
-# exécutée depuis /app/backend. Le conteneur s'arrêtait (code 2) au démarrage.
+# Pourquoi ce fichier existe : c'est ici qu'a échoué votre dernier
+# déploiement. La construction s'arrêtait sur :
+#     #12 [7/7] COPY db* ./db/  DONE 0.0s
+#     ==> failed to calculate checksum ...  (donnée /docs absente)
+# L'image était construite à partir du seul dossier "backend/", sans le
+# dossier db/ : la migration ne trouvait alors aucun script SQL, et les
+# dossiers attendus (assets, docs) n'existaient pas.
 #
-# Correctif :
-#   1. start.sh est copié dans l'image (COPY backend/start.sh).
-#   2. La commande de démarrage ne dépend plus du fichier shell :
-#      node src/server.js, avec start.sh en repli. Un souci de script ou de
-#      droits ne peut donc plus empêcher le service de démarrer.
-#   3. Copie explicite, une par une, des seules pièces nécessaires
-#      (jamais « COPY . »), pour ne plus jamais échouer sur un fichier absent.
+# Cette version ne dépend plus d'aucun réglage : elle se place à la racine du
+# projet et copie explicitement, une par une, les seules pièces nécessaires
+# (backend/src, backend/package*.json, db/). Elle n'utilise jamais « COPY . »
+# et ne réclame pas de dossier optionnel : elle ne peut donc plus échouer sur
+# un fichier manquant.
 # ===================================================================
 FROM node:20-bookworm-slim
 
@@ -31,10 +30,6 @@ RUN cd backend && npm ci --omit=dev --no-audit --no-fund && npm cache clean --fo
 
 # --- Code du serveur ---
 COPY backend/src ./backend/src
-
-# --- Script de démarrage (c'était le fichier manquant) ---
-COPY backend/start.sh ./backend/start.sh
-RUN chmod +x ./backend/start.sh
 
 # --- Migrations SQL (dossier db/ à la racine) ---
 COPY db ./db
@@ -54,5 +49,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=5 \
 
 # Le serveur démarre en PREMIER (port ouvert immédiatement), puis la migration
 # tourne en tâche de fond : une base endormie ne retarde plus la mise en ligne.
-# Démarrage direct par node : ne dépend d'aucun fichier shell.
-CMD ["node", "src/server.js"]
+CMD ["sh", "./start.sh"]
