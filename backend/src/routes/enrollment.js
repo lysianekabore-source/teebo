@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { habilit } from '../rbac_strict.js';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { q, tx } from '../db.js';
@@ -139,7 +140,7 @@ async function activeDevice(c, imfId, userId, req) {
 /*  1. CRÉATION d'un NOUVEAU client (par la collectrice, chez le client)*/
 /*     Le client est créé AVANT l'ouverture du compte.                  */
 /* ------------------------------------------------------------------ */
-r.post('/clients/new', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
+r.post('/clients/new', requireRole('admin_imf','direction','department','service','agency','staff'), habilit('clients.enroll','clients.manage'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const gps = readGps(b);
@@ -187,7 +188,7 @@ r.post('/clients/new', requireRole('admin_imf','direction','department','service
 /*  2. ENRÔLEMENT d'un client EXISTANT (migration depuis le SIG)        */
 /*     Obligatoire : nom+prénom, n° de compte SIG, solde, date du solde.*/
 /* ------------------------------------------------------------------ */
-r.post('/clients/enroll', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
+r.post('/clients/enroll', requireRole('admin_imf','direction','department','service','agency','staff'), habilit('clients.enroll','clients.manage'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const gps = readGps(b);
@@ -286,7 +287,7 @@ r.post('/clients/enroll', requireRole('admin_imf','direction','department','serv
 /* ------------------------------------------------------------------ */
 /*  3. COMPLÉTION des informations d'un client enrôlé (< 1 mois)        */
 /* ------------------------------------------------------------------ */
-r.post('/clients/:id/complete-enrollment', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
+r.post('/clients/:id/complete-enrollment', requireRole('admin_imf','direction','department','service','agency','staff'), habilit('clients.enroll','clients.manage'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const cl = (await q('SELECT * FROM client WHERE id=$1 AND imf_id=$2',
@@ -401,7 +402,7 @@ r.get('/clients/reminders', requireRole('admin_imf','direction','department','se
  * Balayage quotidien : tout enrôlement non complété dont le délai d'un mois est
  * échu => le compte est BLOQUÉ en attente de régularisation.
  */
-r.post('/clients/run-inactivity-sweep', requireRole('admin_imf','direction','department','service'), async (req, res, next) => {
+r.post('/clients/run-inactivity-sweep', requireRole('admin_imf','direction','department','service'), habilit('clients.manage','clients.freeze'), async (req, res, next) => {
   try {
     const out = await tx(async (c) => {
       const overdue = (await c.query(
@@ -432,7 +433,7 @@ r.post('/clients/run-inactivity-sweep', requireRole('admin_imf','direction','dep
 /*  5. OUVERTURE DE COMPTE : type d'épargne obligatoire + GPS capture   */
 /*     Une collectrice ne peut créer un compte QUE chez le client.      */
 /* ------------------------------------------------------------------ */
-r.post('/accounts/open', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
+r.post('/accounts/open', requireRole('admin_imf','direction','department','service','agency','staff'), habilit('savings.manage','clients.manage'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const gps = readGps(b);
@@ -504,7 +505,7 @@ r.post('/accounts/open', requireRole('admin_imf','direction','department','servi
 /* ------------------------------------------------------------------ */
 /*  6. Chaîne de collecte : rattachement et consultation               */
 /* ------------------------------------------------------------------ */
-r.post('/clients/:id/assign', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
+r.post('/clients/:id/assign', requireRole('admin_imf','direction','department','service','agency','staff'), habilit('collecte.assign','clients.manage'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const out = await tx(async (c) => {
@@ -571,7 +572,7 @@ r.get('/clients', requireRole('admin_imf','direction','department','service','ag
 /* ------------------------------------------------------------------ */
 /*  8. Dépôt de collecte chez le client (GPS horodaté)                 */
 /*     Refusé si le compte est bloqué (régularisation en attente).      */
-r.post('/operations/collect-deposit', requireRole('staff','agency'), async (req, res, next) => {
+r.post('/operations/collect-deposit', requireRole('staff','agency'), habilit('operations.write','cash.declare'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const gps = readGps(b);
@@ -604,7 +605,7 @@ r.post('/operations/collect-deposit', requireRole('staff','agency'), async (req,
 
 /* ------------------------------------------------------------------ */
 /*  9. Création d'un espace client en ligne (rattaché à la collectrice) */
-r.post('/clients/:id/portal', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
+r.post('/clients/:id/portal', requireRole('admin_imf','direction','department','service','agency','staff'), habilit('clients.manage'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const cl = (await q('SELECT * FROM client WHERE id=$1 AND imf_id=$2',

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { habilit } from '../rbac_strict.js';
 import bcrypt from 'bcryptjs';
 import { q } from '../db.js';
 import { requireRole } from '../auth.js';
@@ -27,7 +28,7 @@ r.get('/devices', requireRole('admin_imf', 'direction', 'department', 'service')
 });
 
 /** Enrôlement obligatoire : nom collectrice, date de naissance, IMEI 15, MAC, PIN. */
-r.post('/devices', requireRole('admin_imf', 'direction', 'department', 'service'), async (req, res) => {
+r.post('/devices', requireRole('admin_imf', 'direction', 'department', 'service'), habilit('devices.manage'), async (req, res) => {
   const b = req.body || {};
   const imei = String(b.imei || '').replace(/\D/g, '');
   const mac = String(b.mac_address || '').toUpperCase().trim();
@@ -54,7 +55,7 @@ r.post('/devices', requireRole('admin_imf', 'direction', 'department', 'service'
 });
 
 /** Révocation à distance : terminal perdu/volé -> déconnexion forcée. */
-r.post('/devices/:id/revoke', requireRole('admin_imf', 'direction', 'department', 'service'), async (req, res) => {
+r.post('/devices/:id/revoke', requireRole('admin_imf', 'direction', 'department', 'service'), habilit('devices.manage'), async (req, res) => {
   const { rows } = await q(
     `UPDATE device SET status='revoked', revoked_by=$3, revoked_at=now()
       WHERE id=$1 AND imf_id=$2 RETURNING *`, [req.params.id, req.user.imf_id, req.user.id]);
@@ -71,7 +72,7 @@ r.post('/devices/:id/revoke', requireRole('admin_imf', 'direction', 'department'
 });
 
 /** Réactivation d'un terminal (retour d'un appareil bloqué). */
-r.post('/devices/:id/reactivate', requireRole('admin_imf', 'direction', 'department', 'service'), async (req, res) => {
+r.post('/devices/:id/reactivate', requireRole('admin_imf', 'direction', 'department', 'service'), habilit('devices.manage'), async (req, res) => {
   const { rows } = await q(
     `UPDATE device SET status='active', revoked_by=NULL, revoked_at=NULL
       WHERE id=$1 AND imf_id=$2 RETURNING *`, [req.params.id, req.user.imf_id]);

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { habilit } from '../rbac_strict.js';
 import { q, tx } from '../db.js';
 import { requireRole, canViewTeamData } from '../auth.js';
 import { getSettings, readSettings, saveSettings, collectriceCashBalance,
@@ -33,7 +34,7 @@ r.get('/collecte/settings', requireRole(...READ_ROLES), async (req, res, next) =
 });
 
 /** Enregistrer les paramètres de collecte (admin IMF / direction). */
-r.post('/collecte/settings', requireRole(...WRITE_ROLES), async (req, res, next) => {
+r.post('/collecte/settings', requireRole(...WRITE_ROLES), habilit('round.manage','collecte.assign'), async (req, res, next) => {
   try {
     const b = req.body || {};
     // Validation douce des montants (en centimes).
@@ -92,7 +93,7 @@ r.get('/collecte/cash', requireRole(...READ_ROLES), async (req, res, next) => {
  *  - channel = 'mobile_money'      : transfert sur le compte MoMo de l’IMF
  *    (les RÉFÉRENCES de transfert sont OBLIGATOIRES).
  */
-r.post('/collecte/cash-deposits', requireRole(...DECLARE_ROLES), async (req, res, next) => {
+r.post('/collecte/cash-deposits', requireRole(...DECLARE_ROLES), habilit('cash.declare'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const amount = Number(b.amount_cents || 0);
@@ -184,7 +185,7 @@ r.get('/collecte/supervisor-reports', requireRole(...SUP_REPORT_ROLES), async (r
 });
 
 /** Valider ou rejeter un versement (caissière / admin IMF). */
-r.post('/collecte/cash-deposits/:id/validate', requireRole(...VALIDATE_ROLES), async (req, res, next) => {
+r.post('/collecte/cash-deposits/:id/validate', requireRole(...VALIDATE_ROLES), habilit('cash.validate','cash.approve'), async (req, res, next) => {
   try {
     const decision = (req.body && req.body.decision) || 'valide';
     if (!['valide','rejete'].includes(decision))
@@ -194,6 +195,14 @@ r.post('/collecte/cash-deposits/:id/validate', requireRole(...VALIDATE_ROLES), a
         [req.params.id, req.user.imf_id])).rows[0];
       if (!dep) { const e = new Error('Versement introuvable.'); e.status = 404; throw e; }
       if (dep.status !== 'declare') { const e = new Error('Ce versement a déjà été traité.'); e.status = 409; e.code='already_handled'; throw e; }
+      // SÉPARATION DES TÂCHES (anti-fraude) : celui qui a DÉCLARÉ le versement ne
+      // peut pas le valider lui-même. Empêche l'auto-approbation d'un encaissement.
+      const declarant = dep.collectrice_user_id || null;
+      const isAdmin = ['admin_imf'].includes(req.user.role);
+      if (declarant && String(declarant) === String(req.user.id) && !isAdmin) {
+        const e = new Error('Vous ne pouvez pas valider un versement que vous avez vous-même déclaré (séparation des tâches).');
+        e.status = 403; e.code = 'sod_self_validation'; throw e;
+      }
       const upd = (await c.query(
         `UPDATE cash_deposit SET status=$2, validated_by=$3, validated_at=now(),
                 rejected_reason=$4 WHERE id=$1 RETURNING *`,

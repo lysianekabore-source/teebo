@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { habilit } from '../rbac_strict.js';
 import { q, tx } from '../db.js';
 import { requireRole, canViewTeamData } from '../auth.js';
 import { runFreezeSweep, unfreezeClient, getSchedule, scheduleCoversDay, isFrozen, FREEZE_AFTER_DAYS } from '../freeze.js';
@@ -92,7 +93,7 @@ async function ensureRound(c, imfId, userId) {
 /*   - les clients du PROGRAMME prévus aujourd’hui sont inclus ;        */
 /*   - les clients gelés restent visibles mais marqués « gelé ».        */
 /* ------------------------------------------------------------------ */
-r.get('/round/today', requireRole(...ALL), async (req, res, next) => {
+r.get('/round/today', habilit('round.view','round.manage','collecte.assign'), requireRole(...ALL), async (req, res, next) => {
   try {
     // Le compteur « sans visite » est recalculé à chaque affichage (gel auto 1 mois).
     if (!canViewTeamData(req.user.role)) { try { await runFreezeSweep(req.user.imf_id); } catch (e) { /* tolérant */ } }
@@ -190,7 +191,7 @@ r.get('/round/today', requireRole(...ALL), async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 /*  Recherche de client (ajout à la tournée, régularisation, demande)   */
 /* ------------------------------------------------------------------ */
-r.get('/round/search', requireRole(...ALL), async (req, res, next) => {
+r.get('/round/search', habilit('clients.read','round.view','collecte.assign'), requireRole(...ALL), async (req, res, next) => {
   try {
     const pos = readPos(null, req);
     const Q = String(req.query.q || '').trim();
@@ -228,7 +229,7 @@ r.get('/round/search', requireRole(...ALL), async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 /*  Constituer / mettre à jour la tournée du jour                       */
 /* ------------------------------------------------------------------ */
-r.post('/round/today/add', requireRole(...ALL), async (req, res, next) => {
+r.post('/round/today/add', habilit('round.manage','collecte.assign'), requireRole(...ALL), async (req, res, next) => {
   try {
     const b = req.body || {};
     const ids = Array.isArray(b.client_ids) ? b.client_ids : (b.client_id ? [b.client_id] : []);
@@ -329,8 +330,8 @@ const checkIn = async (req, res, next) => {
 
 // Deux points d’entrée équivalents : /round/visits/:id/check-in (par visite) et
 // /round/visits/check-in (par client) — le bouton « Valider la visite » utilise le second.
-r.post('/round/visits/check-in', requireRole(...ALL), checkIn);
-r.post('/round/visits/:id/check-in', requireRole(...ALL), async (req, res, next) => {
+r.post('/round/visits/check-in', habilit('cash.declare','round.view','collecte.assign'), requireRole(...ALL), checkIn);
+r.post('/round/visits/:id/check-in', habilit('cash.declare','round.view','collecte.assign'), requireRole(...ALL), async (req, res, next) => {
   // Compatibilité : si :id correspond à une visite, on récupère son client puis on délègue.
   try {
     const b = req.body || {};
@@ -347,7 +348,7 @@ r.post('/round/visits/:id/check-in', requireRole(...ALL), async (req, res, next)
 });
 
 /** Retire un client de la tournée du jour. */
-r.post('/round/today/remove', requireRole(...ALL), async (req, res, next) => {
+r.post('/round/today/remove', habilit('round.manage','collecte.assign'), requireRole(...ALL), async (req, res, next) => {
   try {
     const b = req.body || {};
     if (!b.client_id) return res.status(400).json({ error: 'client_id requis' });
@@ -365,7 +366,7 @@ r.post('/round/today/remove', requireRole(...ALL), async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 
 /** Lire le programme d’un client. */
-r.get('/clients/:id/schedule', requireRole(...ALL), async (req, res, next) => {
+r.get('/clients/:id/schedule', habilit('clients.read','round.view','collecte.assign'), requireRole(...ALL), async (req, res, next) => {
   try {
     const cl = (await q('SELECT id, full_name FROM client WHERE id=$1 AND imf_id=$2',
       [req.params.id, req.user.imf_id])).rows[0];
@@ -379,7 +380,7 @@ r.get('/clients/:id/schedule', requireRole(...ALL), async (req, res, next) => {
  * Fixer / modifier les jours de collecte d’un client.
  * Body : { weekdays:[0..6], frequency, day_of_month, note, client_id }
  */
-r.post('/clients/:id/schedule', requireRole(...ALL), async (req, res, next) => {
+r.post('/clients/:id/schedule', habilit('collecte.assign','round.manage'), requireRole(...ALL), async (req, res, next) => {
   try {
     const b = req.body || {};
     const cl = (await q('SELECT id, full_name, collectrice_user_id FROM client WHERE id=$1 AND imf_id=$2',
@@ -423,7 +424,7 @@ r.post('/clients/:id/schedule', requireRole(...ALL), async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 
 /** Liste des clients gelés (supervision) ou des demandes d’explication en cours. */
-r.get('/clients/frozen', requireRole(...ALL), async (req, res, next) => {
+r.get('/clients/frozen', habilit('clients.read','credit.read','credit.recovery'), requireRole(...ALL), async (req, res, next) => {
   try {
     const { rows } = await q(
       `SELECT c.id, c.code_client, c.full_name, c.phone, c.frozen_at, c.frozen_reason,
@@ -444,7 +445,7 @@ r.get('/clients/frozen', requireRole(...ALL), async (req, res, next) => {
  * Le SUPERVISEUR demande à la collectrice d’expliquer le gel, CLIENT PAR CLIENT.
  * Body : { client_ids:[...], reason? }  (obligatoire : au moins un client)
  */
-r.post('/clients/freeze-requests', requireRole(...SUP), async (req, res, next) => {
+r.post('/clients/freeze-requests', habilit('clients.freeze','credit.recovery','clients.manage'), requireRole(...SUP), async (req, res, next) => {
   try {
     const b = req.body || {};
     const ids = Array.isArray(b.client_ids) ? b.client_ids : (b.client_id ? [b.client_id] : []);
@@ -468,7 +469,7 @@ r.post('/clients/freeze-requests', requireRole(...SUP), async (req, res, next) =
 });
 
 /** La collectrice répond (explication par client) ou demande un dégel motivé. */
-r.post('/clients/:id/freeze-explanation', requireRole(...ALL), async (req, res, next) => {
+r.post('/clients/:id/freeze-explanation', habilit('clients.freeze','credit.recovery','clients.manage'), requireRole(...ALL), async (req, res, next) => {
   try {
     const b = req.body || {};
     const explanation = String(b.explanation || '').trim();
@@ -507,7 +508,7 @@ r.post('/clients/:id/freeze-explanation', requireRole(...ALL), async (req, res, 
  * Le SUPERVISEUR dégèle un client (après explication et/ou demande motivée).
  * Body : { reason (obligatoire), explanation? }
  */
-r.post('/clients/:id/unfreeze', requireRole(...SUP), async (req, res, next) => {
+r.post('/clients/:id/unfreeze', habilit('clients.freeze','clients.manage'), requireRole(...SUP), async (req, res, next) => {
   try {
     const b = req.body || {};
     const reason = String(b.reason || '').trim();
@@ -526,7 +527,7 @@ r.post('/clients/:id/unfreeze', requireRole(...SUP), async (req, res, next) => {
 });
 
 /** Le SUPERVISEUR (ou l’administrateur) peut aussi GELER manuellement. */
-r.post('/clients/:id/freeze', requireRole(...SUP), async (req, res, next) => {
+r.post('/clients/:id/freeze', habilit('clients.freeze','clients.manage'), requireRole(...SUP), async (req, res, next) => {
   try {
     const b = req.body || {};
     const reason = String(b.reason || '').trim();
@@ -544,7 +545,7 @@ r.post('/clients/:id/freeze', requireRole(...SUP), async (req, res, next) => {
 });
 
 /** Exécution manuelle de la tâche de gel automatique (1 mois sans visite). */
-r.post('/clients/run-freeze-sweep', requireRole(...SUP), async (req, res, next) => {
+r.post('/clients/run-freeze-sweep', habilit('clients.freeze','clients.manage'), requireRole(...SUP), async (req, res, next) => {
   try {
     const frozen = await runFreezeSweep(req.user.imf_id);
     res.json({ ok: true, frozen, count: frozen.length,
@@ -554,7 +555,7 @@ r.post('/clients/run-freeze-sweep', requireRole(...SUP), async (req, res, next) 
 });
 
 /** Historique des événements de gel/dégel d’un client. */
-r.get('/clients/:id/freeze-events', requireRole(...ALL), async (req, res, next) => {
+r.get('/clients/:id/freeze-events', habilit('clients.read','clients.freeze','credit.recovery'), requireRole(...ALL), async (req, res, next) => {
   try {
     const { rows } = await q(
       `SELECT e.*, rq.full_name AS requested_by_name, an.full_name AS answered_by_name,
@@ -572,7 +573,7 @@ r.get('/clients/:id/freeze-events', requireRole(...ALL), async (req, res, next) 
 /* ------------------------------------------------------------------ */
 /*  Tableau de bord collectrice : visites, retards, gels                */
 /* ------------------------------------------------------------------ */
-r.get('/round/dashboard', requireRole(...ALL), async (req, res, next) => {
+r.get('/round/dashboard', habilit('round.view','objectives.dashboard','reports.read'), requireRole(...ALL), async (req, res, next) => {
   try {
     const targetId = canViewTeamData(req.user.role) ? (req.query.collectrice_user_id || req.user.id) : req.user.id;
     const today = (await q(

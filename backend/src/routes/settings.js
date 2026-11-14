@@ -1,6 +1,7 @@
 import express from 'express';
 import { q, tx } from '../db.js';
 import { authenticate, requireFreshPassword, requireRole } from '../auth.js';
+import { habilit } from '../rbac_strict.js';
 import { getBranding, TEEBO_SUPPLIER, renderInvoice, setDocumentCsp } from '../documents.js';
 import { TRIAL_BILLING_NOTE } from '../pricing.js';
 
@@ -25,7 +26,7 @@ router.use((req, res, next) => {
 });
 
 /** GET /api/v1/org-settings — identité visuelle + mentions légales + tarif TVA. */
-router.get('/org-settings', async (req, res, next) => {
+router.get('/org-settings', habilit('settings.manage'), async (req, res, next) => {
   try {
     const b = await getBranding(req.user.imf_id);
     res.json({
@@ -59,7 +60,7 @@ router.get('/org-settings', async (req, res, next) => {
 });
 
 /** POST /api/v1/org-settings — enregistre (réservé admin_imf / direction). */
-router.post('/org-settings', requireRole('admin_imf', 'direction'), async (req, res, next) => {
+router.post('/org-settings', habilit('settings.manage'), requireRole('admin_imf', 'direction'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const hasLogo = b.logo_data_url !== undefined;

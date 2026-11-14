@@ -31,7 +31,7 @@ function int(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? Math.r
 /* ------------------------------------------------------------------ */
 /*  Types de compte d'épargne : catalogue complet (spécifications IMF)  */
 /* ------------------------------------------------------------------ */
-r.get('/savings-products', requireRole(...STAFF), async (req, res) => {
+r.get('/savings-products', requireRole(...STAFF), habilit('savings.read','savings.manage'), async (req, res) => {
   const { rows } = await q(
     `SELECT code,label,description,is_active,
             nature,targets,
@@ -51,7 +51,7 @@ r.get('/savings-products', requireRole(...STAFF), async (req, res) => {
 /*  Un compte est créé à l'ouverture du client ; on lui affecte ensuite  */
 /*  le produit d'épargne choisi (frais de tenue, intérêts, commissions). */
 /* ------------------------------------------------------------------ */
-r.post('/accounts/:id/product', requireRole(...STAFF), async (req, res, next) => {
+r.post('/accounts/:id/product', requireRole(...STAFF), habilit('savings.manage'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const code = String(b.product_code || '').trim().toLowerCase();
@@ -137,7 +137,7 @@ r.post('/savings-products', requireRole(...ADM), async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 /*  Types de demande personnalisés (admin, infinité) + frais fixes      */
 /* ------------------------------------------------------------------ */
-r.get('/request-types', requireRole(...STAFF), async (req, res) => {
+r.get('/request-types', requireRole(...STAFF), habilit('clients.read','clients.manage','operations.read'), async (req, res) => {
   const { rows } = await q(
     `SELECT id,code,label,description,fee_cents,requires_doc,is_active,sort_order
        FROM request_type WHERE imf_id=$1 ORDER BY sort_order, label`, [req.user.imf_id]);
@@ -173,7 +173,7 @@ r.delete('/request-types/:id', requireRole(...ADM), async (req, res) => {
 /* ------------------------------------------------------------------ */
 /*  Demande client : les frais sont DÉBITÉS À LA SOURCE sur son compte  */
 /* ------------------------------------------------------------------ */
-r.post('/client-requests', requireRole(...STAFF), async (req, res, next) => {
+r.post('/client-requests', requireRole(...STAFF), habilit('clients.manage','clients.enroll','operations.write'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const out = await tx(async (c) => {
@@ -219,7 +219,7 @@ r.post('/client-requests', requireRole(...STAFF), async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-r.get('/client-requests', requireRole(...STAFF), async (req, res) => {
+r.get('/client-requests', requireRole(...STAFF), habilit('clients.read','clients.manage','operations.read'), async (req, res) => {
   const { rows } = await q(
     `SELECT cr.*, rt.label AS type_label, c.full_name AS client_name, c.code_client,
             a.code_account
@@ -234,7 +234,7 @@ r.get('/client-requests', requireRole(...STAFF), async (req, res) => {
 /* ------------------------------------------------------------------ */
 /*  FRAIS : liste, en attente, et clôture mensuelle                     */
 /* ------------------------------------------------------------------ */
-r.get('/fees', requireRole(...STAFF), async (req, res) => {
+r.get('/fees', requireRole(...STAFF), habilit('fees.manage','operations.read','reports.read'), async (req, res) => {
   const { rows } = await q(
     `SELECT f.*, a.code_account, c.full_name AS client_name, c.code_client
        FROM account_fee f JOIN account a ON a.id=f.account_id JOIN client c ON c.id=a.client_id
@@ -245,7 +245,7 @@ r.get('/fees', requireRole(...STAFF), async (req, res) => {
   res.json({ fees: rows, pending: { total_cents: Number(pending.total), count: pending.n } });
 });
 
-r.get('/fees/pending', requireRole(...STAFF), async (req, res) => {
+r.get('/fees/pending', requireRole(...STAFF), habilit('fees.manage','operations.read','reports.read'), async (req, res) => {
   const { rows } = await q(
     `SELECT f.id, f.kind, f.amount_cents, f.period_start, f.period_end, f.detail, f.created_at,
             a.code_account, a.balance_cents, c.full_name AS client_name, c.code_client,
@@ -267,7 +267,7 @@ r.get('/fees/pending', requireRole(...STAFF), async (req, res) => {
  *   - Si le solde disponible < solde minimum permanent => prélèvement ACTÉ
  *     « en attente » (rattrapage automatique).
  */
-r.post('/fees/close-month', requireRole(...SUP), async (req, res, next) => {
+r.post('/fees/close-month', requireRole(...SUP), habilit('fees.manage'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const ref = b.period_date ? new Date(b.period_date) : new Date();
@@ -346,7 +346,7 @@ r.post('/fees/close-month', requireRole(...SUP), async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 /*  Récupération PRIORITAIRE des frais en attente (à l'alimentation)    */
 /* ------------------------------------------------------------------ */
-r.post('/fees/recover/:accountId', requireRole(...STAFF), async (req, res, next) => {
+r.post('/fees/recover/:accountId', requireRole(...STAFF), habilit('fees.manage','operations.write'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const out = await tx(async (c) => {
@@ -376,7 +376,7 @@ r.post('/fees/recover/:accountId', requireRole(...STAFF), async (req, res, next)
 /*   2. Commission de retrait anticipé (% du montant retiré)            */
 /*   3. Exonération si le retrait n'entame pas les nouveaux dépôts      */
 /* ------------------------------------------------------------------ */
-r.post('/operations/withdraw-early', requireRole(...STAFF), async (req, res, next) => {
+r.post('/operations/withdraw-early', requireRole(...STAFF), habilit('operations.write','operations.validate'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const amount = int(b.amount_cents);
@@ -484,7 +484,7 @@ r.post('/operations/withdraw-early', requireRole(...STAFF), async (req, res, nex
 /* ------------------------------------------------------------------ */
 /*  DÉPÔT avec rattrapage automatique prioritaire des frais en attente  */
 /* ------------------------------------------------------------------ */
-r.post('/operations/deposit', requireRole(...STAFF), async (req, res, next) => {
+r.post('/operations/deposit', requireRole(...STAFF), habilit('operations.write','cash.declare'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const amount = int(b.amount_cents);
@@ -527,7 +527,7 @@ r.post('/operations/deposit', requireRole(...STAFF), async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 /*  GESTION DES SORTIES : clôture de compte (frais de clôture)          */
 /* ------------------------------------------------------------------ */
-r.post('/accounts/:id/close', requireRole(...SUP), async (req, res, next) => {
+r.post('/accounts/:id/close', requireRole(...SUP), habilit('operations.validate','clients.freeze'), async (req, res, next) => {
   try {
     const out = await tx(async (c) => {
       const acc = (await c.query(
@@ -554,7 +554,7 @@ r.post('/accounts/:id/close', requireRole(...SUP), async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 /*  SIMULATEUR DE FRAIS (barème + retrait anticipé) — transparence IMF  */
 /* ------------------------------------------------------------------ */
-r.post('/fees/simulate', requireRole(...STAFF), async (req, res, next) => {
+r.post('/fees/simulate', requireRole(...STAFF), habilit('fees.manage','operations.read','reports.read'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const prod = (await q('SELECT * FROM savings_product WHERE code=$1', [b.product_code])).rows[0];
@@ -592,7 +592,7 @@ async function logCreditEvent(c, fileId, from, to, user, note) {
 }
 
 /** Soumission : par le CLIENT ou saisie par la COLLECTRICE. */
-r.post('/credits', requireRole(...STAFF), async (req, res, next) => {
+r.post('/credits', requireRole(...STAFF), habilit('credit.initiate','credit.process','credit.read'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const amount = int(b.amount_cents);
@@ -641,7 +641,7 @@ r.post('/credits', requireRole(...STAFF), async (req, res, next) => {
 });
 
 /** Liste des dossiers — filtrée selon le rôle (visibilité partagée). */
-r.get('/credits', requireRole(...STAFF), async (req, res) => {
+r.get('/credits', requireRole(...STAFF), habilit('credit.read','credit.process','credit.initiate','credit.validate_final'), async (req, res) => {
   const role = req.user.role;
   const params = [req.user.imf_id];
   let where = 'cf.imf_id=$1';
@@ -697,7 +697,7 @@ r.get('/credits/final-queue', requirePermission('credit.validate_final'), async 
 });
 
 /** Tableau de bord partagé d'un dossier (Client, Collectrice, Superviseur). */
-r.get('/credits/:id', requireRole(...STAFF), async (req, res, next) => {
+r.get('/credits/:id', requireRole(...STAFF), habilit('credit.read','credit.process','credit.initiate','credit.validate_final','credit.recovery'), async (req, res, next) => {
   try {
     const f = (await q(
       `SELECT cf.*, c.full_name AS client_name, c.code_client, c.phone AS client_phone,
@@ -806,7 +806,7 @@ r.post('/credits/:id/final-validate', requirePermission('credit.validate_final')
 });
 
 /** Suivi côté collectrice / superviseur (tableau de bord partagé). */
-r.get('/credits/dashboard/summary', requireRole(...STAFF), async (req, res) => {  const rows = (await q(
+r.get('/credits/dashboard/summary', requireRole(...STAFF), habilit('credit.read','credit.process','reports.read'), async (req, res) => {  const rows = (await q(
     `SELECT cf.status, COUNT(*)::int AS n, COALESCE(SUM(cf.amount_cents),0)::bigint AS total_cents
        FROM credit_file cf WHERE cf.imf_id=$1 GROUP BY cf.status`, [req.user.imf_id])).rows;
   const { rows: recent } = await q(
@@ -820,7 +820,7 @@ r.get('/credits/dashboard/summary', requireRole(...STAFF), async (req, res) => {
 /* ------------------------------------------------------------------ */
 /*  Tableau de bord IMF : soldes bloqués / état des demandes            */
 /* ------------------------------------------------------------------ */
-r.get('/imf/dashboard', requireRole(...STAFF), async (req, res) => {
+r.get('/imf/dashboard', requireRole(...STAFF), habilit('reports.read','operations.read','objectives.read'), async (req, res) => {
   const blocks = (await q(
     `SELECT a.code_account, c.full_name AS client_name FROM account a JOIN client c ON c.id=a.client_id
       WHERE a.imf_id=$1 AND a.status='blocked' LIMIT 50`, [req.user.imf_id])).rows;

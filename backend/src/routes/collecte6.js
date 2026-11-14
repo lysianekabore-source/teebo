@@ -6,6 +6,7 @@
  *   - approbation caissière + export Excel des dépôts
  * =================================================================== */
 import { Router } from 'express';
+import { habilit } from '../rbac_strict.js';
 import { q, tx } from '../db.js';
 import { requireRole } from '../auth.js';
 import {
@@ -60,7 +61,7 @@ r.get('/collecte/assignments', requireRole(...READ), async (req, res, next) => {
  *   days   : requis pour demission / conge / absence
  *   client_ids : requis si scope = 'selection'
  */
-r.post('/collecte/assignments', requireRole(...SUP), async (req, res, next) => {
+r.post('/collecte/assignments', requireRole(...SUP), habilit('collecte.assign','round.manage'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const scope = b.scope === 'tous' ? 'tous' : 'selection';
@@ -117,7 +118,7 @@ r.post('/collecte/assignments', requireRole(...SUP), async (req, res, next) => {
 });
 
 /** Clôturer une affectation (retour à la normale). */
-r.post('/collecte/assignments/:id/close', requireRole(...SUP), async (req, res, next) => {
+r.post('/collecte/assignments/:id/close', requireRole(...SUP), habilit('collecte.assign','collecte.supervise'), async (req, res, next) => {
   try {
     const out = (await q(
       `UPDATE collectrice_assignment SET status='closed' WHERE id=$1 AND imf_id=$2 RETURNING *`,
@@ -165,7 +166,7 @@ r.get('/clients/:id/statement-export', requireRole(...READ), async (req, res, ne
  * Approbation du versement par la caissière (reception du solde de collecte).
  * Clôture le solde de caisse de la collectrice en acceptant son reversement.
  */
-r.post('/collecte/cash-deposits/:id/approve', requireRole(...CASHIER), async (req, res, next) => {
+r.post('/collecte/cash-deposits/:id/approve', requireRole(...CASHIER), habilit('cash.approve','cash.validate'), async (req, res, next) => {
   try {
     const note = (req.body && req.body.note) || null;
     const out = await tx(async (c) => {

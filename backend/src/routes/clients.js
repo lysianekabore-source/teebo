@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { habilit } from '../rbac_strict.js';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { q, tx } from '../db.js';
@@ -41,7 +42,7 @@ r.get('/client-meta', requireRole('admin_imf','direction','department','service'
  * ÉTAPE 2 DU PARCOURS — Ouverture du compte bancaire d'un client existant.
  * Un client ne peut avoir qu'UN seul compte actif (anti-doublon strict).
  */
-r.post('/clients/:id/open-account', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
+r.post('/clients/:id/open-account', requireRole('admin_imf','direction','department','service','agency','staff'), habilit('savings.manage','clients.manage'), async (req, res, next) => {
   try {
     const cl = (await q('SELECT * FROM client WHERE id=$1 AND imf_id=$2',
       [req.params.id, req.user.imf_id])).rows[0];
@@ -94,7 +95,7 @@ r.get('/clients', requireRole('admin_imf','direction','department','service','ag
  * L'IMF choisit le mode de connexion (mot de passe / SMS / PIN) et le format
  * de relevé (PDF / CSV / les deux). Sans ces choix, défauts : mot_de_passe + pdf.
  */
-r.post('/clients', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res) => {
+r.post('/clients', requireRole('admin_imf','direction','department','service','agency','staff'), habilit('clients.manage','clients.enroll'), async (req, res) => {
   const b = req.body || {};
   if (!b.full_name) return res.status(400).json({ error: 'Nom complet du client requis' });
   const loginMode = ['mot_de_passe', 'sms_otp', 'pin'].includes(b.login_mode) ? b.login_mode : 'mot_de_passe';
@@ -329,7 +330,7 @@ r.get('/clients/:id/fiche', requireRole('admin_imf','direction','department','se
  * par empreinte digitale du capteur de l'appareil (attestation). Enregistrement
  * idempotent par (client, rôle).
  */
-r.post('/clients/:id/signatures', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
+r.post('/clients/:id/signatures', requireRole('admin_imf','direction','department','service','agency','staff'), habilit('clients.manage'), async (req, res, next) => {
   try {
     const cl = (await q('SELECT id FROM client WHERE id=$1 AND imf_id=$2',
       [req.params.id, req.user.imf_id])).rows[0];
@@ -379,7 +380,7 @@ r.get('/client-login-modes', (_req, res) => res.json({ modes: [
  * L'OCR automatique n'est pas embarqué ; les valeurs lues sur le scan sont
  * confrontées à la saisie via POST /conformity ci-dessous.
  */
-r.post('/clients/:id/scans', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
+r.post('/clients/:id/scans', requireRole('admin_imf','direction','department','service','agency','staff'), habilit('clients.manage'), async (req, res, next) => {
   try {
     const cl = (await q('SELECT id FROM client WHERE id=$1 AND imf_id=$2',
       [req.params.id, req.user.imf_id])).rows[0];
@@ -418,7 +419,7 @@ r.get('/clients/:id/conformity', requireRole('admin_imf','direction','department
  * Le serveur recalcule lui-même la conformité (source de vérité) et dégage les
  * informations NON CONFORMES à corriger avant l'ouverture du compte.
  */
-r.post('/clients/:id/conformity', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
+r.post('/clients/:id/conformity', requireRole('admin_imf','direction','department','service','agency','staff'), habilit('clients.manage','clients.freeze'), async (req, res, next) => {
   try {
     const cl = (await q('SELECT * FROM client WHERE id=$1 AND imf_id=$2',
       [req.params.id, req.user.imf_id])).rows[0];

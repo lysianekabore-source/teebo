@@ -1,6 +1,7 @@
 import express from 'express';
 import { q, tx } from '../db.js';
 import { authenticate, requireFreshPassword, requireRole } from '../auth.js';
+import { habilit } from '../rbac_strict.js';
 
 /* ===========================================================================
  * teebo — GESTION DES HABILITATIONS ÉDITABLES (schema_v13)
@@ -29,7 +30,7 @@ function slugify(s) {
 }
 
 // --- Catalogue complet : habilitations + postes + habilitations par poste ----
-router.get('/access/catalog', ADMIN, async (req, res, next) => {
+router.get('/access/catalog', habilit('access.manage','users.read','users.manage'), ADMIN, async (req, res, next) => {
   try {
     const imf = req.user.imf_id;
     const perms = (await q(
@@ -61,7 +62,7 @@ router.get('/access/catalog', ADMIN, async (req, res, next) => {
 });
 
 // --- Créer une habilitation supplémentaire (custom IMF) ----------------------
-router.post('/access/permissions', ADMIN, async (req, res, next) => {
+router.post('/access/permissions', habilit('access.manage'), ADMIN, async (req, res, next) => {
   try {
     const b = req.body || {};
     const label = String(b.label || '').trim();
@@ -87,7 +88,7 @@ router.post('/access/permissions', ADMIN, async (req, res, next) => {
 });
 
 // --- Supprimer une habilitation custom (jamais le socle) ---------------------
-router.delete('/access/permissions/:key', ADMIN, async (req, res, next) => {
+router.delete('/access/permissions/:key', habilit('access.manage'), ADMIN, async (req, res, next) => {
   try {
     const key = req.params.key;
     const row = (await q(
@@ -105,7 +106,7 @@ router.delete('/access/permissions/:key', ADMIN, async (req, res, next) => {
 });
 
 // --- Créer un poste/profil CUSTOM + affecter ses habilitations par défaut ----
-router.post('/access/positions', ADMIN, async (req, res, next) => {
+router.post('/access/positions', habilit('access.manage'), ADMIN, async (req, res, next) => {
   try {
     const b = req.body || {};
     const label = String(b.label || '').trim();
@@ -155,7 +156,7 @@ router.post('/access/positions', ADMIN, async (req, res, next) => {
 // Surcharge au niveau de l'IMF (le socle global reste intact). C'est aussi
 // le mécanisme de RÉAFFECTATION de l'écran de validation finale du crédit
 // (permission 'credit.validate_final') à d'autres postes.
-router.patch('/access/positions/:code/permission', ADMIN, async (req, res, next) => {
+router.patch('/access/positions/:code/permission', habilit('access.manage'), ADMIN, async (req, res, next) => {
   try {
     const code = req.params.code;
     const key = String((req.body || {}).permission_key || '').trim();
@@ -180,7 +181,7 @@ router.patch('/access/positions/:code/permission', ADMIN, async (req, res, next)
 });
 
 // --- Habilitations effectives d'un utilisateur -------------------------------
-router.get('/access/users/:id/permissions', ADMIN, async (req, res, next) => {
+router.get('/access/users/:id/permissions', habilit('access.manage','users.read','users.manage'), ADMIN, async (req, res, next) => {
   try {
     const u = (await q('SELECT id, imf_id, position_code, role FROM app_user WHERE id=$1', [req.params.id])).rows[0];
     if (!u) return res.status(404).json({ error: 'not_found' });
@@ -195,7 +196,7 @@ router.get('/access/users/:id/permissions', ADMIN, async (req, res, next) => {
 });
 
 // --- Cocher / décocher une habilitation d'un utilisateur ---------------------
-router.patch('/access/users/:id/permission', ADMIN, async (req, res, next) => {
+router.patch('/access/users/:id/permission', habilit('access.manage'), ADMIN, async (req, res, next) => {
   try {
     const key = String((req.body || {}).permission_key || '').trim();
     const allowed = !!(req.body || {}).allowed;
