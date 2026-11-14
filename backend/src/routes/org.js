@@ -245,13 +245,27 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
         .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
       const target = norm(raw);
       const stripShort = (v) => norm(String(v || '').replace(/\s*[/(].*$/, ''));
+      // CORRECTIF 13/11/2026-H — resolution SURE (jamais approximative).
+      // « Directeur Général (DG) » est contenu dans « Directeur Général
+      // Adjoint (DGA) » : une simple recherche de sous-chaîne pouvait donc
+      // attribuer le MAUVAIS poste. Ordre retenu : egalite exacte, puis
+      // libelle court, puis morceaux du texte affiche (de droite a gauche),
+      // puis inclusion uniquement si elle est unique ou nettement plus longue.
       let hit = POSITIONS_IN_SOCLE.find((p) => norm(p.label) === target);
-      if (!hit) hit = POSITIONS_IN_SOCLE.find((p) => stripShort(p.label) === target ||
-        target.indexOf(stripShort(p.label)) === 0 || norm(p.label).indexOf(target) === 0);
-      if (!hit && raw.indexOf(' — ') > 0) {
-        // L'interface prefixe parfois le service : on reprend la partie droite.
-        const tail = raw.split(' — ').pop();
-        hit = POSITIONS_IN_SOCLE.find((p) => norm(p.label) === norm(tail));
+      if (!hit) hit = POSITIONS_IN_SOCLE.find((p) => stripShort(p.label) === target);
+      if (!hit) {
+        const parts = String(raw).split(/\u2014|\u2013|\s-\s/).map((x) => norm(x)).filter(Boolean);
+        for (let i = parts.length - 1; i >= 0 && !hit; i--) {
+          hit = POSITIONS_IN_SOCLE.find((p) => norm(p.label) === parts[i]);
+        }
+      }
+      if (!hit && target) {
+        const hits = POSITIONS_IN_SOCLE.filter((p) => {
+          const np = norm(p.label);
+          return np && (np.indexOf(target) >= 0 || target.indexOf(np) >= 0);
+        }).sort((a, b) => norm(b.label).length - norm(a.label).length);
+        if (hits.length === 1) hit = hits[0];
+        else if (hits.length > 1 && norm(hits[0].label).length > norm(hits[1].label).length) hit = hits[0];
       }
       if (hit) position_code = hit.code;
       else {

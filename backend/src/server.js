@@ -29,9 +29,6 @@ import objectiveRoutes from './routes/objectives.js';
 import structureRoutes from './routes/structure.js';
 import accessRoutes from './routes/access.js';
 import governanceRoutes from './routes/governance.js';
-// Chargement GROUPÉ de la page Gouvernance : un seul appel au lieu de 20.
-import { buildGovernanceOverview } from './governance_overview.js';
-import { governanceConformiteOverviewSources } from './governance_conformite.js';
 import { gcRouter as governanceConformiteRoutes } from './governance_conformite.js';
 import bankingRoutes from './routes/banking.js';
 
@@ -48,7 +45,13 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       imgSrc: ["'self'", 'data:'],
-      styleSrc: ["'self'"],
+      // CORRECTIF 13/11/2026-E bis — les pages HTML servies par l'API
+      // (page d'information /, page « Export indisponible », 404, redirections)
+      // contiennent des styles INLINE. Avec « style-src 'self' » seul, le
+      // navigateur BLOQUAIT ces styles : pages affichées sans mise en forme,
+      // impression illisible. On autorise donc les styles inline (le texte
+      // reste échappé, aucun script inline n'est admis).
+      styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'"],
       connectSrc: ["'self'"],
       frameAncestors: ["'none'"],
@@ -140,64 +143,6 @@ app.use('/api/v1', governanceRoutes);
 // VAGUE 29 — conformite prudentielle, risques & PCA, echeancier, exports reglementaires
 app.use('/api/v1', governanceConformiteRoutes);
 
-// VAGUE 30 — /governance/overview : TOUTES les données de la page
-// « Gouvernance & conformité » en UNE requête. Les routes unitaires restent
-// disponibles (écritures, exports) ; seule la LECTURE est regroupée.
-
-// Routes de LECTURE de la gouvernance exposées au chargement groupé.
-// On récupère la route déclarée sur le routeur et on rejoue sa chaîne de
-// middlewares en mémoire : mêmes gardes, mêmes handlers, aucune duplication.
-function routeGovernanceGet(router, chemin) {
-  for (const couche of (router && router.stack) || []) {
-    if (!couche.route || String(couche.route.path) !== chemin) continue;
-    if (!(couche.route.methods || {}).get) continue;
-    return (req, res, nxt) => {
-      let statut = 200;
-      let fini = false;
-      const r2 = {
-        statusCode: 200,
-        status(code) { statut = code; this.statusCode = code; return this; },
-        json(payload) {
-          if (fini) return this;
-          fini = true;
-          if (statut >= 400) {
-            const e = new Error((payload && payload.error) || 'http_' + statut);
-            e.status = statut;
-            return nxt(e);
-          }
-          return res.json(payload);
-        },
-        send(p) { return this.json(p); },
-        setHeader() { return this; }, set() { return this; },
-        end() { if (!fini) { fini = true; res.json(null); } return this; }
-      };
-      const pile = (couche.route.stack || []).map((x) => x.handle).filter((h) => typeof h === 'function');
-      const metier = pile.pop();
-      let i = 0;
-      const next = (err) => {
-        if (err) return nxt(err);
-        const h = pile[i++];
-        if (!h) return metier(req, r2, nxt);
-        return h(req, r2, next);
-      };
-      try { next(); } catch (e) { nxt(e); }
-    };
-  }
-  return (req, res, nxt) => nxt(new Error('route_absente_' + chemin));
-}
-
-app.get('/api/v1/governance/overview',
-  authenticate, requireFreshPassword,
-  (req, res, next) => {
-    if (req.user.role === 'teebo_admin') return res.status(403).json({ error: 'use_teebo_console' });
-    next();
-  },
-  buildGovernanceOverview([
-    ...['institution', 'organes', 'membres', 'mandats', 'sessions', 'resolutions', 'dashboard'].map((nom) => [nom, routeGovernanceGet(governanceRoutes, '/governance/' + nom)]),
-    ...governanceConformiteOverviewSources(governanceConformiteRoutes)
-  ]));
-
-
 // État de préparation, exposé sur /ready (et utilisé par /healthz).
 const etat = { migration: 'en attente', demarre: new Date().toISOString(), erreur: null };
 app.get('/ready', async (_req, res) => {
@@ -206,15 +151,31 @@ app.get('/ready', async (_req, res) => {
   // le service). Ne bloque pas : 3 s maximum.
   let base = 'injoignable';
   let tables = 0;
+  let manquantes = [];
   try {
     await Promise.race([q('SELECT 1'), new Promise((_, rj) => setTimeout(() => rj(new Error('timeout')), 3000))]);
     base = 'connectee';
     const t = await q("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema='public'");
     tables = t.rows[0].n;
+    // CORRECTIF 13/11/2026-E bis : /ready ne dit plus seulement « prêt ou
+    // pas », il NOMME les tables essentielles absentes. C'est ce qui manquait
+    // pour comprendre pourquoi un écran renvoyait une erreur 500
+    // (« relation ... does not exist ») alors que /healthz répondait ok.
+    try {
+      const ess = ['imf', 'app_user', 'client', 'session', 'detenteurs_capital',
+        'mouvements_titres', 'parametres_capital', 'ag_quorum', 'sessions_et_pv'];
+      const r = await q(
+        "SELECT t.n AS nom, (SELECT 1 FROM information_schema.tables i " +
+        "WHERE i.table_schema='public' AND i.table_name=t.n) AS present " +
+        'FROM unnest($1::text[]) AS t(n)', [ess]);
+      manquantes = r.rows.filter((x) => !x.present).map((x) => x.nom);
+    } catch (e) { /* le détail est facultatif : ne bloque pas /ready */ }
   } catch (e) { base = 'injoignable (' + (e && e.message) + ')'; }
-  const pret = base === 'connectee' && tables > 10;
+  const pret = base === 'connectee' && tables > 10 && manquantes.length === 0;
   res.status(pret ? 200 : 503).json({
-    pret, base, tables, migration: etat.migration, erreur: etat.erreur, depuis: etat.demarre
+    pret, base, tables,
+    ...(manquantes.length ? { tables_manquantes: manquantes } : {}),
+    migration: etat.migration, erreur: etat.erreur, depuis: etat.demarre
   });
 });
 

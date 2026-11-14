@@ -22,14 +22,10 @@ import { setDocumentCsp } from './documents.js';
 
 export const gcRouter = Router();
 gcRouter.use(authenticate, requireFreshPassword);
-function gardeTeebo(req, res, next) {
+gcRouter.use((req, res, next) => {
   if (req.user.role === 'teebo_admin') return res.status(403).json({ error: 'use_teebo_console' });
   next();
-}
-// Marqueur : ce garde est deja franchi quand la requete vient de
-// /governance/overview (voir governanceConformiteOverviewSources).
-gardeTeebo.teeboGuard = true;
-gcRouter.use(gardeTeebo);
+});
 
 const WRITE_ROLES = ['superadmin', 'pca_admin', 'admin_imf', 'direction'];
 const canWrite = (u) => Boolean(u) && rolesOf(u.role).some((x) => WRITE_ROLES.includes(x));
@@ -701,91 +697,6 @@ gcRouter.delete('/governance/echeancier/:id', guardWrite, async (req, res, next)
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
-
-// ---------------------------------------------------------------------------
-// CHARGEMENT GROUPÉ (vague 30) — GET /governance/overview
-// ---------------------------------------------------------------------------
-// Les routes de lecture du bloc conformité sont rejouées UNE PAR UNE, en
-// mémoire : aucune règle métier n'est dupliquée et les gardes du routeur
-// s'exécutent dans le MÊME ordre qu'un appel HTTP direct. Les seules gardes
-// neutralisées sont celles déjà franchies par la requête groupée
-// (authentification, changement de mot de passe, accès teebo_admin).
-
-const GC_ROUTES_LECTURE = {
-  conformite: '/governance/conformite/dashboard',
-  apparentes: '/governance/apparentes',
-  conventions: '/governance/conventions',
-  risques: '/governance/risques',
-  pca: '/governance/pca',
-  incidents: '/governance/incidents',
-  lbcft: '/governance/lbcft',
-  echeancier: '/governance/echeancier'
-};
-
-// Gardes déjà franchies en amont : comparaison par IDENTITÉ de fonction.
-const GC_DEJA_FRANCHIES = new Set([authenticate, requireFreshPassword]);
-
-/** Définition d'une route GET déclarée sur le routeur. */
-function gcRouteGet(router, chemin) {
-  for (const couche of (router && router.stack) || []) {
-    if (!couche.route || String(couche.route.path) !== chemin) continue;
-    if (!(couche.route.methods || {}).get) continue;
-    return couche.route;
-  }
-  return null;
-}
-
-/** Rejoue la chaîne de middlewares d'une route, puis sa couche métier. */
-function gcRejouer(route, user, rejeu) {
-  return new Promise((resolve, reject) => {
-    let statut = 200;
-    let fini = false;
-    const req = { user, method: 'GET', query: (rejeu && rejeu.query) || {}, params: {}, body: {}, headers: {}, cookies: {}, get: () => undefined };
-    const res = {
-      statusCode: 200,
-      status(code) { statut = code; this.statusCode = code; return this; },
-      json(payload) {
-        if (fini) return this;
-        fini = true;
-        if (statut >= 400) {
-          const e = new Error((payload && payload.error) || 'http_' + statut);
-          e.status = statut;
-          return reject(e);
-        }
-        return resolve(payload);
-      },
-      send(p) { return this.json(p); },
-      setHeader() { return this; }, set() { return this; },
-      end() { if (!fini) { fini = true; resolve(null); } return this; }
-    };
-    const pile = (route.stack || []).map((x) => x.handle).filter((h) => typeof h === 'function');
-    const metier = pile.pop();
-    const chaine = pile
-      .filter((h) => !GC_DEJA_FRANCHIES.has(h) && h.teeboGuard !== true)
-      .concat([metier]);
-    let i = 0;
-    const next = (err) => {
-      if (err) { if (!fini) { fini = true; reject(err); } return; }
-      const h = chaine[i++];
-      if (!h) { if (!fini) { fini = true; resolve(null); } return; }
-      try { return h(req, res, next); } catch (e) { if (!fini) { fini = true; reject(e); } }
-    };
-    next();
-    const minuteur = setTimeout(() => {
-      if (!fini) { fini = true; const e = new Error('timeout'); e.status = 504; reject(e); }
-    }, 20000);
-    if (minuteur && minuteur.unref) minuteur.unref();
-  });
-}
-
-/** Sources du bloc conformité pour l'endpoint groupé. */
-export function governanceConformiteOverviewSources(router) {
-  return Object.keys(GC_ROUTES_LECTURE).map((nom) => {
-    const route = gcRouteGet(router, GC_ROUTES_LECTURE[nom]);
-    if (!route) return [nom, (req, res) => res.status(404).json({ error: 'route_absente' })];
-    return [nom, (req, res, nxt) => gcRejouer(route, req.user, req).then((d) => res.json(d)).catch(nxt)];
-  });
-}
 
 // ===========================================================================
 // TABLEAU DE BORD CONSOLIDÉ (bloc conformité de la vague 29)

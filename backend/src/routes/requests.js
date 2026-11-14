@@ -21,6 +21,49 @@ const UEMOA_CODES = UEMOA.map(c => c.code);
 
 router.get('/uemoa-countries', (_req, res) => res.json({ countries: UEMOA }));
 
+// ---------------------------------------------------------------------------
+// AUTO-RÉPARATION du schéma requis pour le dépôt d'une demande d'accès.
+// Le RCCM / IFU (mentions légales de facturation) et les colonnes de suivi de
+// la demande proviennent de migrations successives. Si l'une d'elles n'a pas
+// été jouée sur la base de production, l'INSERT échouait et l'API renvoyait
+// « server_error » — donc « Une erreur est survenue » côté formulaire, sans
+// aucune explication. On sécurise donc ces objets de façon idempotente avant
+// d'écrire, exactement comme le fait déjà l'onglet Organisation.
+let _requestSchemaEnsured = false;
+async function ensureRequestSchema() {
+  if (_requestSchemaEnsured) return;
+  await q(`
+    CREATE TABLE IF NOT EXISTS imf_branding (
+      imf_id UUID PRIMARY KEY REFERENCES imf(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    ALTER TABLE imf_branding ADD COLUMN IF NOT EXISTS legal_name          TEXT;
+    ALTER TABLE imf_branding ADD COLUMN IF NOT EXISTS legal_form          TEXT;
+    ALTER TABLE imf_branding ADD COLUMN IF NOT EXISTS trade_register_no   TEXT;
+    ALTER TABLE imf_branding ADD COLUMN IF NOT EXISTS tax_id              TEXT;
+    ALTER TABLE imf_branding ADD COLUMN IF NOT EXISTS bceao_agreement_no  TEXT;
+    ALTER TABLE imf_branding ADD COLUMN IF NOT EXISTS share_capital_cents BIGINT;
+    ALTER TABLE imf_branding ADD COLUMN IF NOT EXISTS legal_address       TEXT;
+
+    CREATE TABLE IF NOT EXISTS access_request (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      imf_id UUID NOT NULL REFERENCES imf(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS requester_lastname  TEXT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS requester_firstname TEXT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS requester_position  TEXT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS admin_name          TEXT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS billing_cycle       TEXT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS licence_cents       BIGINT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS subscription_cents  BIGINT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS discount_cents      BIGINT DEFAULT 0;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS decision            TEXT;
+  `);
+  _requestSchemaEnsured = true;
+}
+
 router.get('/plans', async (_req, res, next) => {
   try {
     const { rows } = await q('SELECT * FROM plan ORDER BY sort_order');
@@ -34,10 +77,15 @@ function validEmail(e) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e || ''); }
 router.post('/', async (req, res, next) => {
   try {
     const b = req.body || {};
+    await ensureRequestSchema();
     const required = ['lastname','firstname','position','country_code','imf_type',
       'capital_cents','bceao_agreement_no','rccm','ifu','whatsapp','phone_main','city','email','admin_name','imf_name'];
-    for (const f of required) if (b[f] === undefined || b[f] === null || b[f] === '')
-      return res.status(422).json({ error: 'missing_field', field: f });
+    // On renvoie TOUS les champs manquants (et pas seulement le premier) : le
+    // formulaire peut ainsi les signaler d'un coup au lieu d'obliger l'utilisateur
+    // à renvoyer autant de fois qu'il manque de champs.
+    const missing = required.filter(f => b[f] === undefined || b[f] === null || b[f] === '');
+    if (missing.length)
+      return res.status(422).json({ error: 'missing_field', field: missing[0], missing });
     if (!UEMOA_CODES.includes(b.country_code)) return res.status(422).json({ error: 'country_not_uemoa' });
     if (!['SA','SCOOP'].includes(b.imf_type)) return res.status(422).json({ error: 'invalid_imf_type' });
     if (!validEmail(b.email)) return res.status(422).json({ error: 'invalid_email' });
@@ -98,7 +146,39 @@ router.post('/', async (req, res, next) => {
       return { imf, requestId: reqRow.id };
     });
     res.json({ ok: true, imf_code: out.imf.code_imf, imf_id: out.imf.id, request_id: out.requestId });
-  } catch (e) { next(e); }
+  } catch (e) {
+    // On nomme la vraie cause (code PostgreSQL compréhensible) au lieu de laisser
+    // remonter un « server_error » muet que le formulaire traduisait par
+    // « Une erreur est survenue ». Aucune donnée sensible n'est exposée.
+    const pg = e && e.code ? String(e.code) : '';
+    const detail = {
+      '23502': 'missing_column_value',   // une colonne NOT NULL non renseignée
+      '23503': 'invalid_reference',      // clé étrangère introuvable
+      '23505': 'duplicate_code',         // doublon de code IMF
+      '23514': 'check_violation',        // contrainte de contrôle
+      '22P02': 'invalid_input_syntax',   // valeur mal typée
+      '42703': 'missing_column',         // colonne absente du schéma
+      '42P01': 'missing_table',          // table absente du schéma
+      '42P02': 'missing_type'            // type enum absente
+    }[pg];
+    if (detail) {
+      const diag = { error: detail };
+      const msg = {
+        missing_column_value: 'Une information obligatoire n’a pas pu être enregistrée. Vérifiez tous les champs du formulaire.',
+        invalid_reference: 'Référence interne invalide lors de l’enregistrement. Contactez teeBo.',
+        duplicate_code: 'Ce code d’IMF existe déjà. Réessayez dans un instant.',
+        check_violation: 'Une valeur saisie ne respecte pas le format attendu. Vérifiez le RCCM, l’IFU et le capital.',
+        invalid_input_syntax: 'Le format d’une valeur saisie est invalide. Vérifiez les numéros et le capital.',
+        missing_column: 'Le serveur n’est pas à jour (colonne manquante en base). Déployez la version corrigée.',
+        missing_table: 'Le serveur n’est pas à jour (table manquante en base). Déployez la version corrigée.',
+        missing_type: 'Le serveur n’est pas à jour (type manquant en base). Déployez la version corrigée.'
+      }[detail];
+      if (msg) diag.message = msg;
+      if (pg) diag.pg = pg;
+      return res.status(422).json(diag);
+    }
+    next(e);
+  }
 });
 
 // --- Étape 2 : choix de la formule -> facture proforma ---------------------
