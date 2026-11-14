@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { detecterApparente } from '../credit_apparentes.js';
 import { q, tx } from '../db.js';
 import { requireRole, requirePermission, userHasPermission } from '../auth.js';
+import { habilit } from '../rbac_strict.js';
 import {
   monthBounds, monthsStarted, computeCollectionFee, computeEarlyWithdrawalFee,
   chargeFee, recoverPendingFees, monthDeposits, minPermanentOf, isLastDayOfMonth, lastDayOfMonth,
