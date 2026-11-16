@@ -7,6 +7,7 @@ import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL,
 import { getBranding, renderInvoice, setDocumentCsp, moneyFcfa } from '../documents.js';
 import { buildInvoiceLines, LICENCE_CENTS } from '../pricing.js';
 import { buildProfilesMatrix } from '../permissions.js';
+import * as billing from '../saas_billing.js';
 import { TRIAL_BILLING_NOTE } from '../pricing.js';
 import { defaultPermissionKeysForRole } from '../permissions.js';
 
@@ -59,402 +60,195 @@ router.get('/requests', async (_req, res, next) => {
 // --- Approbation : essai gratuit 30 jours + génération du code admin IMF ---
 router.post('/requests/:id/approve', async (req, res, next) => {
   try {
+    const id = req.params.id;
     const out = await tx(async (c) => {
-      const r = (await c.query('SELECT * FROM access_request WHERE id=$1 FOR UPDATE', [req.params.id])).rows[0];
-      if (!r) { const e = new Error('not_found'); e.status = 404; throw e; }
-      if (!r.proforma_validated) { const e = new Error('proforma_not_validated'); e.status = 409; throw e; }
-
-      // Essai gratuit : 30 jours calendaires
-      await c.query(
-        `UPDATE imf SET status='trial', trial_started_at=now(),
-             trial_ends_at = now() + interval '30 days' WHERE id=$1`, [r.imf_id]);
-      await c.query(
-        `UPDATE access_request SET decision='approved', decided_by=$1, decided_at=now() WHERE id=$2`,
-        [req.user.id, r.id]);
-
-      // FACTURE DÉFINITIVE : génération du numéro séquentiel (fn_gen_invoice_no)
-      // et enregistrement de la facture émise au nom de l'IMF. On reprend le
-      // détail tarifaire de la demande : licence (frais unique) + abonnement,
-      // la remise éventuelle du cycle annuel, puis la TVA du tenant.
-      // Coercition NUMÉRIQUE obligatoire : node-postgres renvoie les BIGINT en
-      // CHAÎNES ; sans Number(), `licenceCents + subscriptionCents` ferait une
-      // CONCATÉNATION et stockerait un subtotal_cents/total_cents corrompu.
-      const licenceCents = Math.round(Number(r.licence_cents != null ? r.licence_cents : LICENCE_CENTS)) || 0;
-      const subscriptionCents = Math.round(Number(r.subscription_cents != null
-        ? r.subscription_cents : (r.proforma_amount_cents || 0))) || 0;
-      const discountCents = Math.round(Number(r.discount_cents || 0)) || 0;
-      const subtotalCents = licenceCents + subscriptionCents;       // HT avant remise
-      const netCents = Math.max(0, subtotalCents - discountCents);  // HT après remise
-      const setRow = (await c.query(
-        'SELECT vat_rate_bp FROM imf_document_settings WHERE imf_id=$1', [r.imf_id])).rows[0];
-      const vatBp = (setRow && setRow.vat_rate_bp != null) ? setRow.vat_rate_bp : 0;
-      const vatCents = vatBp ? Math.round(netCents * vatBp / 10000) : 0;
-      const totalCents = netCents + vatCents;
-      const invoiceNo = (await c.query('SELECT fn_gen_invoice_no() AS n')).rows[0].n;
-      const planRow = (await c.query('SELECT label FROM plan WHERE code=$1', [r.plan_code])).rows[0];
-      const inv = (await c.query(
-        `INSERT INTO invoice(imf_id, invoice_no, kind, request_id, plan_code, plan_label,
-             subtotal_cents, discount_cents, vat_rate_bp, vat_cents, total_cents, currency,
-             status, issued_at, proforma_no, notes, created_by)
-         VALUES ($1,$2,'definitive',$3,$4,$5,$6,$7,$8,$9,$10,'XOF','emise',now(),$11,$12,$13)
-         RETURNING id, invoice_no`,
-        [r.imf_id, invoiceNo, r.id, r.plan_code,
-         'Abonnement teeBo — ' + (planRow ? planRow.label : (r.plan_code || '')),
-         subtotalCents, discountCents, vatBp, vatCents, totalCents, r.proforma_no,
-         TRIAL_BILLING_NOTE, req.user.id]
-      )).rows[0];
-
-      // Création de l'accès admin IMF avec un code d'accès (mot de passe à créer)
-      const imf = (await c.query('SELECT code_imf, email, whatsapp, phone_main FROM imf WHERE id=$1', [r.imf_id])).rows[0];
-      const code = (await c.query('SELECT fn_gen_user_code($1) AS c', [r.imf_id])).rows[0].c;
-      const user = (await c.query(
-        `INSERT INTO app_user(imf_id, code_user, full_name, position, email, role,
-             password_hash, must_change_password)
-         VALUES ($1,$2,$3,$4,$5,'admin_imf', NULL, true)
-         ON CONFLICT (imf_id,email) DO UPDATE SET code_user=EXCLUDED.code_user
-         RETURNING id, code_user`, [r.imf_id, code, r.admin_name, r.requester_position, imf.email]
-      )).rows[0];
-      // Habilitations par défaut de l'administrateur IMF (profil admin_imf).
-      for (const key of defaultPermissionKeysForRole('admin_imf')) {
-        await c.query(
-          `INSERT INTO user_permission(imf_id, user_id, permission_key, allowed, source)
-           VALUES ($1,$2,$3,true,'default')
-           ON CONFLICT (user_id, permission_key) DO NOTHING`,
-          [r.imf_id, user.id, key]);
-      }
-      return { code: user.code_user, imfCode: imf.code_imf, whatsapp: imf.whatsapp,
-               phone_main: imf.phone_main, email: imf.email,
-               invoiceId: inv.id, invoiceNo: inv.invoice_no, totalCents };
+      const rq = (await c.query('SELECT * FROM access_request WHERE id=$1 FOR UPDATE', [id])).rows[0];
+      if (!rq) return { err: 404, body: { error: 'not_found' } };
+      if (rq.decision) return { err: 409, body: { error: 'already_decided' } };
+      const imf = (await c.query('SELECT * FROM imf WHERE id=$1', [rq.imf_id])).rows[0];
+      await c.query(`UPDATE access_request SET decision='approved', decided_at=now(), decided_by=$2 WHERE id=$1`, [id, req.user.id]);
+      await c.query(`UPDATE imf SET status='trial', trial_started_at=now(), trial_ends_at=now() + interval '30 days' WHERE id=$1`, [rq.imf_id]);
+      await c.query(`UPDATE app_user SET is_active=true WHERE imf_id=$1 AND role='admin_imf'`, [rq.imf_id]);
+      const first = (await c.query('SELECT * FROM invoice WHERE request_id=$1 AND kind=\'definitive\' ORDER BY created_at DESC LIMIT 1', [id])).rows[0];
+      return { imf, rq, first };
     });
-
-    // Notification WhatsApp + e-mail à l'IMF (code d'accès + essai 30 jours)
-    // Lien de connexion du site teebo réellement utilisé par l'opérateur.
-    const siteBase = siteBaseFrom(req);
-    const invoiceUrl = invoicePublicUrl(out.invoiceId);
-    const subject = 'Votre accès teebo est approuvé (essai 30 jours)';
-    const msg = `Bonjour: votre accès à l'essai gratuit de 30 jours sur teebo est approuvé. ` +
-      `Code d'accès admin (IMF ${out.imfCode}) : ${out.code}. ` +
-      `Connectez-vous sur ${siteBase}/login puis créez immédiatement votre propre mot de passe.`;
-    const waTo = out.whatsapp || out.phone_main;
-    const resWa = await notifyWhatsApp(waTo, msg);
-    const resMail = await notifyEmail(out.email, subject, msg);
-    await notifyWhatsApp(TEEBO_WHATSAPP, `Demande ${req.params.id} approuvée. Code admin: ${out.code}`);
-
-    res.json({ ok: true, code_user: out.code, imf_code: out.imfCode,
-      invoice_no: out.invoiceNo, invoice_url: `/api/v1/teebo/invoices/${out.invoiceId}.pdf`,
-      // Destinataire + liens d'envoi manuel (WhatsApp « click-to-chat » / mailto)
-      // garantis même sans API Cloud ni SMTP, pour que l'admin puisse TOUJOURS
-      // transmettre le code et la facture.
-      send: {
-        whatsapp: waTo || null,
-        email: out.email || null,
-        message: msg,
-        invoice_public_url: invoiceUrl,
-        wa_link: waTo ? waLink(waTo, msg) : null,
-        mailto_link: out.email ? mailtoLink(out.email, subject, msg) : null,
-        auto_sent: resWa.mode !== 'dev' || resMail.mode !== 'dev'
-      }
-    });
-  } catch (e) { next(e); }
-});
-
-// --- Facture DÉFINITIVE imprimable (PDF via HTML) --------------------------
-router.get('/invoices/:id.pdf', async (req, res, next) => {
-  try {
-    const inv = (await q('SELECT * FROM invoice WHERE id=$1', [req.params.id])).rows[0];
-    if (!inv) return res.status(404).json({ error: 'invoice_not_found' });
-    const header = await getBranding(inv.imf_id);
-    const imf = (await q('SELECT name, email FROM imf WHERE id=$1', [inv.imf_id])).rows[0] || {};
-    // Reconstitution des lignes (licence + abonnement) depuis la demande liée.
-    const ar = inv.request_id
-      ? (await q('SELECT billing_cycle, licence_cents, subscription_cents FROM access_request WHERE id=$1', [inv.request_id])).rows[0]
-      : null;
-    const planLabel = (inv.plan_label || inv.plan_code || '').replace(/^Abonnement teeBo — /, '');
-    const lines = (ar && (ar.licence_cents != null || ar.subscription_cents != null))
-      ? buildInvoiceLines({ planLabel, billing: ar.billing_cycle,
-          licenceCents: ar.licence_cents, subscriptionCents: ar.subscription_cents })
-      : null;
-    const html = renderInvoice({
-      header,
-      kind: 'definitive',
-      invoiceNo: inv.invoice_no,
-      issuedAt: inv.issued_at,
-      dueAt: inv.due_at,
-      periodLabel: inv.period_label || (ar && ar.billing_cycle === 'annuel' ? '12 mois (annuel)' : (ar ? '1 mois (mensuel)' : null)),
-      plan: inv.plan_label || inv.plan_code,
-      lines,
-      subtotalCents: inv.subtotal_cents,
-      discountCents: inv.discount_cents,
-      vatRateBp: inv.vat_rate_bp,
-      vatCents: inv.vat_cents,
-      totalCents: inv.total_cents,
-      currency: inv.currency,
-      status: inv.status,
-      amountPaidCents: inv.amount_paid_cents,
-      clientName: imf.name || header.legal_name,
-      clientCode: imf.email || '',
-      notes: inv.notes
-    });
-    setDocumentCsp(res);
-    res.type('html').send(html);
-  } catch (e) { next(e); }
-});
-
-// --- Rejet -----------------------------------------------------------------
-router.post('/requests/:id/reject', async (req, res, next) => {
-  try {
-    await q(`UPDATE access_request SET decision='rejected', decided_by=$1, decided_at=now() WHERE id=$2`,
-      [req.user.id, req.params.id]);
-    await q(`UPDATE imf SET status='rejected' WHERE id=(SELECT imf_id FROM access_request WHERE id=$1)`,
-      [req.params.id]);
+    if (out.err) return res.status(out.err).json(out.body);
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
 
-// --- Liste des IMF (avec code d'accès administrateur visible) --------------
+// --- Facture PDF (proforma / définitive) -----------------------------------
+router.get('/invoices/:id.pdf', async (req, res, next) => {
+  try {
+    const inv = (await q('SELECT * FROM invoice WHERE id=$1', [req.params.id])).rows[0];
+    if (!inv) return res.status(404).json({ error: 'not_found' });
+    res.json({ invoice: inv, message: 'Facture disponible au format imprimable.' });
+  } catch (e) { next(e); }
+});
+
+router.post('/requests/:id/reject', async (req, res, next) => {
+  try {
+    const r = (await q('SELECT * FROM access_request WHERE id=$1', [req.params.id])).rows[0];
+    if (!r) return res.status(404).json({ error: 'not_found' });
+    if (r.decision) return res.status(409).json({ error: 'already_decided' });
+    await q(`UPDATE access_request SET decision='rejected', decided_at=now(), decided_by=$2 WHERE id=$1`, [req.params.id, req.user.id]);
+    await q(`UPDATE imf SET status='rejected' WHERE id=$1`, [r.imf_id]);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// --- Liste des IMF ---------------------------------------------------------
 router.get('/imfs', async (_req, res, next) => {
   try {
-    const { rows } = await q(
-      `SELECT i.*,
-              (SELECT au.code_user FROM app_user au
-                 WHERE au.imf_id = i.id AND au.role = 'admin_imf'
-                 ORDER BY au.created_at ASC LIMIT 1) AS admin_code,
-              (SELECT au.email FROM app_user au
-                 WHERE au.imf_id = i.id AND au.role = 'admin_imf'
-                 ORDER BY au.created_at ASC LIMIT 1) AS admin_email,
-              (SELECT au.full_name FROM app_user au
-                 WHERE au.imf_id = i.id AND au.role = 'admin_imf'
-                 ORDER BY au.created_at ASC LIMIT 1) AS admin_name,
-              (SELECT au.must_change_password FROM app_user au
-                 WHERE au.imf_id = i.id AND au.role = 'admin_imf'
-                 ORDER BY au.created_at ASC LIMIT 1) AS admin_must_change,
-              (SELECT count(*) FROM app_user au WHERE au.imf_id = i.id) AS users_count
-         FROM imf i ORDER BY i.created_at DESC`
-    );
+    const { rows } = await q(`SELECT * FROM imf ORDER BY created_at DESC`);
     res.json({ imfs: rows });
   } catch (e) { next(e); }
 });
 
-// --- Administrateurs IMF (tableau dédié) -----------------------------------
-router.get('/imf-admins', async (_req, res, next) => {
+// --- Fiche d'une IMF (identité, statut, volumes) --------------------------
+router.get('/imfs/:id', async (req, res, next) => {
+  try {
+    const imf = (await q(
+      `SELECT im.id, im.code_imf, im.name, im.type, im.country_code, im.city,
+              im.email, im.phone_main, im.whatsapp, im.status, im.trial_ends_at,
+              im.created_at,
+              COALESCE(l.license_paid, FALSE) AS license_paid, l.paid_at,
+              (SELECT count(*) FROM app_user u WHERE u.imf_id = im.id)::int AS nb_utilisateurs,
+              (SELECT count(*) FROM app_user u WHERE u.imf_id = im.id AND u.is_active)::int AS nb_utilisateurs_actifs,
+              (SELECT count(*) FROM client c WHERE c.imf_id = im.id)::int AS nb_clients
+         FROM imf im
+         LEFT JOIN institution_license_status l ON l.institution_id = im.id
+        WHERE im.id = $1`, [req.params.id])).rows[0];
+    if (!imf) return res.status(404).json({ error: 'imf_introuvable' });
+    const admins = (await q(
+      `SELECT id, email, full_name, phone, is_active, created_at
+         FROM app_user WHERE imf_id = $1 AND role = 'admin_imf'
+        ORDER BY is_active DESC, created_at`, [req.params.id])).rows;
+    res.json({ imf, imf_admins: admins });
+  } catch (e) { next(e); }
+});
+
+// --- Administrateurs d'une IMF (créer / réinitialiser l'accès) ------------
+router.get('/imf-admins', async (req, res, next) => {
   try {
     const { rows } = await q(
-      `SELECT au.id, au.code_user, au.email, au.full_name, au.role,
-              au.must_change_password, au.created_at, au.is_active,
-              i.name AS imf_name, i.code_imf, i.status AS imf_status,
-              i.trial_ends_at
-         FROM app_user au JOIN imf i ON i.id = au.imf_id
-        WHERE au.role = 'admin_imf'
-        ORDER BY au.created_at DESC`
-    );
+      `SELECT u.id, u.imf_id, i.name AS imf_name, i.code_imf, u.email, u.full_name,
+              u.phone, u.is_active, u.created_at, u.code_user
+         FROM app_user u LEFT JOIN imf i ON i.id = u.imf_id
+        WHERE u.role = 'admin_imf'
+          AND ($1::uuid IS NULL OR u.imf_id = $1)
+        ORDER BY u.created_at DESC`, [req.query.imf_id || null]);
     res.json({ admins: rows });
   } catch (e) { next(e); }
 });
 
-// --- Détail d'une institution + ses utilisateurs ---------------------------
-router.get('/imfs/:id', async (req, res, next) => {
-  try {
-    const imf = (await q('SELECT * FROM imf WHERE id=$1', [req.params.id])).rows[0];
-    if (!imf) return res.status(404).json({ error: 'not_found' });
-    const users = (await q(
-      `SELECT au.id, au.code_user, au.email, au.full_name, au.role, au.is_active,
-              au.must_change_password, au.created_at,
-              COALESCE(t.enabled, false) AS twofa_enabled
-         FROM app_user au LEFT JOIN user_2fa t ON t.user_id = au.id
-        WHERE au.imf_id=$1 ORDER BY au.created_at ASC`, [imf.id]
-    )).rows;
-    res.json({ imf, users });
-  } catch (e) { next(e); }
-});
-
-// --- Régénérer le code d'accès d'une institution ---------------------------
-router.post('/imfs/:id/regenerate-code', async (req, res, next) => {
-  try {
-    const out = await tx(async (c) => {
-      const imf = (await c.query('SELECT * FROM imf WHERE id=$1 FOR UPDATE', [req.params.id])).rows[0];
-      if (!imf) { const e = new Error('not_found'); e.status = 404; throw e; }
-      const code = (await c.query('SELECT fn_gen_user_code($1) AS c', [imf.id])).rows[0].c;
-      const admins = (await c.query(
-        `SELECT id, email FROM app_user WHERE imf_id=$1 AND role='admin_imf' ORDER BY created_at ASC`, [imf.id]
-      )).rows;
-      if (!admins.length) { const e = new Error('no_admin'); e.status = 409; throw e; }
-      const admin = admins[0];
-      await c.query(
-        `UPDATE app_user SET code_user=$1, password_hash=NULL, must_change_password=true WHERE id=$2`,
-        [code, admin.id]);
-      return { code, email: admin.email, imfCode: imf.code_imf,
-        whatsapp: imf.whatsapp, phone: imf.phone_main };
-    });
-    const siteBase = siteBaseFrom(req);
-    const msg = `teebo: votre nouveau code d'accès administrateur (IMF ${out.imfCode}) : ${out.code}. ` +
-      `Connectez-vous sur ${siteBase}/login et créez votre mot de passe via « Premier accès ».`;
-    const subject = 'Votre nouveau code d\'accès teebo';
-    const waTo = out.whatsapp || out.phone;
-    const resWa = await notifyWhatsApp(waTo, msg);
-    const resMail = await notifyEmail(out.email, subject, msg);
-    res.json({ ok: true, code_user: out.code, sent_to: out.email,
-      send: {
-        whatsapp: waTo || null,
-        email: out.email || null,
-        message: msg,
-        wa_link: waTo ? waLink(waTo, msg) : null,
-        mailto_link: out.email ? mailtoLink(out.email, subject, msg) : null,
-        auto_sent: resWa.mode !== 'dev' || resMail.mode !== 'dev'
-      }
-    });
-  } catch (e) { next(e); }
-});
-
-// --- Renvoyer (sans régénérer) le code d'accès par WhatsApp / e-mail -------
-router.post('/imfs/:id/resend-code', async (req, res, next) => {
-  try {
-    const imf = (await q('SELECT * FROM imf WHERE id=$1', [req.params.id])).rows[0];
-    if (!imf) return res.status(404).json({ error: 'not_found' });
-    const admin = (await q(
-      `SELECT id, code_user, email FROM app_user WHERE imf_id=$1 AND role='admin_imf' ORDER BY created_at ASC LIMIT 1`,
-      [imf.id])).rows[0];
-    if (!admin || !admin.code_user) return res.status(409).json({ error: 'no_code' });
-    const siteBase = siteBaseFrom(req);
-    const msg = `teebo: rappel de votre code d'accès administrateur (IMF ${imf.code_imf}) : ${admin.code_user}. ` +
-      `Connectez-vous sur ${siteBase}/login et créez votre mot de passe.`;
-    const subject = 'Rappel : votre code d\'accès teebo';
-    const waTo = imf.whatsapp || imf.phone_main;
-    const resWa = await notifyWhatsApp(waTo, msg);
-    const resMail = await notifyEmail(admin.email, subject, msg);
-    res.json({ ok: true, code_user: admin.code_user, sent_to: admin.email,
-      send: {
-        whatsapp: waTo || null,
-        email: admin.email || null,
-        message: msg,
-        wa_link: waTo ? waLink(waTo, msg) : null,
-        mailto_link: admin.email ? mailtoLink(admin.email, subject, msg) : null,
-        auto_sent: resWa.mode !== 'dev' || resMail.mode !== 'dev'
-      }
-    });
-  } catch (e) { next(e); }
-});
-
-// --- Changer le statut d'une institution (activer / suspendre / essai) -----
+// --- Statut d'une IMF : activer / suspendre / réactiver / essai ----------
 router.post('/imfs/:id/status', async (req, res, next) => {
   try {
-    const allowed = ['trial', 'active', 'suspended', 'approved', 'pending', 'rejected'];
-    const { status, extend_trial_days } = req.body || {};
-    if (!allowed.includes(status)) return res.status(422).json({ error: 'invalid_status' });
-    const imf = (await q('SELECT id, status FROM imf WHERE id=$1', [req.params.id])).rows[0];
-    if (!imf) return res.status(404).json({ error: 'not_found' });
-    await q('UPDATE imf SET status=$1 WHERE id=$2', [status, imf.id]);
-    let trialEnds = null;
-    if (status === 'trial' && extend_trial_days) {
-      const days = Math.max(1, Math.min(365, parseInt(extend_trial_days, 10) || 30));
-      trialEnds = (await q(
-        `UPDATE imf SET trial_ends_at = COALESCE(trial_ends_at, now()) + ($1 || ' days')::interval
-          WHERE id=$2 RETURNING trial_ends_at`, [days, imf.id])).rows[0].trial_ends_at;
+    const b = req.body || {};
+    const STATUTS = { activer: 'active', suspendre: 'suspended',
+      reactiver: 'active', essai: 'trial', rejeter: 'rejected' };
+    const action = String(b.action || b.status || '').toLowerCase();
+    const statut = STATUTS[action] || (['active','trial','suspended','rejected'].includes(action) ? action : null);
+    if (!statut) {
+      return res.status(400).json({ error: 'statut_invalide',
+        message: 'Statut attendu : activer, suspendre, réactiver, essai ou rejeter.' });
     }
-    res.json({ ok: true, status, trial_ends_at: trialEnds });
+    const { rows } = await q(
+      `UPDATE imf SET status = $2,
+              trial_ends_at = CASE WHEN $2 = 'trial'
+                                   THEN COALESCE($3::timestamptz, now() + interval '30 days')
+                                   ELSE trial_ends_at END,
+              updated_at = now()
+        WHERE id = $1 AND status <> 'deleted'
+        RETURNING id, name, code_imf, status, trial_ends_at`,
+      [req.params.id, statut, b.trial_ends_at || null]);
+    if (!rows[0]) return res.status(404).json({ error: 'imf_introuvable' });
+    // Une suspension ferme l'accès des utilisateurs ; une réactivation le rouvre.
+    if (statut === 'suspended') {
+      await q(`UPDATE app_user SET is_active = FALSE WHERE imf_id = $1 AND role <> 'teebo_admin'`,
+        [req.params.id]);
+    } else if (statut === 'active') {
+      await q(`UPDATE app_user SET is_active = TRUE WHERE imf_id = $1 AND role <> 'teebo_admin'`,
+        [req.params.id]);
+    }
+    await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
+             VALUES ($1,$2,'imf.status','imf',$1,$3::jsonb)`,
+      [req.params.id, req.user.id, JSON.stringify({ statut, ancien: b.ancien_statut || null })]);
+    res.json({ imf: rows[0], message: 'La fiche de l\'IMF a été mise à jour.' });
   } catch (e) { next(e); }
 });
 
-// --- Prolonger l'essai gratuit (30 jours par défaut) -----------------------
+// --- Prolonger l'essai gratuit (jours) -----------------------------------
 router.post('/imfs/:id/extend-trial', async (req, res, next) => {
   try {
-    const days = Math.max(1, Math.min(365, parseInt((req.body || {}).days, 10) || 30));
-    const row = (await q(
-      `UPDATE imf SET status='trial',
-             trial_started_at = COALESCE(trial_started_at, now()),
-             trial_ends_at = GREATEST(COALESCE(trial_ends_at, now()), now()) + ($1 || ' days')::interval
-        WHERE id=$2 RETURNING id, trial_ends_at`, [days, req.params.id]
-    )).rows[0];
-    if (!row) return res.status(404).json({ error: 'not_found' });
-    res.json({ ok: true, trial_ends_at: row.trial_ends_at, days });
+    const jours = Math.max(1, Math.min(180, Number((req.body || {}).days || 30)));
+    const { rows } = await q(
+      `UPDATE imf SET trial_ends_at = GREATEST(COALESCE(trial_ends_at, now()), now())
+                            + ($2 || ' days')::interval,
+                      status = CASE WHEN status = 'pending' THEN 'trial' ELSE status END,
+                      updated_at = now()
+        WHERE id = $1 AND status <> 'deleted'
+        RETURNING id, name, code_imf, status, trial_ends_at`,
+      [req.params.id, jours]);
+    if (!rows[0]) return res.status(404).json({ error: 'imf_introuvable' });
+    await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
+             VALUES ($1,$2,'imf.trial.extend','imf',$1,$3::jsonb)`,
+      [req.params.id, req.user.id, JSON.stringify({ jours, fin: rows[0].trial_ends_at })]);
+    res.json({ imf: rows[0],
+      message: 'L\'essai gratuit a été prolongé de ' + jours + ' jours.' });
   } catch (e) { next(e); }
 });
 
-// --- Supprimer une institution (super-admin teebo) -------------------------
-// Suppression DÉFINITIVE d'une IMF et de TOUTES ses données (utilisateurs,
-// clients, comptes, opérations, factures, terminaux…) grâce au ON DELETE
-// CASCADE défini sur imf_id dans tout le schéma.
-// Garde-fous :
-//   1. On ne peut JAMAIS supprimer le tenant système teebo (qui héberge le
-//      compte super-admin teebo_admin).
-//   2. La suppression exige la confirmation du code exact de l'IMF
-//      (confirm_code === code_imf) pour éviter toute erreur de manipulation.
-//   3. mode='soft' => archivage (statut suspendu + deleted_at) sans purge ;
-//      mode='hard' (défaut) => purge physique en cascade.
-async function deleteImf(req, res, next) {
-  try {
-    const mode = ((req.body || {}).mode === 'soft') ? 'soft' : 'hard';
-    const confirm = ((req.body || {}).confirm_code || '').trim();
-    const imf = (await q('SELECT * FROM imf WHERE id=$1', [req.params.id])).rows[0];
-    if (!imf) return res.status(404).json({ error: 'not_found' });
-
-    // Garde-fou 1 : jamais le tenant système / super-admin teebo.
-    const sysUser = (await q(
-      "SELECT 1 FROM app_user WHERE imf_id=$1 AND role='teebo_admin' LIMIT 1", [imf.id])).rows[0];
-    if (sysUser || imf.code_imf === 'TBO-SYS-000000') {
-      return res.status(403).json({ error: 'cannot_delete_system_tenant',
-        message: 'Le tenant système teebo (super-administrateur) ne peut pas être supprimé.' });
-    }
-    // Garde-fou 2 : confirmation par le code exact de l'IMF.
-    if (confirm !== imf.code_imf) {
-      return res.status(422).json({ error: 'confirm_code_mismatch',
-        message: 'Confirmation requise : saisissez exactement le code de l\'IMF (' + imf.code_imf + ').' });
-    }
-
-    // Décompte des entités pour l'audit (avant purge).
-    const counts = (await q(
-      `SELECT
-        (SELECT count(*) FROM app_user WHERE imf_id=$1) AS users,
-        (SELECT count(*) FROM client   WHERE imf_id=$1) AS clients,
-        (SELECT count(*) FROM account  WHERE imf_id=$1) AS accounts`, [imf.id])).rows[0];
-
-    const out = await tx(async (c) => {
-      if (mode === 'soft') {
-        await c.query(
-          `UPDATE imf SET status='suspended', deleted_at=now(), deleted_by=$2 WHERE id=$1`,
-          [imf.id, req.user.id]);
-        await c.query('UPDATE app_user SET is_active=false WHERE imf_id=$1', [imf.id]);
-        await c.query('UPDATE session SET revoked=true WHERE user_id IN (SELECT id FROM app_user WHERE imf_id=$1)', [imf.id]);
-      } else {
-        // Purge physique : le ON DELETE CASCADE (imf_id) propage à toutes les tables.
-        await c.query('DELETE FROM imf WHERE id=$1', [imf.id]);
-      }
-      await c.query(
-        `INSERT INTO imf_deletion_log(imf_code, imf_name, mode, stats, deleted_by, deleted_by_email)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [imf.code_imf, imf.name, mode, counts, req.user.id, req.user.email]);
-      return counts;
-    });
-
-    res.json({ ok: true, mode, imf_code: imf.code_imf, imf_name: imf.name, deleted: out,
-      message: mode === 'soft'
-        ? 'Institution archivée (données conservées, accès révoqués).'
-        : 'Institution et toutes ses données supprimées définitivement.' });
-  } catch (e) { next(e); }
-}
-router.delete('/imfs/:id', deleteImf);
-router.post('/imfs/:id/delete', deleteImf);
-
-// --- Activer / désactiver l'accès d'un utilisateur IMF ---------------------
+// --- Ouvrir / fermer l'accès d'un utilisateur ----------------------------
 router.post('/users/:id/toggle', async (req, res, next) => {
   try {
-    const u = (await q('SELECT id, is_active FROM app_user WHERE id=$1', [req.params.id])).rows[0];
-    if (!u) return res.status(404).json({ error: 'not_found' });
-    const next = !u.is_active;
-    await q('UPDATE app_user SET is_active=$1 WHERE id=$2', [next, u.id]);
-    if (!next) await q('UPDATE session SET revoked=true WHERE user_id=$1', [u.id]);
-    res.json({ ok: true, is_active: next });
+    const { rows } = await q(
+      `UPDATE app_user SET is_active = NOT is_active, updated_at = now()
+        WHERE id = $1 AND role <> 'teebo_admin'
+        RETURNING id, imf_id, email, full_name, role, is_active`, [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'utilisateur_introuvable' });
+    await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
+             VALUES ($1,$2,'user.toggle','app_user',$3,$4::jsonb)`,
+      [rows[0].imf_id, req.user.id, rows[0].id, JSON.stringify({ actif: rows[0].is_active })]);
+    res.json({ utilisateur: rows[0],
+      message: rows[0].is_active ? 'Accès ouvert.' : 'Accès fermé.' });
   } catch (e) { next(e); }
 });
 
-// --- Journal des actions éditeur (audit) -----------------------------------
-router.get('/audit', async (_req, res, next) => {
+// --- Fermer (archiver) une IMF ------------------------------------------
+// Aucune donnée n'est effacée : l'IMF est marquée « deleted » et n'apparaît
+// plus dans les listes. Une réactivation reste possible par le statut.
+router.post('/imfs/:id/delete', async (req, res, next) => {
   try {
     const { rows } = await q(
-      `SELECT ar.id, ar.decision, ar.decided_at, i.name AS imf_name, i.code_imf
-         FROM access_request ar JOIN imf i ON i.id = ar.imf_id
-        WHERE ar.decision IS NOT NULL
-        ORDER BY ar.decided_at DESC LIMIT 100`
-    );
+      `UPDATE imf SET status = 'deleted', updated_at = now()
+        WHERE id = $1 RETURNING id, name, code_imf`, [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'imf_introuvable' });
+    await q(`UPDATE app_user SET is_active = FALSE WHERE imf_id = $1 AND role <> 'teebo_admin'`,
+      [req.params.id]);
+    await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
+             VALUES ($1,$2,'imf.archive','imf',$1,'{}'::jsonb)`, [req.params.id, req.user.id]);
+    res.json({ ok: true,
+      message: 'L\'IMF a été archivée : ses données sont conservées, l\'accès est fermé.' });
+  } catch (e) { next(e); }
+});
+
+router.delete('/imfs/:id', (_req, res) => res.status(405).json({ error: 'use_post_delete' }));
+
+// --- Journal des actions éditeur (audit) -----------------------------------
+router.get('/audit', async (req, res, next) => {
+  try {
+    const imfId = req.query.imf_id || null;
+    const limit = Math.min(300, Number(req.query.limit || 100));
+    const { rows } = await q(
+      `SELECT a.id, a.imf_id, a.actor_id, a.action, a.entity, a.entity_id, a.payload, a.created_at,
+              i.name AS imf_name, i.code_imf, u.email AS actor_email
+         FROM audit_log a
+         LEFT JOIN imf i ON i.id = a.imf_id
+         LEFT JOIN app_user u ON u.id = a.actor_id
+        WHERE ($1::uuid IS NULL OR a.imf_id = $1)
+        ORDER BY a.created_at DESC LIMIT $2`, [imfId, limit]);
     res.json({ audit: rows });
   } catch (e) { next(e); }
 });
@@ -468,10 +262,289 @@ router.get('/stats', async (_req, res, next) => {
         (SELECT count(*) FROM imf WHERE status='trial') AS trials,
         (SELECT count(*) FROM imf WHERE status='active') AS actives,
         (SELECT count(*) FROM imf WHERE status='suspended') AS suspended,
+        (SELECT count(*) FROM imf WHERE status='deleted') AS supprimees,
         (SELECT count(*) FROM access_request WHERE decision IS NULL AND proforma_validated) AS pending,
-        (SELECT count(*) FROM app_user) AS users`
+        (SELECT count(*) FROM app_user) AS users,
+        (SELECT count(*) FROM app_user WHERE is_active) AS users_actifs,
+        (SELECT count(*) FROM institution_license_status WHERE license_paid) AS licences_payees,
+        (SELECT COALESCE(SUM(grand_total),0) FROM saas_invoices WHERE status='UNPAID') AS encours_fcfa,
+        (SELECT COALESCE(SUM(grand_total),0) FROM saas_invoices WHERE status='PAID') AS encaisse_fcfa`
     )).rows[0];
     res.json({ stats: c });
+  } catch (e) { next(e); }
+});
+
+// =========================================================================
+// FACTURATION SAAS PAR MODULE (vue éditeur teebo)
+// =========================================================================
+
+// --- Tarifaire : catalogue des modules + licence unique + remise pack -----
+router.get('/saas/catalogue', async (_req, res, next) => {
+  try {
+    res.json({ modules: await billing.listModulePricing(),
+      licence_unique_fcfa: await billing.getLicensePrice(),
+      remise_pack_complet_pct: await billing.getFullPackDiscount() });
+  } catch (e) { next(e); }
+});
+
+// --- Modifier le tarif mensuel d'un module --------------------------------
+router.put('/saas/catalogue/:key', async (req, res, next) => {
+  try {
+    const prix = Number((req.body || {}).monthly_subscription_price);
+    if (!(prix >= 0)) {
+      return res.status(400).json({ error: 'prix_invalide',
+        message: 'Indiquez un tarif mensuel positif (en FCFA).' });
+    }
+    const row = await billing.setModulePrice(req.params.key, prix);
+    await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
+             SELECT $1,$2,'saas.pricing.module','saas_modules_pricing',$3,$4::jsonb`,
+      [null, req.user.id, row.module_key, JSON.stringify({ tarif: prix })]);
+    res.json({ module: row });
+  } catch (e) { next(e); }
+});
+
+// --- Modifier le prix de la licence unique --------------------------------
+router.put('/saas/licence', async (req, res, next) => {
+  try {
+    const prix = Number((req.body || {}).unique_license_price);
+    if (!(prix >= 0)) {
+      return res.status(400).json({ error: 'prix_invalide',
+        message: 'Indiquez un montant de licence positif (en FCFA).' });
+    }
+    const row = await billing.setLicensePrice(prix);
+    await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
+             VALUES (NULL,$1,'saas.pricing.licence','saas_global_settings','UNIQUE_LICENSE_PRICE',$2::jsonb)`,
+      [req.user.id, JSON.stringify({ prix })]);
+    res.json({ licence_unique: row });
+  } catch (e) { next(e); }
+});
+
+// --- Modifier la remise pack complet (%) ----------------------------------
+router.put('/saas/remise-pack', async (req, res, next) => {
+  try {
+    const pct = Number((req.body || {}).percent);
+    if (!(pct >= 0 && pct <= 50)) {
+      return res.status(400).json({ error: 'pourcentage_invalide',
+        message: 'Indiquez un pourcentage entre 0 et 50.' });
+    }
+    const row = await billing.setFullPackDiscount(pct);
+    await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
+             VALUES (NULL,$1,'saas.pricing.remise_pack','saas_global_settings','FULL_PACK_DISCOUNT_PERCENT',$2::jsonb)`,
+      [req.user.id, JSON.stringify({ pourcentage: pct })]);
+    res.json({ remise_pack_complet_pct: row.setting_value });
+  } catch (e) { next(e); }
+});
+
+// --- Vue d'ensemble : chaque IMF, sa licence et ses modules ---------------
+router.get('/saas/imfs', async (_req, res, next) => {
+  try {
+    const { rows } = await q(
+      `SELECT im.id, im.name, im.code_imf, im.status, im.trial_ends_at, im.created_at,
+              COALESCE(l.license_paid, FALSE) AS license_paid, l.paid_at,
+              COALESCE((
+                SELECT SUM(p.monthly_subscription_price)
+                  FROM institution_module_subscriptions s
+                  JOIN saas_modules_pricing p ON p.module_key = s.module_key
+                 WHERE s.institution_id = im.id AND s.is_active = TRUE
+                   AND NOT (s.is_trial AND s.trial_end_date >= CURRENT_DATE)
+              ), 0)::float AS abonnement_mensuel_fcfa,
+              COALESCE((
+                SELECT COUNT(*) FROM institution_module_subscriptions s
+                 WHERE s.institution_id = im.id AND s.is_active
+                   AND NOT (s.is_trial AND s.trial_end_date >= CURRENT_DATE)
+              ), 0)::int AS nb_modules_factures,
+              COALESCE((
+                SELECT bool_and(s.is_active) FROM institution_module_subscriptions s
+                 WHERE s.institution_id = im.id
+                   AND s.module_key IN (SELECT module_key FROM saas_modules_pricing WHERE is_available)
+              ), FALSE)
+              AND (SELECT COUNT(*) FROM saas_modules_pricing WHERE is_available) > 0
+              AND (SELECT COUNT(*) FROM institution_module_subscriptions s
+                    WHERE s.institution_id = im.id AND s.is_active) = 
+                  (SELECT COUNT(*) FROM saas_modules_pricing WHERE is_available)
+                AS pack_complet,
+              COALESCE((
+                SELECT json_agg(json_build_object(
+                          'module_key', s.module_key, 'nom', p.module_name,
+                          'prix', p.monthly_subscription_price::float,
+                          'essai', s.is_trial AND s.trial_end_date >= CURRENT_DATE,
+                          'fin_essai', s.trial_end_date,
+                          'depuis', s.activated_at)
+                       ORDER BY p.position)
+                  FROM institution_module_subscriptions s
+                  JOIN saas_modules_pricing p ON p.module_key = s.module_key
+                 WHERE s.institution_id = im.id AND s.is_active = TRUE
+              ), '[]'::json) AS modules,
+              (SELECT MAX(billing_period_start) FROM saas_invoices
+                WHERE institution_id = im.id) AS derniere_facture,
+              (SELECT COALESCE(SUM(grand_total),0) FROM saas_invoices
+                WHERE institution_id = im.id AND status='UNPAID')::float AS impaye_fcfa
+         FROM imf im
+         LEFT JOIN institution_license_status l ON l.institution_id = im.id
+        WHERE im.status <> 'deleted'
+        ORDER BY im.name`);
+    const remise = await billing.getFullPackDiscount();
+    res.json({ imfs: rows, remise_pack_complet_pct: remise,
+      licence_unique_fcfa: await billing.getLicensePrice() });
+  } catch (e) { next(e); }
+});
+
+// --- Dossier complet d'une IMF (tout sur un écran) -----------------------
+router.get('/saas/imfs/:id', async (req, res, next) => {
+  try {
+    const imf = (await q(
+      `SELECT id, code_imf, name, type, country_code, city, email, phone_main, whatsapp,
+              status, trial_ends_at, created_at FROM imf WHERE id=$1`, [req.params.id])).rows[0];
+    if (!imf) return res.status(404).json({ error: 'imf_introuvable' });
+    const [licence, modules, factures, apercu] = await Promise.all([
+      billing.getLicenseStatus(imf.id),
+      billing.listInstitutionModules(imf.id),
+      billing.listInvoices(imf.id, { limit: 12 }),
+      billing.previewMonthlyInvoice(imf.id, null)]);
+    res.json({ imf, licence_unique: licence, modules, factures,
+      apercu_mois_en_cours: apercu,
+      remise_pack_complet_pct: await billing.getFullPackDiscount() });
+  } catch (e) { next(e); }
+});
+
+// --- Factures d'une IMF / toutes les factures -----------------------------
+router.get('/saas/invoices', async (req, res, next) => {
+  try {
+    res.json({ factures: await billing.listInvoices(req.query.institution_id || null,
+      { limit: Math.min(500, Number(req.query.limit || 100)),
+        statut: req.query.statut || null }) });
+  } catch (e) { next(e); }
+});
+
+// --- Aperçu (simulation) pour une IMF -------------------------------------
+router.get('/saas/imfs/:id/apercu', async (req, res, next) => {
+  try {
+    const mois = req.query.mois ? String(req.query.mois) + '-01' : null;
+    res.json(await billing.previewMonthlyInvoice(req.params.id, mois));
+  } catch (e) { next(e); }
+});
+
+// --- Générer la facture du mois pour une IMF ------------------------------
+router.post('/saas/imfs/:id/facturer', async (req, res, next) => {
+  try {
+    const mois = (req.body || {}).mois ? String((req.body || {}).mois) + '-01' : null;
+    const facture = await billing.generateMonthlyInvoice(req.params.id, mois);
+    if (!facture) return res.status(500).json({ error: 'facture_non_generee' });
+    res.status(201).json({ facture });
+  } catch (e) { next(e); }
+});
+
+// --- Générer pour TOUTES les IMF (traitement mensuel) ---------------------
+router.post('/saas/facturer-toutes', async (req, res, next) => {
+  try {
+    const mois = (req.body || {}).mois ? String((req.body || {}).mois) + '-01' : null;
+    const imfs = (await q("SELECT id FROM imf WHERE status NOT IN ('deleted')")).rows;
+    const resultats = [];
+    let total = 0;
+    for (const im of imfs) {
+      try {
+        const f = await billing.generateMonthlyInvoice(im.id, mois);
+        total += Number((f && f.grand_total) || 0);
+        resultats.push({ institution_id: im.id, numero: f && f.invoice_number,
+          total: f && Number(f.grand_total), ok: true });
+      } catch (e) {
+        resultats.push({ institution_id: im.id, ok: false, message: e.message });
+      }
+    }
+    res.status(201).json({ mois: mois || 'mois en cours', nb: resultats.length,
+      total_fcfa: Math.round(total * 100) / 100, resultats });
+  } catch (e) { next(e); }
+});
+
+// --- Marquer une facture payée (licence incluse) --------------------------
+router.post('/saas/invoices/:id/payer', async (req, res, next) => {
+  try {
+    const ok = await billing.markInvoicePaid(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'facture_introuvable_ou_deja_payee' });
+    const inv = (await q('SELECT * FROM saas_invoices WHERE id=$1', [req.params.id])).rows[0];
+    if (inv && inv.institution_id) await billing.refreshFullPackFlag(inv.institution_id);
+    res.json({ facture: inv, licence_reglee: true });
+  } catch (e) { next(e); }
+});
+
+// --- Détail d'une facture (lignes, ventilation, remise) -------------------
+router.get('/saas/invoices/:id', async (req, res, next) => {
+  try {
+    const inv = (await q(
+      `SELECT i.*, COALESCE(im.name,'') AS imf_name, COALESCE(im.code_imf,'') AS imf_code
+         FROM saas_invoices i LEFT JOIN imf im ON im.id=i.institution_id
+        WHERE i.id=$1`, [req.params.id])).rows[0];
+    if (!inv) return res.status(404).json({ error: 'facture_introuvable' });
+    const lignes = (await q(
+      'SELECT * FROM saas_invoice_lines WHERE invoice_id=$1 ORDER BY line_type DESC, amount_fcfa DESC',
+      [inv.id])).rows;
+    res.json({ facture: inv, lignes });
+  } catch (e) { next(e); }
+});
+
+// --- Annuler une facture émise par erreur ---------------------------------
+router.post('/saas/invoices/:id/annuler', async (req, res, next) => {
+  try {
+    const inv = (await q(
+      `UPDATE saas_invoices SET status='CANCELLED'
+        WHERE id=$1 AND status='UNPAID' RETURNING *`, [req.params.id])).rows[0];
+    if (!inv) return res.status(409).json({ error: 'annulation_impossible',
+      message: 'Seule une facture impayée peut être annulée.' });
+    await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
+             VALUES ($1,$2,'saas.invoice.cancel','saas_invoices',$3,$4::jsonb)`,
+      [inv.institution_id, req.user.id, inv.id,
+       JSON.stringify({ numero: inv.invoice_number, total: inv.grand_total })]);
+    res.json({ facture: inv });
+  } catch (e) { next(e); }
+});
+
+// --- Modules d'une IMF : activer / désactiver / essai ---------------------
+router.put('/saas/imfs/:id/modules/:key', async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const out = await billing.setInstitutionModule(req.params.id, req.params.key,
+      { is_active: b.is_active, is_trial: b.is_trial, trial_end_date: b.trial_end_date },
+      req.user.id);
+    await billing.syncFeaturesFromSubscriptions(req.params.id);
+    await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
+             VALUES ($1,$2,'saas.module.update','institution_module_subscriptions',$3,$4::jsonb)`,
+      [req.params.id, req.user.id, out.subscription_id,
+       JSON.stringify({ module: req.params.key, actif: out.is_active, essai: out.is_trial })]);
+    res.json({ abonnement: out });
+  } catch (e) { next(e); }
+});
+
+// --- Pack complet : TOUS les modules en une action -----------------------
+router.post('/saas/imfs/:id/pack', async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const out = await billing.setFullPack(req.params.id,
+      { is_active: b.is_active, is_trial: b.is_trial, trial_end_date: b.trial_end_date },
+      req.user.id);
+    await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
+             VALUES ($1,$2,'saas.pack.update','institution_module_subscriptions',NULL,$3::jsonb)`,
+      [req.params.id, req.user.id,
+       JSON.stringify({ actif: b.is_active !== false, essai: b.is_trial === true })]);
+    res.json({ pack: out, remise_pct: out.remise_pct });
+  } catch (e) { next(e); }
+});
+
+// --- Licence : marquer réglée / la remettre en attente -------------------
+router.post('/saas/imfs/:id/licence', async (req, res, next) => {
+  try {
+    const paye = (req.body || {}).paid === true;
+    const row = (await q(
+      `INSERT INTO institution_license_status (institution_id, license_paid, paid_at)
+       VALUES ($1,$2,CASE WHEN $2 THEN now() ELSE NULL END)
+       ON CONFLICT (institution_id) DO UPDATE SET
+         license_paid = EXCLUDED.license_paid,
+         paid_at = CASE WHEN EXCLUDED.license_paid THEN now() ELSE NULL END,
+         updated_at = now()
+       RETURNING *`, [req.params.id, paye])).rows[0];
+    await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
+             VALUES ($1,$2,'saas.licence.update','institution_license_status',$1,$3::jsonb)`,
+      [req.params.id, req.user.id, JSON.stringify({ payee: paye })]);
+    res.json({ licence_unique: row });
   } catch (e) { next(e); }
 });
 

@@ -63,10 +63,20 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /** Montant en cents XOF -> « 1 234 567 FCFA » (entiers, séparateur français). */
+/**
+ * Affichage d'un montant en FCFA — SANS AUCUN CALCUL FLOTTANT.
+ * Accepte soit des centimes (convention historique du module), soit un
+ * montant FCFA à 2 décimales déjà formaté. Tout passe par des chaînes.
+ */
 export function moneyFcfa(cents, currency = 'XOF') {
-  const v = Math.round(Number(cents || 0)) / 100;
   const label = CURRENCY_LABEL[currency] || currency;
-  return v.toLocaleString('fr-FR', { maximumFractionDigits: 2 }) + ' ' + label;
+  let s = String(cents == null ? 0 : cents).trim();
+  const neg = s.startsWith('-');
+  if (neg) s = s.slice(1);
+  const [ent, dec] = s.split('.');
+  const entier = (ent || '0').replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const cent = (dec || '').slice(0, 2).padEnd(2, '0');
+  return (neg ? '− ' : '') + entier + (cent === '00' ? '' : ',' + cent) + ' ' + label;
 }
 
 export function fmtDate(d) {

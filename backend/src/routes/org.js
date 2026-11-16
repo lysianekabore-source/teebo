@@ -8,11 +8,15 @@ import { defaultPermissionKeysForRole, buildProfilesMatrix } from '../permission
 import { positionInfo, POSITIONS as POSITIONS_IN_SOCLE } from '../org_structure.js';
 
 const router = express.Router();
-router.use(authenticate, requireFreshPassword);
+router.use(['/units', '/users', '/notify-test', '/code-dispatches', '/profiles-matrix'], authenticate, requireFreshPassword);
 
 // Les routes métier IMF ne sont accessibles qu'aux rôles rattachés à une IMF.
 // teebo_admin n'a pas de hiérarchie IMF : il est redirigé vers sa propre console.
+// NOTE : ce filtre peut désormais être traversé par une requête NON authentifiée
+// (chemin inconnu sous /api/v1) ; sans la garde « !req.user » il levait
+// « Cannot read properties of undefined (reading 'role') ».
 router.use((req, res, next) => {
+  if (!req.user) return next();          // laissé au routeur suivant / au 404
   if (req.user.role === 'teebo_admin') return res.status(403).json({ error: 'use_teebo_console' });
   next();
 });

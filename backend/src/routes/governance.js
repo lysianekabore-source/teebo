@@ -23,11 +23,12 @@ import { authenticate, requireFreshPassword, requireRole, rolesOf } from '../aut
 import { getBranding, setDocumentCsp, fmtDate, moneyFcfa } from '../documents.js';
 
 const r = Router();
-r.use(authenticate, requireFreshPassword);
+r.use(['/governance'], authenticate, requireFreshPassword);
 
 // Le module est réservé aux IMF : le super-admin teebo n'y accède pas (il
 // dispose de sa propre console).
 r.use((req, res, next) => {
+  if (!req.user) return next();
   if (req.user.role === 'teebo_admin') return res.status(403).json({ error: 'use_teebo_console' });
   next();
 });

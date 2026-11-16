@@ -37,6 +37,9 @@ RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 # --- Code applicatif ---
 COPY src ./src
 
+# --- Pages servies par l'API (console administrateur, vague 36) ---
+COPY public ./public
+
 # --- Migrations SQL (fournies à la racine du contexte de build) ---
 COPY db* ./db/
 

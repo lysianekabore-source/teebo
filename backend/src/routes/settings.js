@@ -6,7 +6,7 @@ import { getBranding, TEEBO_SUPPLIER, renderInvoice, setDocumentCsp } from '../d
 import { TRIAL_BILLING_NOTE } from '../pricing.js';
 
 const router = express.Router();
-router.use(authenticate, requireFreshPassword);
+router.use(['/org-settings'], authenticate, requireFreshPassword);
 
 /**
  * Paramètres de l'IMF — identité visuelle (logo) + mentions légales obligatoires.
@@ -21,6 +21,7 @@ const MAX_LOGO_BYTES = 400 * 1024; // 400 Ko : suffisant pour un logo net, lége
 
 // GDPR/périmètre : réservé aux IMF (pas au super-admin teebo).
 router.use((req, res, next) => {
+  if (!req.user) return next();
   if (req.user.role === 'teebo_admin') return res.status(403).json({ error: 'use_teebo_console' });
   next();
 });

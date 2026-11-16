@@ -12,6 +12,13 @@ import { fileURLToPath } from 'url';
 import { q, tx, pool } from './db.js';
 import { authenticate, requireFreshPassword, requireRole, createSession } from './auth.js';
 import authRoutes from './routes/auth.js';
+import { tenantContext } from './tenant.js';
+import { checkModuleActivation } from './modules.js';
+import collecteurRoutes from './routes/collecteurs.js';
+import saasRoutes from './routes/saas.js';
+import subscriptionRoutes from './routes/subscription.js';
+import restrictionRoutes from './routes/saas_restriction_patch.js';
+import adminConsoleRoutes from './routes/admin_console.js';
 import requestRoutes from './routes/requests.js';
 import orgRoutes from './routes/org.js';
 import settingsRoutes from './routes/settings.js';
@@ -25,12 +32,17 @@ import visibilityRoutes from './routes/visibility.js';
 import roundRoutes from './routes/round.js';
 import collecteRoutes from './routes/collecte.js';
 import collecte6Routes from './routes/collecte6.js';
+import collecteEsRoutes from './routes/collecte_es.js';
+import creditRoutes from './routes/credit.js';           // VAGUE 38 : module crédit BCEAO
+import conformiteRoutes from './routes/conformite.js';   // VAGUE 41 : KYC / KYB / visites GPS LBC-FT
+import certificatKycRoutes from './routes/certificat_kyc.js'; // VAGUE 42 : certificat de diligence KYC/KYB
 import objectiveRoutes from './routes/objectives.js';
 import structureRoutes from './routes/structure.js';
 import accessRoutes from './routes/access.js';
 import governanceRoutes from './routes/governance.js';
 import { gcRouter as governanceConformiteRoutes } from './governance_conformite.js';
 import bankingRoutes from './routes/banking.js';
+import { gestionnaireErreurs, routeInconnue } from './errors.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -98,7 +110,14 @@ app.use('/api/v1/auth/forgot-password', resetLimiter);
 app.use('/api/v1/auth/reset-password', resetLimiter);
 
 // ----------------------------- API ----------------------------------------
+// Cloisonnement (RLS + header IMF) et modules activés : appliqués à TOUTE l'API.
+app.use('/api/v1', tenantContext, checkModuleActivation);
 app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1', collecteurRoutes);              // caisse, clôture, commissions, zoning, hors-ligne
+app.use('/api/v1', subscriptionRoutes);           // v36 : /institution/config + activation de module
+app.use('/api/v1', adminConsoleRoutes);          // v36 : console admin (liste IMF, restriction, levée)
+app.use('/api/v1', restrictionRoutes);            // v36 : restriction immédiate collecte seule
+app.use('/api/v1', saasRoutes);                    // abonnement par module, licence unique, factures              // caisse, clôture, commissions, zoning, hors-ligne
 app.use('/api/v1/requests', requestRoutes);       // parcours prospect (public)
 app.use('/api/v1/teebo', teeboRoutes);             // tableau de bord teebo (admin)
 app.use('/api/v1', orgRoutes);                     // hiérarchie (authentifié)
@@ -128,6 +147,32 @@ app.use('/api/v1', collecteRoutes);
 // VAGUE 6 : anti-doublons, affectations superviseur → collectrice, relevé BCEAO,
 // approbation caissière + export Excel des dépôts de collecte.
 app.use('/api/v1', collecte6Routes);
+// VAGUE 37 : module Collecte & Epargne securise - synchronisation hors-ligne
+// idempotente, contre-passation, sessions de caisse, billetage FCFA, carnets
+// tontine (31 jours + commission IMF), recus et notifications.
+app.use('/api/v1', collecteEsRoutes);
+// VAGUE 38 : module Credit BCEAO complet - produits, simulateur TEG,
+// dossiers (4 yeux + plafonds), garanties dont epargne bloquee, decaissement
+// avec echeancier fige, remboursements imputes penalites -> interets -> capital,
+// recouvrement, tache quotidienne declassement/provision et PAR 30/90.
+// Chemins /credit/... distincts des routes historiques /credits/... (vague 15).
+// Le SCORING ALTERNATIF (vague 40 : grilles ponderees, score 5 piliers, plafond
+// soutenable, avis BIC UEMOA) est monte DANS ce routeur, sous /credit/... :
+// aucune ligne a ajouter ici, les chemins /credit/scoring/... et
+// /credit/dossiers/:id/score sont servis par creditRoutes.
+app.use('/api/v1', creditRoutes);
+// VAGUE 41 : conformite LBC/FT/FP (Instruction BCEAO n°003-03-2025) — dossier
+// KYC personne physique, KYB personnes morales (beneficiaires effectifs > 25 %
+// + mandataires), criblage flou des listes sanctions / PPE, visites de terrain
+// hors-ligne GPS, controle quotidien des pieces echees et feu vert de
+// decaissement. Chemins /conformite/... distincts des registres v27/v29.
+app.use('/api/v1', conformiteRoutes);
+// VAGUE 42 : CERTIFICAT DE DILIGENCE KYC/KYB & VISITE TERRAIN. Le meme routeur
+// est monte sous /api/v1 (generation, disponibilite, historique, annulation) ET
+// a la racine pour la page PUBLIQUE /verify-certificat/:empreinte, ouverte par
+// le QR code sans jeton. Chemins distincts de ceux de la vague 41.
+app.use('/api/v1', certificatKycRoutes);
+app.use('/', certificatKycRoutes);
 // VAGUE 7 : module Objectifs hiérarchiques (DG -> Superviseur -> Collectrice),
 // contrôle de cohérence d'équipe + roll-up temps réel de la progression.
 app.use('/api/v1', objectiveRoutes);
@@ -250,6 +295,47 @@ app.get('/essai', page('essai.html'));
 app.get('/autorisations', page('autorisations.html'));
 app.get('/securite', page('securite.html'));
 app.get('/documentation', page('documentation.html'));
+
+// VAGUE 36 — Console administrateur REELLE (restriction collecte seule).
+// Servie par l'API elle-meme : elle agit sur les routes /api/v1/admin/...
+// du meme domaine, sans dependre du site Netlify. Script externe (pas de
+// script inline) : conforme a la politique de securite du serveur.
+// Emplacement de la console : /app/public dans l'image, backend/public en
+// local. On essaie les deux, puis le dossier du site s'il est embarque.
+function chercherPage(nom) {
+  const pistes = [
+    path.resolve(__dirname, '../public', nom),
+    path.resolve(process.cwd(), 'public', nom)
+  ];
+  if (typeof pub !== 'undefined') pistes.push(path.resolve(pub, nom));
+  for (const p of pistes) { try { if (fs.existsSync(p)) return p; } catch (e) {} }
+  return pistes[0];
+}
+const CONSOLE_FILE = chercherPage('console-admin.html');
+const CONSOLE_JS = chercherPage('console-admin.js');
+app.get('/console-admin', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(CONSOLE_FILE, (e) => {
+    if (e && !res.headersSent) {
+      res.status(500).type('text/plain; charset=utf-8')
+        .send('Page console absente de l’image : verifiez le dossier public/.');
+    }
+  });
+});
+// VAGUE 42 : script de la page publique de verification du certificat. Le
+// document est servi par l'API elle-meme ; le bouton "Imprimer" a besoin d'un
+// script EXTERNE (la politique de securite interdit les scripts en ligne).
+const CERTIFICAT_JS = chercherPage('certificat-kyc.js');
+app.get('/certificat-kyc.js', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('application/javascript; charset=utf-8');
+  res.sendFile(CERTIFICAT_JS, (e) => { if (e && !res.headersSent) res.status(404).end(); });
+});
+app.get('/console-admin.js', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('application/javascript; charset=utf-8');
+  res.sendFile(CONSOLE_JS, (e) => { if (e && !res.headersSent) res.status(404).end(); });
+});
 // Toute autre adresse inconnue : explication claire au lieu d'une erreur brute.
 app.use((req, res, next) => {
   if (req.method !== 'GET' || String(req.path || '').startsWith('/api/')) return next();
@@ -268,45 +354,14 @@ app.use((req, res, next) => {
     + '<p><a href="' + SITE + '">Ouvrir l’application teebo</a></p></div></body></html>');
 });
 
-// Gestion d'erreurs
-app.use((err, req, res, _next) => {
-  // CORRECTIF 13/11/2026-C : la signature etait (err, _req, res, _next) mais le
-  // corps utilisait « req » -> « ReferenceError: req is not defined » a chaque
-  // erreur, ce qui faisait tomber le service. Signature corrigee + garde-fou
-  // si la reponse est deja envoyee (fichier statique introuvable, etc.).
-  console.error(err);
-  if (res.headersSent) return;
-  // Les erreurs métier sont levées avec un statut (ex. 403/422) et un libellé
-  // de code via Error('bad_parent'). On expose ce code au front pour un message
-  // précis ; les erreurs non maîtrisées (sans statut) restent génériques.
-  const status = err.status || 500;
-  const code = err.code || (err.status ? err.message : null) || 'server_error';
-  // Un fichier (PDF, Excel, ZIP) demandé depuis le site affichait auparavant
-  // un simple {"error":"server_error"} en texte brut : on renvoie désormais
-  // une page lisible qui explique quoi faire, au lieu de cette réponse muette.
-  const wantsFile = /\/exports\//.test(String(req.originalUrl || req.url || ''));
-  if (wantsFile && !req.accepts(['json'])) {
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(status).send(`<!doctype html><html lang="fr"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Export indisponible — teebo</title>
-<style>body{font-family:'Segoe UI',system-ui,Arial,sans-serif;background:#eef0f6;color:#0b0c26;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px}
- .card{background:#fff;border-radius:12px;box-shadow:0 14px 44px rgba(11,12,38,.14);max-width:560px;padding:32px 34px}
- h1{font-size:19px;margin:0 0 10px}p{font-size:13.5px;line-height:1.7;color:#3c3f57;margin:0 0 10px}
- ul{font-size:13px;line-height:1.8;color:#3c3f57;padding-left:20px;margin:8px 0 14px}
- .tag{display:inline-block;background:#fdeceb;color:#b3261e;font-weight:700;font-size:11px;padding:5px 11px;border-radius:999px;margin-bottom:14px}
- a{display:inline-block;background:#0b0c26;color:#fff;text-decoration:none;font-weight:700;font-size:13px;padding:11px 18px;border-radius:9px}</style>
-</head><body><div class="card"><div class="tag">Export indisponible</div>
-<h1>Le fichier n'a pas pu être généré</h1>
-<p>L'export a rencontré une erreur côté serveur et n'a produit aucun fichier.</p>
-<ul><li>Rechargez la page et relancez l'export.</li>
-<li>Si le message persiste, la base de données est peut-être encore en cours de mise à jour (migration) : réessayez dans une minute.</li>
-<li>Les rapports restent accessibles depuis <b>Gouvernance › Conformité</b>.</li></ul>
-<a href="/app">Retour à l'application</a></div></body></html>`);
-  }
-  res.status(status).json({ error: code });
-});
+// ---------------------------------------------------------------------------
+// GESTION GLOBALE DES ERREURS (VAGUE 31)
+// Le traitement vit désormais dans ./errors.js : signature correcte, garde-fou
+// res.headersSent, traduction des erreurs PostgreSQL, identifiant d'incident
+// (en-tête X-Error-Id), aucun détail technique exposé en production.
+// ---------------------------------------------------------------------------
+app.use(routeInconnue());          // 404 JSON explicite pour /api/*
+app.use(gestionnaireErreurs());    // unique porte de sortie des erreurs
 
 const port = process.env.PORT || 3000;
 const host = process.env.HOST || '0.0.0.0';

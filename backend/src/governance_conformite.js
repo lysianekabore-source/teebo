@@ -21,8 +21,9 @@ import { authenticate, requireFreshPassword, rolesOf } from './auth.js';
 import { setDocumentCsp } from './documents.js';
 
 export const gcRouter = Router();
-gcRouter.use(authenticate, requireFreshPassword);
+gcRouter.use(['/governance'], authenticate, requireFreshPassword);
 gcRouter.use((req, res, next) => {
+  if (!req.user) return next();
   if (req.user.role === 'teebo_admin') return res.status(403).json({ error: 'use_teebo_console' });
   next();
 });

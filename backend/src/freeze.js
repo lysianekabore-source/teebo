@@ -131,4 +131,164 @@ export async function assertClientNotFrozen(imfId, clientId) {
   return rows[0];
 }
 
+/* ==========================================================================
+ * GEL D'URGENCE (LCB-FT) — VAGUE 32, 14/11/2026
+ * --------------------------------------------------------------------------
+ * Le gel automatique ci-dessus répare un défaut de suivi commercial. Ce BLOC
+ * est tout autre chose : c'est une MESURE CONSERVATOIRE immédiate, déclenchée
+ * par la conformité, un soupçon de blanchiment, une réquisition judiciaire ou
+ * une correspondance sur une liste de sanctions (GAFI / BCEAO / UE / ONU).
+ *
+ * Caractéristiques :
+ *  - effet IMMÉDIAT (aucune attente, aucune confirmation du superviseur) ;
+ *  - couvre le client PAR IDENTIFIANT ou PAR LISTE (nom, pièce, téléphone,
+ *    numéro de compte) : un appel peut geler plusieurs clients d'un coup ;
+ *  - chaque gel produit un événement client_freeze_event de type
+ *    'emergency' (immuable, jamais supprimé) + une ligne d'audit ;
+ *  - idempotent : re-geler un client déjà gelé ne crée pas de doublon ;
+ *  - refuse de geler un client d'une autre IMF (cloisonnement).
+ * ========================================================================== */
+
+/** Rôles autorisés à prononcer un gel d'urgence. */
+export const EMERGENCY_FREEZE_ROLES = ['admin_imf', 'direction', 'department', 'service', 'teebo_admin'];
+
+/** Normalise un texte pour comparaison aux listes (majuscules, sans accents). */
+export function normalizeName(s) {
+  return String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Gèle IMMÉDIATEMENT un ou plusieurs clients.
+ *
+ * @param {object} p
+ *   p.imfId            IMF concernée (cloisonnement strict)
+ *   p.clientIds        tableau d'identifiants clients (ou p.clientId unique)
+ *   p.motif            motif lisible (obligatoire)
+ *   p.source           'sanctions' | 'judiciaire' | 'conformite' | 'manuel'
+ *   p.reference        référence externe (n° de réquisition, liste…)
+ *   p.actorId          auteur de la décision
+ *   p.actorRole        rôle de l'auteur
+ *   p.freezeListId     ligne de liste de sanctions à l'origine (optionnel)
+ * @returns {{geles:Array, dejaGeles:Array, introuvables:Array, total:number}}
+ */
+export async function freezeClientImmediately(p = {}) {
+  const imfId = p.imfId;
+  const ids = Array.isArray(p.clientIds) ? p.clientIds.filter(Boolean)
+    : (p.clientId ? [p.clientId] : []);
+
+  if (!imfId) {
+    const e = new Error('Gel impossible : institution non précisée.');
+    e.status = 400; e.code = 'missing_institution';
+    throw e;
+  }
+  if (!ids.length) {
+    const e = new Error('Gel impossible : aucun client désigné.');
+    e.status = 400; e.code = 'no_client_selected';
+    throw e;
+  }
+  const motif = String(p.motif || '').trim();
+  if (motif.length < 5) {
+    const e = new Error('Gel impossible : le motif doit être renseigné (5 caractères minimum).');
+    e.status = 400; e.code = 'motif_requis'; e.expose = true;
+    throw e;
+  }
+
+  const source = ['sanctions', 'judiciaire', 'conformite', 'manuel'].includes(p.source)
+    ? p.source : 'manuel';
+
+  return tx(async (c) => {
+    const geles = [];
+    const dejaGeles = [];
+    const introuvables = [];
+
+    for (const id of ids) {
+      // FOR UPDATE : deux gels simultanés ne se chevauchent pas.
+      const cl = (await c.query(
+        'SELECT * FROM client WHERE id=$1 AND imf_id=$2 FOR UPDATE',
+        [id, imfId])).rows[0];
+      if (!cl) { introuvables.push(id); continue; }
+      if (isFrozen(cl)) {
+        dejaGeles.push({ client_id: cl.id, code_client: cl.code_client, full_name: cl.full_name,
+          frozen_at: cl.frozen_at, frozen_reason: cl.frozen_reason });
+        continue;
+      }
+
+      await c.query(
+        `UPDATE client SET frozen_at=now(), frozen_reason=$2, frozen_by=$3,
+                frozen_auto=false, is_frozen=true
+          WHERE id=$1`,
+        [cl.id, motif, p.actorId || null]);
+
+      await c.query(
+        `INSERT INTO client_freeze_event(imf_id, client_id, kind, status, acted_by,
+                reason, note, resolved_at)
+         VALUES ($1,$2,'emergency','clos',$3,$4,$5, now())`,
+        [imfId, cl.id, p.actorId || null, motif,
+         'Gel d’urgence — source : ' + source +
+         (p.reference ? ' — référence : ' + p.reference : '')]);
+
+      // Journal d'audit (append-only) : trace indélébile de la décision.
+      await c.query(
+        `INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
+         VALUES ($1,$2,'client.emergency_freeze','client',$3,$4::jsonb)`,
+        [imfId, p.actorId || null, cl.id, JSON.stringify({
+          code_client: cl.code_client, full_name: cl.full_name,
+          motif, source, reference: p.reference || null,
+          actor_role: p.actorRole || null, freeze_list_id: p.freezeListId || null,
+          at: new Date().toISOString()
+        })]);
+
+      geles.push({ client_id: cl.id, code_client: cl.code_client,
+        full_name: cl.full_name, frozen_at: new Date().toISOString() });
+    }
+
+    return { geles, dejaGeles, introuvables, total: geles.length };
+  });
+}
+
+/**
+ * GEL PAR LISTE : recherche les clients de l'IMF correspondant à une liste de
+ * sanctions (nom, pièce, téléphone, compte) puis applique freezeClientImmediately
+ * à chacun. C'est le point d'entrée pour une liste externe (GAFI/BCEAO).
+ */
+export async function freezeFromSanctionsList({ imfId, entries = [], motif, actorId, actorRole }) {
+  if (!Array.isArray(entries) || !entries.length) {
+    const e = new Error('Aucune entrée de liste fournie.');
+    e.status = 400; e.code = 'empty_list'; e.expose = true;
+    throw e;
+  }
+  const matched = new Set();
+  const details = [];
+  for (const e of entries) {
+    const kind = e.kind || 'nom';
+    const raw = String(e.valeur || '').trim();
+    if (!raw) continue;
+
+    let rows = [];
+    if (kind === 'nom') {
+      // Comparaison normalisée (accents/casse) côté SQL via fn_normalise.
+      rows = (await q(
+        `SELECT id FROM client WHERE imf_id=$1 AND fn_normalise(full_name) LIKE '%'||fn_normalise($2)||'%'`,
+        [imfId, raw])).rows;
+    } else if (kind === 'piece') {
+      rows = (await q('SELECT id FROM client WHERE imf_id=$1 AND id_number=$2', [imfId, raw])).rows;
+    } else if (kind === 'telephone') {
+      rows = (await q('SELECT id FROM client WHERE imf_id=$1 AND phone=$2', [imfId, raw])).rows;
+    } else if (kind === 'compte') {
+      rows = (await q(
+        'SELECT client_id AS id FROM account WHERE imf_id=$1 AND code_account=$2', [imfId, raw])).rows;
+    }
+    for (const r of rows) { matched.add(r.id); details.push({ id: r.id, matched_by: kind, valeur: raw }); }
+  }
+
+  if (!matched.size) return { geles: [], dejaGeles: [], introuvables: [], total: 0, matched: [] };
+  const res = await freezeClientImmediately({
+    imfId, clientIds: [...matched], motif: motif || 'Correspondance liste de sanctions',
+    source: 'sanctions', actorId, actorRole
+  });
+  return { ...res, matched: details };
+}
+
 export { DAYS_FR };

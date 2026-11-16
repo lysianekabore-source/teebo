@@ -15,8 +15,9 @@ import { habilit } from '../rbac_strict.js';
  *  éléments custom, et ne modifie que dans son périmètre.
  * ========================================================================= */
 const router = express.Router();
-router.use(authenticate, requireFreshPassword);
+router.use(['/access'], authenticate, requireFreshPassword);
 router.use((req, res, next) => {
+  if (!req.user) return next();
   if (req.user.role === 'teebo_admin') return res.status(403).json({ error: 'use_teebo_console' });
   next();
 });

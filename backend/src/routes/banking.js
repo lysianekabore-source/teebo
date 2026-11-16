@@ -22,8 +22,9 @@ import { validateParticulierDocs } from '../client_documents.js';
  * strict sur TOUTES les requêtes.
  * ========================================================================= */
 const router = express.Router();
-router.use(authenticate, requireFreshPassword);
+router.use(['/accounting', '/cash', '/clients', '/credits', '/vault'], authenticate, requireFreshPassword);
 router.use((req, res, next) => {
+  if (!req.user) return next();
   if (req.user.role === 'teebo_admin') return res.status(403).json({ error: 'use_teebo_console' });
   next();
 });

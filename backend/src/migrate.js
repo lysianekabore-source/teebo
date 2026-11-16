@@ -101,8 +101,8 @@ async function main() {
     console.error('!! Aucun dossier db/ contenant schema*.sql. Emplacements essayés : ' + candidates.join(' | '));
   }
   const numOf = (f) => {
-    const m = /^schema(?:_v(\d+))?\.sql$/i.exec(f);
-    return m ? Number(m[1] || 1) : null;
+    const m = /^schema(?:_v(\d+))?([a-z]*)\.sql$/i.exec(f);
+    return m ? Number(m[1] || 1) + (m[2] ? m[2].charCodeAt(0) / 1000 : 0) : null;
   };
   let schemaFiles = [];
   try {

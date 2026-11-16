@@ -185,6 +185,10 @@ export function canViewTeamData(role) {
 /** RBAC : liste de profils autorisés (tolérant aux rôles-postes via alias). */
 export function requireRole(...roles) {
   return (req, res, next) => {
+    // Garde : un routeur peut être traversé sans authentification préalable
+    // (chemin non couvert). Sans cette ligne, on levait
+    // « Cannot read properties of undefined (reading 'role') » -> 500 opaque.
+    if (!req.user) return res.status(401).json({ error: 'not_authenticated' });
     // L'administrateur plateforme (teebo_admin) dispose de l'accès complet,
     // comme dans les helpers d'habilitation : on évite ainsi un 403 incohérent
     // sur l'administration de la structure (ex. ajout/modification d'unité).
