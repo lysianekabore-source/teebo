@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>teebo — Console administrateur (fiche d'écran v35)</title>
+<style>
+  :root{
+    --encre:#0f2b3d; --encre2:#274b63; --gris:#5d7385; --ligne:#dbe5ec;
+    --fond:#f4f7fa; --carte:#ffffff; --vert:#0f7a55; --vert-clair:#e6f5ef;
+    --ambre:#a86a00; --ambre-clair:#fdf3e2; --rouge:#a72b2b; --rouge-clair:#fbeaea;
+    --bleu:#0b5fa5; --bleu-clair:#e8f1fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--fond);color:var(--encre);
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       font-size:14px;line-height:1.5}
+  a{color:var(--bleu)}
+  .bandeau{background:var(--encre);color:#fff;padding:14px 22px;display:flex;
+           flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+  .bandeau h1{font-size:17px;margin:0;font-weight:650;letter-spacing:.2px}
+  .bandeau .marque{display:flex;align-items:center;gap:10px}
+  .logo{width:26px;height:26px;border-radius:7px;background:#39b58a;display:inline-block}
+  .pastille{font-size:11.5px;background:#20465e;border:1px solid #34617d;padding:3px 9px;border-radius:20px;color:#cfe3f0}
+  .page{max-width:1180px;margin:0 auto;padding:20px 18px 60px}
+  .intro{background:var(--carte);border:1px solid var(--ligne);border-radius:10px;padding:14px 16px;margin-bottom:16px}
+  .intro p{margin:0;color:var(--gris);font-size:13px}
+  .intro strong{color:var(--encre)}
+  nav.onglets{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px}
+  nav.onglets span{padding:7px 13px;border-radius:8px 8px 0 0;border:1px solid var(--ligne);
+                   border-bottom:none;background:#eaf0f5;color:var(--gris);font-size:13px}
+  nav.onglets span.actif{background:var(--carte);color:var(--encre);font-weight:650;border-top:3px solid #0b5fa5}
+  section.ecran{background:var(--carte);border:1px solid var(--ligne);border-radius:0 10px 10px 10px;
+                padding:18px;margin-bottom:22px}
+  section.ecran > h2{font-size:15.5px;margin:0 0 4px}
+  section.ecran > h2 .num{color:#9db2c2;margin-right:6px}
+  .sous{color:var(--gris);font-size:12.5px;margin:0 0 14px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 9px;border-bottom:1px solid var(--ligne);vertical-align:top}
+  th{background:#f0f5f9;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--gris);font-weight:650}
+  td.droite,th.droite{text-align:right;font-variant-numeric:tabular-nums}
+  tr.total td{font-weight:700;background:#f7fafc;border-top:2px solid var(--ligne)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+  .etq{display:inline-block;font-size:11px;font-weight:650;padding:2px 8px;border-radius:20px;white-space:nowrap}
+  .e-vert{background:var(--vert-clair);color:var(--vert)}
+  .e-ambre{background:var(--ambre-clair);color:var(--ambre)}
+  .e-rouge{background:var(--rouge-clair);color:var(--rouge)}
+  .e-bleu{background:var(--bleu-clair);color:var(--bleu)}
+  .e-gris{background:#eef2f5;color:var(--gris)}
+  .btn{display:inline-block;font-size:12.5px;padding:6px 12px;border-radius:7px;border:1px solid var(--bleu);
+       color:var(--bleu);background:#fff;margin:2px 4px 2px 0}
+  .btn.plein{background:var(--bleu);color:#fff}
+  .btn.gris{border-color:var(--ligne);color:var(--gris)}
+  .grille{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px;margin-bottom:14px}
+  .carte{border:1px solid var(--ligne);border-radius:9px;padding:12px 13px;background:#fbfdfe}
+  .carte .lib{font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--gris)}
+  .carte .val{font-size:20px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums}
+  .carte .note{font-size:11.5px;color:var(--gris);margin-top:4px}
+  .note-encadre{border-left:3px solid #c8d7e2;background:#f7fafc;padding:9px 12px;border-radius:0 7px 7px 0;
+                font-size:12.5px;color:var(--encre2);margin:12px 0}
+  .note-encadre b{color:var(--encre)}
+  .alerte{border-left:3px solid var(--ambre);background:var(--ambre-clair);border-radius:0 7px 7px 0;
+          padding:9px 12px;font-size:12.5px;margin:12px 0;color:#6b4600}
+  .alerte.rouge{border-color:var(--rouge);background:var(--rouge-clair);color:#7d1f1f}
+  .alerte.vert{border-color:var(--vert);background:var(--vert-clair);color:#0b5c40}
+  .flux{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12.5px;margin:10px 0}
+  .flux .pas{background:#eef4f8;border:1px solid var(--ligne);border-radius:7px;padding:5px 10px}
+  .flux .fleche{color:#9db2c2}
+  ul.mini{margin:6px 0 0 18px;padding:0;font-size:12.5px;color:var(--encre2)}
+  ul.mini li{margin:3px 0}
+  footer.page{color:var(--gris);font-size:11.5px;text-align:center;padding:10px 0 0}
+  @media print{
+    body{background:#fff;font-size:10.5px}
+    .bandeau{background:#fff;color:#000;border-bottom:2px solid #000}
+    .bandeau .pastille{display:none}
+    nav.onglets{display:none}
+    section.ecran{break-inside:avoid;page-break-inside:avoid;border-color:#bbb;margin-bottom:10px}
+    .page{max-width:none;padding:0}
+  }
+</style>
+</head>
+<body>
+
+<div class="bandeau">
+  <div class="marque"><span class="logo"></span>
+    <h1>teebo — Console administrateur</h1></div>
+  <div><span class="pastille">Fiche d'écran</span>
+       <span class="pastille">Version 36</span>
+       <span class="pastille">Facturation par module</span></div>
+</div>
+
+<div class="page">
+
+  <div class="intro">
+    <p><strong>À quoi sert cet écran&nbsp;:</strong> il montre, écran par écran, ce que verra
+    l'administrateur d'une IMF (institution de microfinance) dans la console de facturation
+    teebo, et ce que verra l'équipe teebo côté suivi de toutes les IMF.
+    Les montants sont toujours en FCFA entiers au centime près, jamais de chiffres à virgule flottante.
+    Cinq onglets&nbsp;: <strong>Abonnement</strong>, <strong>Modules</strong>, <strong>Factures</strong>,
+    <strong>Statuts de facturation</strong>, <strong>Journal d'audit</strong>.
+    <b>Nouveaute version 37 :</b> la restriction "collecte seule" n'est plus une simple maquette : le bouton existe reellement dans la console et agit sur l'acces de l'IMF. Le blocage est desormais lu a chaque requete sur les vraies souscriptions (aucun cache) : la coupure s'applique a la requete suivante, et la configuration de l'ecran est renvoyee sans memorisation navigateur.</p>
+  </div>
+
+  <nav class="onglets">
+    <span class="actif">Abonnement</span><span>Modules</span><span>Factures</span>
+    <span>Statuts de facturation</span><span>Acces et restriction</span><span>Journal d'audit</span>
+  </nav>
+
+  <!-- ================= 1. ABONNEMENT ================= -->
+  <section class="ecran">
+    <h2><span class="num">1.</span>Onglet « Abonnement » — vue d'ensemble de l'IMF</h2>
+    <p class="sous">Ce que l'IMF paie : licence unique à vie + abonnements par module. Aucun tarif par utilisateur ni par agence.</p>
+
+    <div class="grille">
+      <div class="carte"><div class="lib">Licence unique (à vie)</div>
+        <div class="val">250 000 FCFA</div>
+        <div class="note"><span class="etq e-vert">Payée le 04/01/2026</span> — un seul paiement, jamais renouvelé.</div></div>
+      <div class="carte"><div class="lib">Abonnements du mois (net)</div>
+        <div class="val">242 250 FCFA</div>
+        <div class="note">255 000 brut − 12 750 de remise pack complet (5 %).</div></div>
+      <div class="carte"><div class="lib">Cycle en cours</div>
+        <div class="val">Annuel</div>
+        <div class="note">4 modules sur 4 — remise annuelle de 15 % appliquée.</div></div>
+      <div class="carte"><div class="lib">Prochaine facture</div>
+        <div class="val">01/12/2026</div>
+        <div class="note">Générée automatiquement le 1<sup>er</sup> de chaque mois.</div></div>
+    </div>
+
+    <table>
+      <tr><th>Élément</th><th>Détail</th><th class="droite">Montant</th></tr>
+      <tr><td>Licence unique teebo</td><td>Paiement unique à vie</td><td class="droite mono">0,00</td></tr>
+      <tr><td>Module Collecte &amp; tontine</td><td>Annuel — 75 000 × 85 %</td><td class="droite mono">63 750,00</td></tr>
+      <tr><td>Module Dossier de crédit</td><td>Annuel — 100 000 × 85 %</td><td class="droite mono">85 000,00</td></tr>
+      <tr><td>Module Conformité / KYC</td><td>Annuel — 25 000 × 85 %</td><td class="droite mono">21 250,00</td></tr>
+      <tr><td>Module Comptabilité avancée</td><td>Annuel — 100 000 × 85 %</td><td class="droite mono">85 000,00</td></tr>
+      <tr class="total"><td colspan="2">Total brut des abonnements</td><td class="droite mono">255 000,00</td></tr>
+      <tr><td>Remise pack complet</td><td>Les 4 modules sont pris ensemble — 5 %</td><td class="droite mono">− 12 750,00</td></tr>
+      <tr class="total"><td colspan="2">Total à payer ce mois</td><td class="droite mono">242 250,00</td></tr>
+    </table>
+
+    <div class="note-encadre"><b>Rappel des tarifs catalogue&nbsp;:</b>
+      collecte &amp; tontine 75 000, dossier de crédit 100 000, conformité/KYC 25 000,
+      comptabilité avancée 100 000 FCFA par mois. Le passage à l'annuel applique −15 %
+      <b>à partir de la date exacte de signature</b>, sans effet rétroactif.
+      Le pack complet ajoute −5 %.</div>
+
+    <div class="flux">
+      <span class="pas">1. Choisir les modules</span><span class="fleche">→</span>
+      <span class="pas">2. Choisir le cycle (mensuel / annuel)</span><span class="fleche">→</span>
+      <span class="pas">3. Aperçu de la facture</span><span class="fleche">→</span>
+      <span class="pas">4. Générer la facture</span><span class="fleche">→</span>
+      <span class="pas">5. Télécharger le PDF</span>
+    </div>
+  </section>
+
+  <!-- ================= 2. MODULES ================= -->
+  <section class="ecran">
+    <h2><span class="num">2.</span>Onglet « Modules » — activer, essayer, changer de cycle</h2>
+    <p class="sous">Une ligne par module. L'essai gratuit n'est possible qu'une seule fois par module&nbsp;: ensuite le module s'active en payant.</p>
+
+    <table>
+      <tr><th>Module</th><th>État</th><th class="droite">Prix mensuel</th><th>Cycle</th><th class="droite">Prix annuel mensualisé</th><th>Essai</th><th>Actions</th></tr>
+      <tr>
+        <td>Collecte &amp; tontine</td><td><span class="etq e-vert">Actif</span></td>
+        <td class="droite mono">75 000,00</td>
+        <td><span class="etq e-bleu">ANNUEL</span><br><span class="mono" style="font-size:11px">signé le 16/11/2026</span></td>
+        <td class="droite mono">63 750,00</td>
+        <td><span class="etq e-gris">Consommé</span></td>
+        <td><span class="btn">Passer en mensuel</span></td>
+      </tr>
+      <tr>
+        <td>Dossier de crédit</td><td><span class="etq e-vert">Actif</span></td>
+        <td class="droite mono">100 000,00</td>
+        <td><span class="etq e-bleu">ANNUEL</span></td>
+        <td class="droite mono">85 000,00</td>
+        <td><span class="etq e-gris">Consommé</span></td>
+        <td><span class="btn">Passer en mensuel</span></td>
+      </tr>
+      <tr>
+        <td>Conformité / KYC</td><td><span class="etq e-ambre">Essai en cours</span></td>
+        <td class="droite mono">25 000,00</td>
+        <td><span class="etq e-gris">MENSUEL</span></td>
+        <td class="droite mono">21 250,00</td>
+        <td><span class="etq e-ambre">Fin le 30/11 — 16 j restants</span></td>
+        <td><span class="btn">Passer en annuel</span> <span class="btn gris">Arrêter l'essai</span></td>
+      </tr>
+      <tr>
+        <td>Comptabilité avancée</td><td><span class="etq e-vert">Actif</span></td>
+        <td class="droite mono">100 000,00</td>
+        <td><span class="etq e-bleu">ANNUEL</span></td>
+        <td class="droite mono">85 000,00</td>
+        <td><span class="etq e-gris">Consommé</span></td>
+        <td><span class="btn">Passer en mensuel</span></td>
+      </tr>
+    </table>
+
+    <div class="alerte rouge"><b>Deuxième essai gratuit refusé.</b> Si l'IMF a déjà utilisé
+      l'essai d'un module, le bouton « Essai gratuit » est désactivé et le message affiché est&nbsp;:
+      « Ce module a déjà bénéficié de l'essai gratuit&nbsp;: il est activé en PAYANT. »
+      La base de données refuse elle aussi l'opération, même si quelqu'un contourne l'écran.</div>
+
+    <div class="note-encadre"><b>Changement de cycle en cours de mois.</b>
+      Exemple&nbsp;: signature de l'annuel le <b>16/11</b>. Les jours du 1<sup>er</sup> au 15/11
+      sont facturés au tarif mensuel plein (15 jours), les jours du 16 au 30/11 au tarif annuel
+      −15 % (15 jours). Résultat pour la collecte &amp; tontine&nbsp;:
+      <span class="mono">37 500,00 + 31 875,00 = 69 375,00 FCFA</span>.
+      La remise ne s'applique jamais aux jours précédant la signature.</div>
+
+    <ul class="mini">
+      <li>Le prix affiché ne dépend jamais du nombre d'utilisateurs ou d'agences.</li>
+      <li>Un module désactivé renvoie « Fonction non souscrite » à ses utilisateurs, sans les déconnecter.</li>
+      <li>Toute action est enregistrée dans le journal d'audit (qui, quand, quoi).</li>
+    </ul>
+  </section>
+
+  <!-- ================= 3. FACTURES ================= -->
+  <section class="ecran">
+    <h2><span class="num">3.</span>Onglet « Factures » — liste et fiche de facture</h2>
+    <p class="sous">Une facture générée est immuable&nbsp;: plus modifiable, plus supprimable. Une correction se fait par une nouvelle facture.</p>
+
+    <table>
+      <tr><th>N° facture</th><th>Période</th><th>Émise le</th><th class="droite">Total</th><th>Statut</th><th>Verrou</th><th>Document</th></tr>
+      <tr><td class="mono">FAC-2026-11-0007</td><td>Novembre 2026</td><td>14/11/2026</td>
+        <td class="droite mono">242 250,00</td><td><span class="etq e-ambre">À payer</span></td>
+        <td><span class="etq e-rouge">Verrouillée</span></td><td><span class="btn">PDF</span></td></tr>
+      <tr><td class="mono">FAC-2026-10-0006</td><td>Octobre 2026</td><td>01/10/2026</td>
+        <td class="droite mono">242 250,00</td><td><span class="etq e-vert">Payée</span></td>
+        <td><span class="etq e-rouge">Verrouillée</span></td><td><span class="btn">PDF</span></td></tr>
+      <tr><td class="mono">FAC-2026-09-0005</td><td>Septembre 2026</td><td>01/09/2026</td>
+        <td class="droite mono">246 500,00</td><td><span class="etq e-vert">Payée</span></td>
+        <td><span class="etq e-rouge">Verrouillée</span></td><td><span class="btn">PDF</span></td></tr>
+      <tr><td class="mono">FAC-2026-08-0004</td><td>Août 2026</td><td>01/08/2026</td>
+        <td class="droite mono">0,00</td><td><span class="etq e-gris">Essai gratuit</span></td>
+        <td><span class="etq e-rouge">Verrouillée</span></td><td><span class="btn">PDF</span></td></tr>
+    </table>
+
+    <h3 style="font-size:13.5px;margin:20px 0 6px">Fiche détaillée — FAC-2026-11-0007 (ventilation des remises)</h3>
+    <table>
+      <tr><th>Ligne</th><th>Base</th><th>Jours</th><th class="droite">Prix</th><th class="droite">Remise</th><th class="droite">Montant</th></tr>
+      <tr><td>Licence unique (à vie)</td><td>Paiement unique</td><td class="droite">—</td>
+        <td class="droite mono">250 000,00</td><td class="droite mono">0,00</td><td class="droite mono">0,00</td></tr>
+      <tr><td>Collecte &amp; tontine</td><td>Annuel</td><td class="droite">30/30</td>
+        <td class="droite mono">75 000,00</td><td class="droite mono">−11 250,00 (15 %)</td><td class="droite mono">63 750,00</td></tr>
+      <tr><td>Dossier de crédit</td><td>Annuel</td><td class="droite">30/30</td>
+        <td class="droite mono">100 000,00</td><td class="droite mono">−15 000,00 (15 %)</td><td class="droite mono">85 000,00</td></tr>
+      <tr><td>Conformité / KYC</td><td>Annuel</td><td class="droite">30/30</td>
+        <td class="droite mono">25 000,00</td><td class="droite mono">−3 750,00 (15 %)</td><td class="droite mono">21 250,00</td></tr>
+      <tr><td>Comptabilité avancée</td><td>Annuel</td><td class="droite">30/30</td>
+        <td class="droite mono">100 000,00</td><td class="droite mono">−15 000,00 (15 %)</td><td class="droite mono">85 000,00</td></tr>
+      <tr><td>Sous-total abonnements</td><td>—</td><td class="droite">—</td>
+        <td class="droite mono">300 000,00</td><td class="droite mono">−45 000,00</td><td class="droite mono">255 000,00</td></tr>
+      <tr><td>Remise pack complet</td><td>4 modules sur 4</td><td class="droite">—</td>
+        <td class="droite mono">255 000,00</td><td class="droite mono">−12 750,00 (5 %)</td><td class="droite mono">−12 750,00</td></tr>
+      <tr class="total"><td colspan="5">TOTAL FACTURE</td><td class="droite mono">242 250,00</td></tr>
+    </table>
+
+    <div class="note-encadre"><b>Récapitulatif des remises sur la facture&nbsp;:</b>
+      remise annuelle <span class="mono">45 000,00</span> + remise pack complet
+      <span class="mono">12 750,00</span> = <span class="mono">57 750,00 FCFA</span> économisés,
+      soit 19,25 % du prix catalogue des abonnements (300 000,00).</div>
+
+    <div class="alerte"><b>Immuabilité.</b> Dès qu'une facture est générée, ses montants et ses lignes
+      sont figés&nbsp;: toute tentative de modification est refusée par la base de données.
+      Seuls deux changements restent permis, car ils ne touchent pas aux montants&nbsp;:
+      le statut (payée / annulée) et la date de paiement.</div>
+  </section>
+
+  <!-- ================= 4. STATUTS ================= -->
+  <section class="ecran">
+    <h2><span class="num">4.</span>Onglet « Statuts de facturation » — lire une ligne de facture</h2>
+    <p class="sous">Chaque ligne porte un statut qui explique d'où vient le montant. Voici les cinq cas possibles.</p>
+
+    <table>
+      <tr><th>Statut</th><th>Signification</th><th>Exemple chiffré</th></tr>
+      <tr><td><span class="etq e-vert">facture</span></td>
+        <td>Mois complet, tarif normal (mensuel ou annuel déjà signé avant le mois).</td>
+        <td class="mono">100 000,00 (mensuel plein)</td></tr>
+      <tr><td><span class="etq e-bleu">facture_prorata</span></td>
+        <td>Le module n'a pas été actif tout le mois&nbsp;: activation en cours de mois ou fin d'essai.</td>
+        <td class="mono">25 000 × 10/30 = 8 333,33</td></tr>
+      <tr><td><span class="etq e-bleu">facture_cycle_mixte</span></td>
+        <td>Bascule mensuel → annuel signée ce mois-ci&nbsp;: jours pleins avant la signature, jours remisés à partir de la signature.</td>
+        <td class="mono">37 500,00 + 31 875,00 = 69 375,00</td></tr>
+      <tr><td><span class="etq e-ambre">essai_gratuit</span></td>
+        <td>Essai encore en cours à la date de facturation&nbsp;: 0 FCFA, les jours restants sont reportés.</td>
+        <td class="mono">0,00 (16 jours reportés)</td></tr>
+      <tr><td><span class="etq e-gris">deja_payee</span></td>
+        <td>Licence unique déjà réglée&nbsp;: aucune ligne à payer.</td>
+        <td class="mono">0,00</td></tr>
+    </table>
+
+    <div class="alerte vert"><b>Règle de l'essai sur 30 jours, facturé au 14<sup>e</sup> jour.</b>
+      L'IMF demande sa facture le 14/11 alors que l'essai du module court jusqu'au 30/11.
+      Résultat&nbsp;: <span class="mono">0 FCFA</span> ce mois-ci et <b>16 jours</b> d'essai reportés.
+      La première facturation se fait ensuite au prorata sur le mois suivant, à partir du 1<sup>er</sup> décembre.</div>
+
+    <div class="note-encadre"><b>Calcul du prorata, au jour près.</b>
+      Le premier et le dernier jour comptent tous les deux. Exemple d'un module à 25 000 FCFA
+      activé le 21/11 sur un mois de 30 jours&nbsp;: 10 jours facturés
+      (21 → 30), soit <span class="mono">8 333,33 FCFA</span>.
+      Le jour de signature d'un contrat annuel est déjà remisé.</div>
+  </section>
+
+  <!-- ================= 5. ACCES ET RESTRICTION (v36) ================= -->
+  <section class="ecran">
+    <h2><span class="num">5.</span>Onglet Acces et restriction — le bouton reel (version 37)</h2>
+    <p class="sous">C'est ici que l'equipe teebo coupe ou retablit l'acces d'une IMF, sans attendre un informaticien.
+    Ce n'est plus un dessin : le bouton appelle le serveur et l'effet est immediat pour les utilisateurs de l'IMF.</p>
+
+    <div class="note-encadre"><b>La page reelle.</b>
+      Elle est servie directement par le serveur, a l'adresse <span class="mono">/console-admin</span>
+      (en ligne : <span class="mono">https://votre-serveur.onrender.com/console-admin</span>).
+      On y entre l'adresse du serveur, son e-mail d'administrateur teebo et son mot de passe.
+      Rien n'est enregistre dans la page : tout passe par la connexion securisee du serveur.</div>
+
+    <table>
+      <tr><th>Ce qu'on saisit</th><th>Ou le trouver</th></tr>
+      <tr><td>Identifiant de l'IMF</td><td>Le code court de l'institution (par exemple IMF-0038)
+        ou son identifiant interne. Le serveur reconnait les deux et traduit le code court
+        en identifiant interne. Un code inconnu est refuse avec le message
+        « Aucune institution ne porte ce code ou cet identifiant ».</td></tr>
+      <tr><td>Motif de la restriction</td><td>Texte libre, visible dans le journal d'audit (exemple : essai termine le 30/11).</td></tr>
+    </table>
+
+    <table>
+      <tr><th>1. Se connecter</th><td>Avec un compte de type teebo_admin. Un compte d'IMF ne peut pas ouvrir cet onglet.</td></tr>
+      <tr><th>2. Lire l'etat</th><td>La page affiche, module par module : ouvert, en essai jusqu'au..., ou coupe.</td></tr>
+      <tr><th>3. Restreindre a la collecte seule</th><td>Il reste la Collecte et tontines ; tout le reste est coupe immediatement.</td></tr>
+      <tr><th>4. Lever la restriction</th><td>Les modules reellement payes reviennent ; les essais expires restent fermes.</td></tr>
+    </table>
+
+    <table>
+      <tr><th>Bouton de la console</th><th>Effet reel cote serveur</th><th>Ce que voit l'IMF</th></tr>
+      <tr><td><b>Restreindre a la collecte seule</b></td>
+        <td>Une seule operation en base (tout passe ou rien ne passe) : l'acces est marque restreint,
+            l'essai est arrete, les menus sont recalcules dans la meme operation, l'action est inscrite au journal d'audit.</td>
+        <td>Le menu ne garde que Collecte et tontines. Les autres modules repondent fonction desactivee
+            des la requete suivante, avec le motif en clair (acces limite pendant l'essai).</td></tr>
+      <tr><td><b>Lever la restriction</b></td>
+        <td>La restriction est desactivee ; les menus sont recalcules a partir des abonnements reellement actifs.
+            La ligne de menus est creee si elle n'existait pas encore (c'est ce qui rendait l'ancienne version inoperante).</td>
+        <td>Les modules payes reapparaissent. Un module dont l'essai est fini reste ferme, avec son motif.</td></tr>
+      <tr><td><b>Lire l'etat</b></td>
+        <td>Lecture directe en base, sans cache : le navigateur est empeche de garder la reponse en memoire.</td>
+        <td>Rien (lecture seule).</td></tr>
+    </table>
+
+    <div class="alerte vert"><b>Les trois etats lus par l'ecran, module par module.</b>
+      L'ecran affiche pour chaque module&nbsp;: <b>Accessible</b> (il est actif et, s'il est en essai,
+      l'essai n'est pas termine), ou <b>Coupe (403)</b> avec la raison exacte renvoyee par le serveur
+      (<span class="mono">RESTRICTION_COLLECTE_ONLY</span> pendant une restriction,
+      <span class="mono">ESSAI_EXPIRE</span> si l'essai est fini, ou « non souscrit »).
+      Deux modules peuvent donc etre dans des etats differents apres une levee&nbsp;: le module paye
+      revient, le module dont l'essai est fini reste ferme.</div>
+
+    <div class="note-encadre"><b>Garde-fous verifies le 14/11/2026.</b>
+      <ul class="mini">
+        <li>Sans la table de restrictions installee sur la base, le bouton ne plante pas : il repond
+            que la migration n'est pas encore passee, avec le nom du fichier a executer.</li>
+        <li>Un identifiant d'IMF mal ecrit, ou un code court inconnu, est refuse tout de suite
+          avec un message lisible (et non une erreur technique).</li>
+        <li>La levee repose sur les abonnements payes, pas sur les menus : impossible de rouvrir un module non paye.</li>
+        <li>La page demande confirmation avant toute action destructive.</li>
+        <li>Les reponses sont affichees comme du texte simple : aucun risque d'injection dans la page.</li>
+        <li><b>Verifie le 15/11/2026 :</b> 39 controles automatiques sur la restriction (39 conformes) et
+            15 controles de facturation (15 conformes) ; le serveur demarre sans base, /healthz repond,
+            la console s'affiche, et les routes refuse proprement (401) sans connexion.</li>
+      </ul></div>
+  </section>
+
+  <!-- ================= 6. AUDIT ================= -->
+  <section class="ecran">
+    <h2><span class="num">6.</span>Onglet « Journal d'audit » — qui a changé quoi</h2>
+    <p class="sous">Chaque action de facturation laisse une trace horodatée, conservée même si la facture est verrouillée.</p>
+
+    <table>
+      <tr><th>Date et heure</th><th>Utilisateur</th><th>Action</th><th>Détail</th></tr>
+      <tr><td class="mono">14/11/2026 09:12</td><td>A. Diallo (admin IMF)</td><td>Facture générée</td>
+        <td>FAC-2026-11-0007 — 242 250,00 FCFA — verrouillée immédiatement</td></tr>
+      <tr><td class="mono">16/11/2026 10:04</td><td>A. Diallo (admin IMF)</td><td>Cycle modifié</td>
+        <td>Collecte &amp; tontine : mensuel → annuel, signature du 16/11/2026</td></tr>
+      <tr><td class="mono">16/11/2026 10:05</td><td>A. Diallo (admin IMF)</td><td>Module activé</td>
+        <td>Conformité / KYC en essai gratuit, fin le 30/11/2026</td></tr>
+      <tr><td class="mono">30/11/2026 08:00</td><td>Système</td><td>Facture générée</td>
+        <td>FAC-2026-12-0008 — calculée en base, en décimal exact</td></tr>
+      <tr><td class="mono">02/12/2026 15:31</td><td>M. Traoré (direction)</td><td>Paiement enregistré</td>
+        <td>FAC-2026-11-0007 marquée payée — montants inchangés</td></tr>
+      <tr><td class="mono">14/11/2026 11:20</td><td>teebo (support)</td><td>Restriction appliquée</td>
+        <td>IMF-0038 : accès limité à la Collecte &amp; tontines, motif « essai terminé »</td></tr>
+      <tr><td class="mono">18/11/2026 09:02</td><td>teebo (support)</td><td>Restriction levée</td>
+        <td>IMF-0038 : modules payés rétablis, essai expiré maintenu fermé</td></tr>
+    </table>
+
+    <div class="note-encadre"><b>Garanties techniques visibles dans l'écran.</b>
+      <ul class="mini">
+        <li>Les montants sont calculés en base de données en décimal exact (jamais en virgule flottante).</li>
+        <li>Un seul essai gratuit par module&nbsp;: la règle est appliquée par la base, pas seulement par le bouton.</li>
+        <li>Factures et lignes verrouillées après génération&nbsp;; le PDF reprend la ventilation exacte.</li>
+        <li>Le coût annuel affiché est calculé, pas saisi&nbsp;: 75 000 × 85 % = 63 750,00.</li>
+        <li>Une restriction ne consomme jamais l'essai&nbsp;: un module coupe par la collecte seule
+            peut retrouver son essai de 30 jours s'il n'avait jamais ete teste.</li>
+      </ul></div>
+  </section>
+
+  <footer class="page">
+    teebo — fiche d'écran console administrateur, version 37 — document de lecture, imprimable en PDF via le navigateur.
+  </footer>
+</div>
+</body>
+</html>

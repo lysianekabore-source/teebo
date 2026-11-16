@@ -1,63 +1,656 @@
 ====================================================================
-teebo — CORRECTIF 14/11/2026-D
-« ReferenceError: habilit is not defined »
-backend/src/routes/products.js:34
+teebo — VAGUE 38 — 15/11/2026
+LE MODULE CREDIT (BCEAO) : moteur, API, dossiers, comite, caisse
 ====================================================================
 
-CE QUI SE PASSAIT
------------------
-Render affichait :
-    Deploy failed — Deploying... — file:///app/backend/src/routes/products.js:34
+Ce lot s'ajoute aux vagues 36 et 37. Rien n'est supprime, aucune
+configuration existante n'est ecrasee.
 
-Le fichier products.js utilise le controle d'acces par HABILITATIONS
-(habilit(...)) sur 18 de ses routes, mais il ne l'importait pas.
-Au chargement du module, Node rencontrait « habilit » sans l'avoir
-defini et arretait tout le serveur : le port ne s'ouvrait jamais,
-donc « Deploy failed ».
+1. CE QUI CHANGE POUR VOUS, CONCRETEMENT
+----------------------------------------
+  - Un vrai moteur de credit : echeanciers (degressif, lineaire, in fine),
+    differe, frais de dossier, assurance, epargne de garantie, TEG.
+  - Le TEG est calcule sur le NET VERSE (montant moins frais, assurance et
+    epargne bloquee), selon la methode BCEAO. C'est le taux que le client
+    doit voir dans son contrat.
+  - Une API complete /api/v1/credit/... : produits, simulateur, dossiers,
+    garanties, comite, decaissement, echeancier, remboursements, impayes,
+    recouvrement, PAR 30/90, tableau de bord.
+  - Deux ecrans : un guichet caissier (arrete de caisse, billetage FCFA)
+    et un ecran credit (simulateur, montage du dossier, comite,
+    encaissement, PAR 30/90).
 
-POURQUOI CERTAINS FICHIERS MARCHAIENT
--------------------------------------
-habilit est definie dans backend/src/rbac_strict.js.
-10 fichiers de routes l'importaient correctement (settings, collecte,
-collecte6, objectives, access, round, enrollment, clients, devices,
-operations). Seul products.js (le plus gros, 18 routes) l'avait oublie.
+2. LE TEG, COMMENT IL EST CALCULE (et pourquoi c'est juste)
+-----------------------------------------------------------
+  Le TEG est le taux qui annule la valeur actuelle nette des echeances :
+     net verse = somme des echeances actualisees au TEG
+  Le net verse = montant - frais de dossier - assurance - epargne bloquee.
+  Verifie par calcul independant : au TEG trouve, la VAN ressort a moins
+  de 0,01 % du montant (donc nulle aux arrondis pres).
+  Deux defauts corriges par les tests :
+    a) un taux de 0 % (credit a taux zero) etait remplace par le taux par
+       defaut de 12 % ; il est desormais respecte ;
+    b) les frais et l'assurance envoyes au simulateur n'etaient pas pris en
+       compte si un produit n'etait pas selectionne : le TEG restait egal
+       au taux nominal, donc sous-estime. Corrige.
 
-LA CORRECTION
--------------
-Une seule ligne ajoutee en tete de backend/src/routes/products.js :
+3. LES ROUTES (prefixe /api/v1, imf_id toujours deduit du jeton)
+----------------------------------------------------------------
+  GET    /credit/referentiels            listes (methodes, periodicites,
+                                         classes, types de garantie)
+  GET/POST/PATCH /credit/produits        produits de credit
+  POST   /credit/simulateur              simulation "a blanc" (prospect)
+  GET/POST /credit/dossiers              liste / montage d'un dossier
+  GET    /credit/dossiers/:id            fiche complete
+  POST   /credit/dossiers/:id/soumettre  envoi au comite
+  POST   /credit/dossiers/:id/garanties  ajout de garantie
+  POST   /credit/dossiers/:id/garanties/:gid/bloquer
+                                         blocage de l'epargne de garantie
+  GET/PUT /credit/plafonds               plafonds par niveau (chef d'agence,
+                                         comite, direction)
+  GET    /credit/comite/file             file du comite
+  POST   /credit/dossiers/:id/valider    decision (regle des 4 yeux)
+  POST   /credit/dossiers/:id/decaisser  mise a disposition des fonds
+  GET    /credit/dossiers/:id/echeancier echeancier reel du dossier
+  POST   /credit/dossiers/:id/rembourser encaissement (imputation
+                                         penalites -> interets -> capital)
+  GET    /credit/impayes                 echeances en retard
+  GET/POST /credit/dossiers/:id/actions  recouvrement (relance, visite,
+                                         mise en demeure...)
+  POST   /credit/declasser               reclassement BCEAO manuel
+  POST   /credit/taches/quotidien        reclassements et provisions du jour
+  POST   /credit/sync                    remontee du terrain (hors-ligne),
+                                         idempotente par uuid_local
+  GET    /credit/par                     PAR 30 / PAR 90 + provisions
+  GET    /credit/tableau-bord            mois en cours
 
-    import { habilit } from '../rbac_strict.js';
+4. REGLES APPLIQUEES DANS LE CODE
+---------------------------------
+  - Montants TOUJOURS en centimes de FCFA, jamais en nombres a virgule.
+  - Le validateur d'un dossier n'est jamais l'agent qui l'a monte.
+  - Un remboursement cree une operation de caisse : la caisse reste juste.
+  - Le terrain peut renvoyer dix fois le meme remboursement : il n'est
+    compte qu'une fois.
+  - Cloisonnement : une IMF ne voit jamais les dossiers d'une autre.
 
-Aucune autre modification. Aucune route changee, aucun comportement
-modifie : les 18 routes reprennent simplement le controle par
-habilitations qui etait prevu.
+5. TESTS — CE QUI A ETE VRAIMENT EXECUTE ICI
+--------------------------------------------
+  a) 89 tests automatiques du moteur (vague 38) : 89/89 reussis.
+     (3 methodes, differe, integrite du capital rembourse, TEG sur net
+     verse + controle par VAN independante, taux zero, frais/assurance/
+     epargne, imputation BCEAO, classes et provisions, PAR 30/90,
+     transitions d'etats, 4 yeux, validation hors-ligne, references)
+  b) Vague 37 : 63/63 reussis. Vague 36 : 39/39 reussis. Aucune
+     regression.
+  c) Les routes ont ete montees dans un vrai serveur Express, avec une
+     base simulee qui ne renvoie aucune ligne, et appelees une par une :
+     26 routes chargees, reponses correctes (listes vides, simulation
+     calculee, refus propres 400/403). C'est un test de cablage, pas un
+     test metier.
 
-VERIFICATIONS EFFECTUEES (sur ce lot)
--------------------------------------
-  [OK] Syntaxe de tous les fichiers .js (node --check)
+6. CE QUI N'A PAS ETE EXECUTE ICI (a confirmer sur Render)
+----------------------------------------------------------
+  - Le script SQL db/schema_v38.sql n'a pas tourne sur un vrai PostgreSQL.
+    Il est additif et reexecutable, mais la preuve sera le journal de
+    demarrage sur Render.
+  - Les routes n'ont jamais tourne sur une vraie base : un dossier, un
+    decaissement et un remboursement reels restent a faire en recette.
+  - Les deux ecrans du site : ils sont livres, mais le parcours complet
+    (creer un dossier, le faire valider par un autre utilisateur, le
+    decaisser, l'encaisser) reste a verifier en ligne.
+  - L'ecran caissier et l'ecran credit de cette vague peuvent etre livres
+    dans la vague suivante si vous preferez d'abord valider le serveur.
+
+7. ORDRE D'EXECUTION
+--------------------
+  1) Deployer le serveur (le build doit reussir) puis ouvrir /healthz.
+  2) Verifier dans les journaux que schema_v38.sql s'applique sans erreur.
+  3) Creer un produit de credit, puis simuler : le TEG doit etre superieur
+     au taux nominal des que des frais existent.
+  4) Monter un dossier, le soumettre, le faire valider par un AUTRE
+     utilisateur (4 yeux), le decaisser.
+  5) Encaisser une echeance : la caisse et le solde du dossier doivent
+     bouger ensemble.
+  6) Regarder /credit/par : PAR 30 et PAR 90 doivent rester a 0 sur un
+     dossier a jour.
+
+8. FICHIERS DE CE LOT
+---------------------
+  backend/src/credit_engine.js                 moteur (echeanciers, TEG,
+                                               imputation, classes, PAR)
+  backend/src/routes/credit.js                 API du module credit
+  backend/src/server.js                        montage de /api/v1
+  db/schema_v38.sql                            tables, vues, fonctions
+  tests/v38.test.mjs                           89 tests du moteur
+
+====================================================================
+teebo — VAGUE 37 — 15/11/2026
+Le controle d'acces IMMEDIAT, verifie du bout en bout
+====================================================================
+
+Ce lot s'ajoute a la vague 36. Aucune fonction existante n'est retiree.
+
+1. CE QUI CHANGE POUR VOUS, CONCRETEMENT
+----------------------------------------
+Le bouton "Restreindre a la collecte seule" de la console produisait bien
+un changement en base, mais le serveur ne le "voyait" pas tout de suite :
+il lisait l'ancienne table des menus (institution_features), qui n'etait
+pas la source de verite. Corrige :
+
+  - Le controle d'acces lit desormais les VRAIES souscriptions de modules
+    (active / en essai / date de fin d'essai), a chaque requete, sans cache.
+    Une restriction s'applique donc a la requete SUIVANTE du client.
+  - Si le module est coupe, la reponse est 403 "Feature Disabled" avec le
+    motif en clair :
+      RESTRICTION_COLLECTE_ONLY  -> acces limite pendant l'essai
+      ESSAI_EXPIRE               -> l'essai est termine, il faut activer
+      MODULE_INACTIF             -> module simplement non souscrit
+  - Si ces tables ne sont pas encore creees (base non migree), le serveur
+    retombe proprement sur l'ancien fonctionnement : il ne bloque jamais
+    une production par accident.
+
+2. /institution/config : LA CONFIGURATION QUE L'ECRAN DOIT SUIVRE
+-----------------------------------------------------------------
+Adresse : GET /api/v1/institution/config   (utilisateur connecte)
+La reponse est recalculee a chaque appel et porte Cache-Control: no-store.
+Elle contient :
+  - features  : un vrai/faux par module (pratique pour afficher ou non),
+  - menus     : LA LISTE des menus autorises (calculee par le serveur),
+  - catalogue : tous les modules avec leur etat, pour proposer l'activation,
+  - restreinte_collecte_seule : vrai si l'IMF est sous restriction,
+  - revision  : horodatage, pour verifier qu'on a bien la derniere version.
+Regle: l'ecran n'affiche QUE ce que 'menus' contient. Le serveur reste seul
+juge: masquer un menu ne protege rien, la 403 reste la vraie protection.
+
+3. ACTIVER UN MODULE APRES UNE RESTRICTION ("upgrade")
+-------------------------------------------------------
+Adresse : POST /api/v1/institution/modules/activate
+Corps   : { "module_key": "MODULE_DOSSIER_CREDIT" }
+Reserve a l'admin IMF / direction (ou teebo_admin).
+  - L'activation est TOUJOURS possible, meme sous restriction.
+  - Si le module n'a jamais ete teste : 30 jours d'essai accordes
+    automatiquement, et la reponse le dit (essai_accorde: true).
+  - Si l'essai a deja ete consomme : reactivation en formule payante,
+    jamais de second essai (regle de la vague 35).
+  - La reponse renvoie aussitot la nouvelle configuration : pas besoin de
+    recharger la page pour voir le menu apparaitre.
+
+4. CORRECTION IMPORTANTE TROUVEE PAR LES TESTS
+----------------------------------------------
+Les tests ont revele que, dans certains cas, un module vendu en payant
+pouvait etre remis en essai automatiquement. C'est corrige : un essai
+deja accorde (trace de la date de debut, date de fin, ou ligne de facture
+"essai gratuit") interdit definitivement un nouvel essai pour ce module.
+C'est exactement la regle commerciale: un seul essai par module, jamais
+redonne.
+
+5. TESTS — CE QUI A ETE VRAIMENT EXECUTE ICI
+--------------------------------------------
+  a) 39 tests automatiques de la logique de restriction : 39/39 OK.
+     (coupe de 3 modules, collecte preservee, aucun essai consomme par la
+     coupe, menus reduits, 403 avec le bon motif, upgrade payant, essai de
+     30 jours sur un module neuf, refus quand l'essai est echu, levee de
+     restriction, routes libres, ecriture du journal d'audit)
+  b) 15 tests de facturation / prorata de la vague 35 : 15/15 OK
+     (aucune regression sur les montants)
+  c) Demarrage reel du serveur, sans base de donnees :
+       /healthz                       -> 200 {"ok":true}
+       /console-admin                 -> 200 (la page s'affiche)
+       /api/v1/institution/config     -> 401 sans connexion (normal)
+       POST .../restrict-to-collecte  -> 401 sans connexion (normal)
+       adresse inconnue               -> 404
+     Le serveur reste en vie : aucune erreur de code au demarrage.
+
+6. CE QUI N'A PAS ETE EXECUTE ICI (a confirmer sur Render)
+----------------------------------------------------------
+  - Les requetes SQL n'ont pas tourne sur une vraie base PostgreSQL.
+    Seule la syntaxe a ete controlee. Un doute subsiste uniquement sur
+    l'execution reelle (types, contraintes), pas sur la logique.
+  - Le parcours complet en ligne : restreindre une IMF test, verifier avec
+    un vrai compte de cette IMF que les autres menus ont disparu et que
+    /api/v1/credit/... repond bien 403, puis lever la restriction.
+
+7. ORDRE D'EXECUTION
+--------------------
+  1) Deployer (le build doit reussir), puis ouvrir /healthz.
+  2) Executer la migration SQL de restriction EN SIMULATION (elle n'ecrit
+     rien), relire, puis executer pour de vrai.
+  3) Se connecter a la console (/console-admin) en administrateur teebo.
+  4) Lire l'etat d'une IMF test, puis la restreindre.
+  5) Depuis un compte de cette IMF : se deconnecter / reconnecter, verifier
+     qu'il ne reste que Collecte et tontines, et qu'un appel direct a un
+     module coupe repond 403 Feature Disabled.
+  6) Activer un module depuis l'ecran Abonnement : le menu doit revenir
+     immediatement, avec 30 jours d'essai si le module est neuf.
+
+8. FICHIERS DE CE LOT
+---------------------
+  backend/src/modules.js                       controle d'acces + decision de module
+  backend/src/saas_restriction.js              restreindre / lever / etat / activer
+  backend/src/routes/subscription.js           /institution/config et activation
+  backend/src/routes/saas_restriction_patch.js routes de restriction
+  backend/src/routes/admin_console.js          console admin
+  backend/src/server.js                        montage des routes
+  db/schema_v36.sql                           tables, vues et fonctions
+  db/migration_restrict_essai.sql              migration (simulation par defaut)
+  tests/v36.test.mjs, tests/sim.mjs            39 tests + faux moteur SQL
+  tests/v35.test.mjs                           15 tests de facturation
+
+====================================================================
+====================================================================
+teebo — VAGUE 36 — 14/11/2026
+Bouton de restriction REELLEMENT actif, tests nettoyes,
+console administrateur servie par le serveur
+====================================================================
+
+Ce lot s'ajoute a la vague 35. Rien n'est supprime. Le changement visible :
+l'acces d'une IMF peut etre coupe et retabli depuis une VRAIE page, et ce
+bouton a ete teste (pas seulement dessine).
+
+1. LE BOUTON DE RESTRICTION FONCTIONNE VRAIMENT
+-----------------------------------------------
+Trois boutons, servis par le serveur :
+  - Restreindre a la collecte seule : il ne reste que Collecte et tontines.
+  - Lever la restriction         : les modules reellement payes reviennent.
+  - Lire l'etat                  : module par module, ouvert / en essai / coupe.
+
+Deux defauts ont ete corriges dans le code de la vague precedente :
+  a) Le nombre de modules coupes pouvait sortir en texte au lieu d'un
+     nombre : il est desormais toujours converti en nombre.
+  b) La LEVEE de restriction ne faisait rien si l'IMF n'avait pas encore
+     de ligne de menus (cas de toute IMF restreinte avant la vague 32).
+     Desormais la ligne est CREEE puis mise a jour, dans la meme operation.
+     C'est exactement ce qui rendait l'ancien bouton inoperant.
+
+Pre-verification : avant d'agir, le serveur regarde si la table des
+restrictions existe. Si la migration n'a pas ete passee, on obtient un
+message clair (code migration_manquante) avec le nom du fichier a executer,
+et non une erreur technique illisible.
+
+2. LA PAGE CONSOLE, SERVIE PAR LE SERVEUR
+-----------------------------------------
+Adresse : /console-admin   (exemple en ligne :
+https://votre-serveur.onrender.com/console-admin)
+La page est un fichier HTML + un script externe (backend/public/).
+Aucun script dans la page elle-meme : obligatoire, la politique de
+securite du serveur l'interdit. Tout ce qui s'affiche est ecrit comme du
+texte simple (pas d'injection possible), et chaque action destructive
+demande confirmation.
+L'image Docker copie maintenant le dossier public : sans cela, la page
+aurait renvoye une erreur 404 en ligne.
+
+3. TESTS NETTOYES ET COMPLETES
+------------------------------
+- 39 tests automatiques passent (exit 0). Deux d'entre eux etaient
+  trompeurs et ont ete corriges :
+    a) un test comparait 0 avec 0 (donc toujours vrai) : il exige
+       maintenant au moins 2 modules actifs avant la levee ;
+    b) le test "migration absente" ne declenchait aucune erreur :
+       le faux moteur leve desormais la vraie erreur PostgreSQL
+       (table inexistante), et le test verifie en plus le nom du
+       fichier de migration cite dans le message.
+- Ce que couvrent les 39 tests : depart avec la seule collecte ouverte,
+  restriction qui coupe 3 modules, aucun essai consomme par la coupe,
+  menus reduits a la collecte, refus immediat du module coupe avec le
+  motif RESTRICTION_COLLECTE_ONLY, upgrade payant quand l'essai est
+  deja utilise, essai de 30 jours accorde automatiquement quand le
+  module n'a jamais ete teste, refus quand l'essai est echu (motif
+  ESSAI_EXPIRE), levee de restriction, routes libres (/auth, /saas,
+  /institution/config), ecriture du journal d'audit.
+- Test de la logique de restriction : restreindre ecrit l'etat, l'IMF
+  est bien vue comme restreinte, lever remet tout, un identifiant mal
+  ecrit est refuse, un module inconnu est refuse, migration absente
+  donne un message clair (409 + migration_manquante).
+- Test du serveur REEL (demarrage, sans base) : /healthz repond 200,
+  /console-admin sert la page, les routes de restriction refusent
+  (401) sans connexion, une adresse inconnue repond 404, le serveur
+  reste en vie.
+
+4. CE QUI N'A PAS ETE VERIFIE EN LIGNE
+--------------------------------------
+- La migration SQL n'a pas ete executee sur une vraie base PostgreSQL ici.
+  Seule la syntaxe a ete controlee. Il faut passer par Render.
+- La console et le bouton n'ont pas encore ete essayes sur le site en ligne.
+- Les fonctions SQL fn_restrict_imf_to_collecte et fn_lift_imf_restriction
+  sont supposees installees par la migration : a confirmer en simulation
+  d'abord.
+
+5. ORDRE D'EXECUTION (a faire dans cet ordre)
+---------------------------------------------
+  1) Deployer le nouveau code (le build doit reussir).
+  2) Ouvrir /healthz : la reponse doit etre {"ok":true}.
+  3) Executer la migration db/migration_restrict_essai.sql EN SIMULATION
+     (dry run, elle n'ecrit rien et affiche ce qu'elle ferait).
+  4) Relire, puis l'executer pour de vrai.
+  5) Ouvrir /console-admin, se connecter en teebo_admin.
+  6) Sur une IMF de test : lire l'etat, restreindre, verifier qu'un
+     utilisateur de cette IMF ne voit plus que Collecte et tontines,
+     puis lever et verifier que tout revient.
+
+6. FICHIERS DE CE LOT
+---------------------
+- backend/src/saas_restriction.js          (restreindre / lever / etat)
+- backend/src/modules.js                   (verification des modules)
+- backend/src/subscription.js              (Configuration de l'IMF)
+- backend/src/routes/admin_console.js       (console admin : liste des IMF,
+                                            etat, restreindre, lever ;
+                                            accepte le code court IMF-0038)
+- backend/src/routes/saas_restriction_patch.js  (les 2 routes de restriction)
+- backend/src/routes/subscription.js       (routes d'abonnement)
+- backend/src/server.js                    (montage + pages console)
+- backend/public/console-admin.html        (la page)
+- backend/public/console-admin.js          (le script)
+- backend/Dockerfile                       (copie du dossier public)
+- db/migration_restrict_essai.sql          (a executer sur la base)
+- tests/v36.test.mjs, tests/restriction-logic.mjs, tests/smoke.mjs
+- CONSOLE-ADMINISTRATEUR-teebo.html        (fiche d'ecran, version 36)
+
+====================================================================
+teebo — VAGUE 35 — 14/11/2026
+Montants FCFA sans flottant + cycle annuel −15 % au jour près
++ essai unique + factures immuables + PDF ventilé
+====================================================================
+
+Ce lot s'ajoute à tout ce qui précède. Il ne supprime aucune fonction :
+il durcit les RÈGLES D'ARGENT et ajoute la facture PDF détaillée.
+
+1. PLUS AUCUN CHIFFRE À VIRGULE FLOTTANTE POUR LES FCFA
+------------------------------------------------------
+Problème réel : en JavaScript, 0,1 + 0,2 ne fait pas 0,30 mais
+0,30000000000000004. Sur des milliers de factures, ces miettes finissent
+par créer des écarts au centime.
+Solution appliquée aux deux étages :
+  - base de données : tous les montants sont en NUMERIC(12,2) et lus en
+    texte (jamais convertis en nombre approximatif) ;
+  - serveur : nouvelle bibliothèque big.js (backend/src/money.js) ;
+    chaque addition, remise et prorata passe par elle, arrondi au centime.
+  Contrôle automatique : 0,10 + 0,20 = 0,30 exactement.
+
+2. FACTURATION ANNUELLE : −15 % AU JOUR PRÈS
+--------------------------------------------
+- Cycle par module : MENSUEL ou ANNUEL (nouvelle colonne billing_cycle,
+  plus la date de signature annual_signed_at).
+- Prix annuel mensualisé CALCULÉ, jamais saisi :
+  tontine 75 000 × 85 % = 63 750 FCFA, crédit 100 000 → 85 000,
+  conformité 25 000 → 21 250, comptabilité 100 000 → 85 000.
+- Bascule mensuel → annuel en cours de mois : les jours AVANT la
+  signature restent au plein tarif, les jours À PARTIR de la signature
+  (jour de signature inclus) sont remisés. Aucune rétroactivité.
+  Exemple : signature le 16/11, mois de 30 jours, module à 75 000 :
+  15 jours pleins = 37 500 + 15 jours à −15 % = 31 875 → 69 375 FCFA.
+- Pack complet : −5 % sur le total des abonnements du mois, en plus.
+
+3. PRORATA AU JOUR PRÈS, BORNES INCLUSES
+----------------------------------------
+Le premier et le dernier jour comptent tous les deux.
+Module à 25 000 activé le 21/11 sur un mois de 30 jours :
+10 jours facturés → 8 333,33 FCFA (et non 7 083,33).
+La règle est identique côté serveur (aperçu) et côté base (facture
+officielle) : un test compare les deux résultats au centime.
+
+4. ESSAI GRATUIT : UNE SEULE FOIS PAR MODULE — ET 0 FCFA CE MOIS-LÀ
+-------------------------------------------------------------------
+- Un trigger BEFORE INSERT sur institution_module_subscriptions refuse
+  un deuxième essai gratuit : le module passe d'office en PAYANT.
+  La règle est donc appliquée par la base, pas seulement par un bouton.
+- Essai facturé au 14e jour d'un essai de 30 jours : la ligne du mois
+  vaut STRICTEMENT 0,00 FCFA et les 16 jours restants sont reportés ;
+  la première facturation se fait au prorata le mois suivant.
+
+5. FACTURES IMMUABLES APRÈS GÉNÉRATION
+--------------------------------------
+Dès qu'une facture est générée, elle est verrouillée (is_locked,
+locked_at). Toute tentative de modification de ses montants ou de ses
+lignes est REFUSÉE par la base de données. Seuls deux changements
+restent permis, car ils ne touchent pas aux montants :
+  - le statut (payée / annulée) ;
+  - la date de paiement.
+Une correction se fait donc par une nouvelle facture, jamais en réécrivant
+l'ancienne. C'est la règle attendue par un contrôleur BCEAO.
+
+6. FICHE D'ÉCRAN DE LA CONSOLE ADMINISTRATEUR
+---------------------------------------------
+Le fichier CONSOLE-ADMINISTRATEUR-teebo.html, à ouvrir dans un
+navigateur, montre les cinq onglets : Abonnement, Modules, Factures,
+Statuts de facturation, Journal d'audit — avec des montants réels
+calculés selon les règles ci-dessus (dont la ventilation des remises).
+Il s'imprime en PDF directement depuis le navigateur (Ctrl+P).
+
+7. MODÈLE DE FACTURE PDF
+------------------------
+La nouvelle route GET /api/v1/saas/factures/:id.pdf produit une facture
+A4 autonome avec : en-tête de l'IMF, période, ventilation ligne par ligne
+(prix catalogue, remise annuelle, remise pack complet), récapitulatif des
+remises, total, mentions de la licence unique et mention d'immuabilité.
+
+8. FICHIERS AJOUTÉS OU MODIFIÉS
+-------------------------------
+- db/schema_v35.sql ......... colonnes de cycle et d'essai, lignes de
+                               facture enrichies, verrou, vues de calcul
+                               du coût, trigger d'essai unique, triggers
+                               d'immuabilité. Additif et réexécutable.
+- db/schema_v35b.sql ........ fonction evaluate_imf_month (calcul officiel)
+                               et generate_imf_monthly_invoice_v4.
+- backend/src/money.js ...... calculs décimaux exacts (big.js).
+- backend/src/saas_billing.js  calcul du mois, aperçu, génération,
+                               changement de cycle, activation de modules.
+- backend/src/saas_invoice_pdf.js  gabarit de facture A4.
+- backend/src/routes/saas.js  nouvel aperçu, route PDF, route de cycle.
+- backend/src/documents.js ... formatage des montants sans flottant.
+- package.json ............... ajout de big.js (installé automatiquement
+                               par Render au déploiement).
+
+9. À FAIRE SUR RENDER
+---------------------
+1. Glisser ce dossier complet dans GitHub (remplace l'ancien).
+2. Render > Manual Deploy > « Clear build cache & deploy »
+   (obligatoire : big.js doit être réinstallé).
+3. Ouvrir /healthz : il doit répondre {"ok":true}.
+4. Dans les journaux, vérifier : schema_v35.sql puis schema_v35b.sql
+   appliqués sans erreur.
+5. Ouvrir /api/v1/saas/abonnement avec un compte admin d'IMF pour voir
+   les modules, leur cycle et le coût du mois.
+6. Générer une facture, puis ouvrir .../factures/<numéro>.pdf.
+
+10. HONNÊTETÉ SUR LES TESTS
+---------------------------
+Les règles de calcul sont testées automatiquement (15 contrôles) et
+donnent les résultats attendus au centime. En revanche, cette machine
+n'a pas de base PostgreSQL : les scripts SQL n'ont été vérifiés que
+syntaxiquement, PAS exécutés. La preuve définitive sera le journal de
+démarrage sur Render. Si un script échoue, le serveur le signale au
+démarrage avec le nom exact du fichier et le numéro de ligne.
+
+====================================================================
+teeebo — CORRECTIF 14/11/2026-E
+Gestion GLOBALE des erreurs + cohérence des imports
+====================================================================
+
+Ce lot succède au correctif 14/11/2026-D (« habilit is not defined »).
+Il ne change AUCUNE règle métier : il rend l'API prévisible quand
+quelque chose se passe mal.
+
+
+1. GESTION DES ERREURS — AVANT / APRÈS
+--------------------------------------
+AVANT (dans server.js, en ligne) :
+  - un seul bloc, mélangeant journal et génération d'une page HTML ;
+  - toute erreur 5xx renvoyait {error:"server_error"} sans aucune trace
+    exploitable dans les journaux Render ;
+  - les erreurs PostgreSQL (doublon, colonne manquante…) sortaient en 500
+    alors que certaines sont des erreurs de saisie (409/422) ;
+  - une adresse inconnue sous /api/v1 répondait 401 « not_authenticated »
+    au lieu de 404 (le site croyait à une session perdue) ;
+  - un corps JSON mal formé donnait un 500 au lieu d'un 400.
+
+APRÈS (nouveau module backend/src/errors.js) :
+  - une SEULE porte de sortie pour toutes les erreurs ;
+  - identifiant d'incident par requête, renvoyé dans l'en-tête X-Error-Id
+    et dans la réponse ({"ref":"a1b2c3d4e5f6"}) : la même reference
+    apparait dans les journaux Render, on retrouve donc l'incident ;
+  - traduction des erreurs PostgreSQL en messages clairs
+    (23505 -> 409 « existe deja », 22P02 -> 400 « format invalide »,
+     42P01 -> « table manquante, serveur pas a jour »…) ;
+  - JSON invalide -> 400 invalid_json ; corps trop gros -> 413 ;
+  - en PRODUCTION, aucun detail technique (stack, requete SQL) n'est
+    expose au client ; en developpement, le detail reste visible ;
+  - 404 explicite pour toute adresse inconnue sous /api/v1 ;
+  - page HTML lisible conservee pour les exports (PDF/Excel) ;
+  - aucun acces non protege : plus de risque de « req is not defined ».
+
+
+2. LES TROIS BUGS RÉELS DÉCOUVERTS ET CORRIGÉS
+----------------------------------------------
+a) requireRole() plantait si la requete n'etait pas authentifiee
+   (auth.js) : « Cannot read properties of undefined (reading 'role') »
+   -> 500 opaque. Desormais : 401 not_authenticated.
+
+b) Six routeurs (org, settings, access, banking, governance,
+   governance_conformite) appliquaient l'authentification sur TOUTE
+   adresse passant par eux. org.js etant monte sur /api/v1 sans prefixe,
+   il interceptait toute URL inconnue -> 401 au lieu de 404.
+   Correction : chacun n'authentifie plus que SES chemins
+   (ex. router.use(['/units','/users',...], authenticate, ...)).
+   Acquis : une faute de frappe d'URL ne deconnecte plus l'utilisateur.
+
+c) Le filtre « teebo_admin » de ces six routeurs lisait req.user sans
+   verifier qu'il existait -> plantait sur une requete non authentifiee.
+   Corrige par une garde (if (!req.user) return next()).
+
+
+3. ROUTES ASYNCHRONES — POINT IMPORTANT
+---------------------------------------
+Express 4 n'attend pas les promesses : une exception levee dans un
+« async (req, res) » SANS try/catch laisse la requete SANS REPONSE (le
+navigateur attend jusqu'au delai maximum). L'API compte 276 gestionnaires
+asynchrones.
+Un utilitaire est fourni : asyncRoute() dans errors.js.
+
+  Usage : r.get('/x', asyncRoute(async (req, res) => { ... }))
+
+Il n'est PAS encore applique partout (les 185 routes qui utilisent deja
+next(e) sont sures). Les appliquer aux autres est une amelioration a
+planifier, sans urgence : aucune route ne casse aujourd'hui.
+
+
+4. COHÉRENCE DES IMPORTS — VÉRIFICATION COMPLÈTE
+------------------------------------------------
+Verification faite a l'EXECUTION (et non par simple lecture du code) :
+chaque nom importe est confronte aux exports reels du module source.
+
+  Resultat : 127 instructions d'import, 49 fichiers
+             -> AUCUNE incoherence d'import.
+
+Les 11 fichiers de routes importent tous correctement habilit, authenticate,
+requireRole, q et tx. Aucun ne depend d'un module inexistant.
+Note : un faux positif (defaultPermissionKeysForRole) a ete ecarte apres
+controle : la fonction est bien exportee (permissions.js, ligne 100).
+
+
+5. VÉRIFICATIONS EFFECTUÉES SUR CE LOT
+--------------------------------------
+  [OK] Syntaxe : tous les fichiers .js (node --check)
   [OK] 46 modules charges un par un, aucun echec
-  [OK] Demarrage du serveur : « teebo API en ecoute »
-  [OK] /healthz                    -> 200 {"ok":true}
-  [OK] /api/v1/savings-products    -> 401 not_authenticated (normal)
-  [OK] /api/v1/credits             -> 401
-  [OK] /api/v1/fees, /client-requests, /round/today, /operations,
-       /clients/frozen, /request-types, /objectives, /imf/dashboard -> 401
-  (les 401 sont le comportement attendu sans jeton : plus aucun plantage)
+  [OK] 127 imports nommes verifies a l'execution
+  [OK] Demarrage : « teebo API en ecoute »
+  [OK] /healthz                                    -> 200 {"ok":true}
+  [OK] /api/v1/savings-products, /credits, /units,
+        /org-settings, /access/catalog,
+        /governance/registres, /profiles-matrix,
+        /round/today                               -> 401 (normal)
+  [OK] /api/v1/inexistant, /zzz/yyy, /unitsXYZ     -> 404 route_inconnue
+  [OK] Erreur 500 : message generique + ref, aucun detail technique
+  [OK] Erreur PostgreSQL 23505                     -> 409 "/
+       Cet enregistrement existe deja"
+  [OK] JSON invalide                               -> 400 invalid_json
+  [OK] Erreur metier 409/403                       -> code + phrase francaise
+  [OK] Rejet asynchrone non captures               -> 500 propre (plus de blocage)
+  [OK] Reponse deja engagee                        -> pas de double envoi
 
-A FAIRE SUR RENDER
-------------------
-  1. Remplacer le contenu du depot GitHub par ce dossier
-     (Dockerfile, render.yaml, backend/, db/ a la racine).
+
+6. À FAIRE SUR RENDER
+----------------------
+  1. Remplacer le contenu du depot GitHub par ce dossier.
   2. Render > service teebo-api > Manual Deploy
      > « Clear build cache & deploy ».
-  3. Attendre « Deploying... » puis « Live ».
-  4. Ouvrir https://<votre-service>.onrender.com/healthz
-     -> doit afficher {"ok":true}
+  3. Verifier /healthz -> {"ok":true}
+  4. En cas d'erreur, noter la reference affichee (ex. ref "a1b2c3d4e5f6") :
+     elle permet de retrouver la ligne exacte dans les journaux Render.
 
-Repli si Docker pose probleme : utilisez le Dockerfile de backend/ avec
-    Root Directory = backend
-dans les reglages du service.
+RIEN A FAIRE COTE NETLIFY.
+Le site n'est pas modifie par ce lot. Il continue d'utiliser
+{"error":"..."} comme avant ; un champ "message" en francais s'y ajoute.
 
-RIEN A FAIRE COTE NETLIFY
--------------------------
-Le site (teebo-SITE-NETLIFY-14-11-2026.zip) est inchange.
+
+====================================================================
+VAGUE 32/33 — 14/11/2026
+Facturation SaaS : licence unique + abonnement MENSUEL par module
+====================================================================
+
+A. CE QUE FAIT CE LOT
+---------------------
+1. Trois tarifs distincts et clairs :
+   - la LICENCE UNIQUE teebo : 500 000 FCFA, payée UNE SEULE FOIS a vie ;
+   - l'ABONNEMENT MENSUEL de chaque module active (tontine 50 000,
+     credit 75 000, conformite 25 000, comptabilite 40 000 FCFA) ;
+   - l'ESSAI GRATUIT d'un module : 0 FCFA tant que l'essai court.
+2. Une IMF qui a paye sa licence ne la voit PLUS JAMAIS sur ses factures.
+3. Une facture ne peut plus etre generee deux fois pour le meme mois.
+4. Chaque ligne de facture est conservee : on peut expliquer au franc pres
+   ce qui a ete facture, et ce qui ne l'a pas ete (module en essai).
+5. Un module active en cours de mois est facture au prorata des jours.
+6. Un module desactive (ou dont l'essai est termine) est ferme dans
+   l'application : son API repond "Feature Disabled".
+
+B. CORRECTIONS APPORTEES AU SCRIPT SQL FOURNI
+---------------------------------------------
+- "v_end_month := ..." sans son type : erreur de syntaxe PL/pgSQL qui
+  empechait la creation de la fonction. Corrige.
+- La facture pouvait etre generee plusieurs fois dans le mois. Un index
+  unique et un test d'existence rendent l'operation sans danger.
+- La licence n'etait pas tracee quand elle etait deja payee : la ligne
+  apparait desormais avec la mention "deja payee".
+- Le detail par module (facture / essai gratuit) n'etait pas conserve :
+  il l'est maintenant.
+- Un essai qui se termine au milieu du mois est proratise.
+- Une IMF inconnue leve une erreur explicite au lieu de creer une
+  facture orpheline.
+
+C. NOUVEAUX FICHIERS
+--------------------
+- db/schema_v33.sql ................. tables + fonction de facturation v2.
+  Le serveur l'applique AUTOMATIQUEMENT au demarrage ; il est additif et
+  peut etre relance sans risque.
+- backend/src/saas_billing.js ....... calcul, apercu, generation, paiement.
+- backend/src/routes/saas.js ........ API cote IMF.
+- backend/src/routes/teebo.js ....... API cote editeur (ajouts en fin de fichier).
+
+D. CE QUE VOIT L'UTILISATEUR (cote IMF)
+---------------------------------------
+- "Abonnement" : sa licence (deja payee / a regler), ses modules, les
+  essais en cours et le nombre de jours restants, son total mensuel.
+- "Apercu de facture" : le montant du mois SANS rien generer.
+- "Mes factures" : historique et detail ligne par ligne.
+
+E. CE QUE VOIT L'EDITEUR teebo
+------------------------------
+- Modifier un tarif mensuel ou le prix de la licence.
+- Voir toutes les IMF avec leur licence et leur abonnement mensuel.
+- Apercu, facturation d'une IMF ou de toutes les IMF en une fois.
+- Marquer une facture payee (la licence est reglee definitivement).
+- Ouvrir / fermer un module, ou lancer un essai avec une date de fin.
+
+F. A FAIRE SUR RENDER
+---------------------
+1. Glisser ce dossier complet dans GitHub (remplace l'ancien).
+2. Render -> Manual Deploy -> "Clear build cache & deploy".
+3. Ouvrir /healthz : il doit repondre ok.
+4. Verifier dans les journaux : schema_v33.sql applique sans erreur.
+
+G. HONNETETE SUR LES TESTS
+--------------------------
+Les calculs de facture ont ete testes (licence non payee, licence payee,
+essai en cours, essai termine, activation en cours de mois, module coupe)
+et les resultats sont exacts. Le script SQL, lui, n'a PAS pu etre execute
+ici faute de base PostgreSQL : il est additif et reexecutable, mais la
+preuve definitive sera le journal de demarrage sur Render.

@@ -1,0 +1,139 @@
+====================================================================
+teebo — VAGUE 42 — 16/11/2026
+LE CERTIFICAT DE DILIGENCE KYC/KYB ET DE VISITE TERRAIN
+====================================================================
+
+Ce lot s'ajoute aux vagues precedentes. Rien n'est supprime, aucune
+configuration existante n'est ecrasee.
+
+
+1. CE QUE VOUS POUVEZ FAIRE MAINTENANT
+--------------------------------------
+  - Depuis la fiche 360° Conformite, un bouton
+    « Telecharger Certificat KYC/KYB (PDF) » produit un document A4
+    officiel, imprime ou envoye par mail a un banquier correspondant,
+    un regulateur ou un bailleur de fonds.
+  - Le meme bouton existe dans la fiche du dossier de credit : au moment
+    de monter un dossier, la preuve de diligence est dans la meme page.
+  - Le Tier peut verifier le document en scannant le QR code imprime :
+    la page publique affiche « authenticite confirmee » ou « document
+    inconnu / annule », sans jamais montrer les donnees du client.
+
+
+2. LE DOCUMENT (6 BLOCS)
+------------------------
+  1. En-tete : raison sociale, agrement BCEAO, RCCM, reference
+     CERT-AAAA-NNNN et empreinte SHA-256.
+  2. Identification et verification KYC : identite, piece, validite,
+     statut KYC, score, niveau de risque LBC, criblage des sanctions.
+  3. Volet KYB : entite, RCCM, beneficiaires effectifs et mandataires.
+  4. Preuve de visite de terrain : agent, date, coordonnees GPS,
+     precision, distance au point declare, reperes, activite constatee.
+  5. Photographies horodatees avec legende et position.
+  6. Signatures, mentions legales et URL de verification.
+
+
+3. LA REGLE D'EMISSION (a connaitre)
+------------------------------------
+  Le certificat n'est emis QUE sur une visite :
+     - au statut ACTIF_CONFORME,
+     - deja synchronisee depuis le telephone de l'agent,
+     - portant des coordonnees GPS,
+     - et plus recente que la validite parametree (30 jours par defaut).
+  Si une seule de ces conditions manque, le bouton reste DESACTIVE
+  et un message explique precisement pourquoi (pas de visite, visite
+  non conforme, visite encore sur le telephone, GPS manquant, visite
+  perimee). Il n'y a donc jamais de certificat « au hasard ».
+
+
+4. L'EMPREINTE (comment la verifier a la main)
+----------------------------------------------
+  Empreinte = SHA-256 de la chaine :
+      clientId | lat | lng | visiteId | horodatage
+  (coordonnees au millionieme de degre, horodatage ISO de validation).
+  L'empreinte affichee en haut du document est donc intangible :
+  changer la date, la position ou le client casse l'empreinte, et la
+  page de verification cesse de reconnaitre le document.
+
+
+5. LES ROUTES AJOUTEES
+----------------------
+  GET /api/v1/conformite/certificats/clients/:id/disponibilite
+      -> dit si le certificat peut etre emis, avec le motif en francais
+  GET /api/v1/conformite/certificats/clients/:id/pdf
+      -> emet (ou reemet) le document A4
+  GET /api/v1/conformite/certificats/clients/:id/historique
+      -> liste des certificats deja emis pour ce client
+  GET /verify-certificat/:empreinte
+      -> page PUBLIQUE de verification (aucune donnee personnelle)
+  GET /certificat-kyc.js
+      -> petit script d'impression de la page publique (CSP : pas
+         d'inline)
+  Chaque emission est journalisee en audit (action EXPORT_DATA) : qui,
+  quand, quel client, quelle empreinte. Le journal est en ajout seul.
+
+
+6. DEPLOIEMENT — SERVEUR (Render)
+---------------------------------
+  1. Glissez le contenu du zip backend dans votre depot Render
+     (ou importez le zip dans le tableau de bord Render).
+  2. Une seule dependance a ete ajoutee : le paquet « qrcode ».
+     Si Render n'installe pas automatiquement, lancez :  npm install
+     (le fichier package.json est deja a jour, node_modules n'est PAS
+     inclus dans le zip : c'est normal et voulu).
+  3. Redemarrez le service. Les nouvelles routes apparaissent seules.
+  4. La migration de base v42 s'applique automatiquement au demarrage
+     (creation des tables certificats + index, sans toucher aux donnees
+     existantes).
+  5. Verifiez : ouvrez  https://teebo-api-p825.onrender.com/verify-certificat/test
+     Vous devez voir la page « document inconnu ».
+
+
+7. DEPLOIEMENT — SITE (Netlify)
+-------------------------------
+  1. Glissez le zip du site dans l'onglet « Deploys » de Netlify
+     (glisser-deposer, comme d'habitude).
+  2. Rien d'autre a faire : la redirection /verify-certificat/* vers le
+     serveur Render est deja dans le fichier _redirects (placee AVANT
+     la regle par defaut).
+  3. Sur mobile : fermez puis rouvrez l'application (ou Ctrl+Maj+R sur
+     ordinateur) pour recharger le service worker (version v35).
+
+
+8. COMMENT LE TESTER EN 5 MINUTES
+---------------------------------
+  1. Ouvrez Conformite > un client qui a une visite conforme recente.
+  2. Le bouton est actif : cliquez, le PDF s'ouvre dans un onglet.
+  3. Scannez le QR code avec un telephone : la page publique doit dire
+     « Certificat authentique » et rappeler la reference.
+  4. Modifiez un chiffre de l'empreinte dans l'adresse : la page doit
+     dire « inconnu ».
+  5. Ouvrez la fiche d'un dossier de credit du meme client : le meme
+     bouton est present, avec le meme comportement.
+
+
+9. TESTS
+--------
+  Le banc de tests est fourni separement (dossier BANC-TESTS).
+  Il contient 35 verifications sur le certificat (empreinte, reference,
+  disponibilite, rendu, page publique, cartographie) et les suites des
+  vagues precedentes :
+      v38 ............ 89/89
+      conformite ..... 33/33
+      ecrans ......... 45/45
+      credit ......... 59/59
+      scoring ........ 50/50
+  Aucune regression.
+
+
+10. EN CAS DE SOUCI
+-------------------
+  - Bouton grise ? Le message sous le bouton dit exactement pourquoi.
+    Le cas le plus frequent : la visite est encore sur le telephone de
+    l'agent (il faut la synchroniser depuis l'application terrain).
+  - PDF vide ou incomplet ? Verifiez que les photos de visite ont ete
+    synchronisees (elles sont jointes au certificat, 6 au maximum).
+  - Page de verification « inconnue » ? L'empreinte a peut-etre ete
+    modifiee, ou le certificat a ete annule.
+
+====================================================================
