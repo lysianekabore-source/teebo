@@ -1,29 +1,18 @@
 #!/bin/sh
-# teebo — démarrage du serveur API (Render, offre gratuite)
+# teebo — demarrage du serveur API (Render, offre gratuite)
 # ---------------------------------------------------------------
-# CORRECTIF 13/11/2026-E — « cannot open ./start.sh : No such file »
-#   Le fichier n'était pas copié dans l'image (le Dockerfile l'a oublié).
-#   Il l'est désormais (COPY backend/start.sh), et le démarrage ne dépend
-#   plus de ce script : la commande du Dockerfile lance directement node.
-#
-# Ordre volontaire :
-#   1. le serveur démarre IMMÉDIATEMENT (le port s'ouvre, Render le voit en vie) ;
-#   2. la migration tourne ensuite EN TÂCHE DE FOND, sans jamais bloquer ;
-#   3. si la base dort, elle est réessayée automatiquement (voir src/server.js).
-#
-# Ne JAMAIS revenir à « node src/migrate.js ; node src/server.js » :
-# une base endormie retardait alors tout le démarrage, et Render affichait
-# « Application exited early » / « service injoignable ».
+# VAGUE 51 : ce fichier est desormais COPIÉ dans l'image par le Dockerfile
+# (la vague 50 le lançait sans le copier : « cannot open ./start.sh »).
+# Il n'est plus le point d'entree officiel (le Dockerfile lance node
+# directement) mais il reste utilisable en local : sh start.sh
 # ---------------------------------------------------------------
 set -e
 cd "$(dirname "$0")"
 
-# Si src/server.js manque, on le signale en clair : plus de « No such file »
-# muet impossible à diagnostiquer depuis les journaux Render.
 if [ ! -f src/server.js ]; then
-  echo "ERREUR : src/server.js absent dans $(pwd) — image incomplète." >&2
+  echo "ERREUR : src/server.js absent dans $(pwd) — image incomplete." >&2
   exit 1
 fi
 
-echo "==> Démarrage du serveur API (la base sera mise à jour en arrière-plan) ..."
+echo "==> Demarrage du serveur API (la base sera mise a jour en arriere-plan) ..."
 exec node src/server.js
