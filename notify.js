@@ -22,7 +22,57 @@ export const TEEBO_EMAIL = process.env.TEEBO_EMAIL || 'hello@teebo.africa';
 export const PUBLIC_API_URL = (process.env.PUBLIC_API_URL || process.env.PUBLIC_BASE_URL ||
   'https://teebo-api-p825.onrender.com').replace(/\/+$/, '');
 // Site public teebo (page de connexion de l'IMF).
-export const PUBLIC_SITE_URL = (process.env.PUBLIC_SITE_URL || 'https://www.teebo.africa').replace(/\/+$/, '');
+// PUBLIC_SITE_URL ne sert QUE de valeur de secours : c'est le site réellement
+// utilisé (déduit de la requête : origine du navigateur, Referer de la page de
+// connexion, ou en-tête X-Site-URL) qui prime. Ainsi le lien envoyé dans les
+// messages de code d'accès pointe toujours vers LA page de connexion du client
+// (ex. https://teebo-imf.netlify.app/login) et jamais vers un domaine générique.
+export const PUBLIC_SITE_URL = (process.env.PUBLIC_SITE_URL || 'https://teebo-imf.netlify.app').replace(/\/+$/, '');
+
+/** Retire le chemin et normalise une origine (https://site.com/ → https://site.com). */
+export function cleanOrigin(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    if (!/^https?:$/.test(u.protocol)) return '';
+    return u.origin;
+  } catch (_) { return ''; }
+}
+
+/**
+ * Origine du SITE vue par l'utilisateur, pour construire les liens de connexion.
+ * Ordre de priorité :
+ *   1. en-tête X-Site-URL (posé par la règle de redirection / le proxy Netlify) ;
+ *   2. header Origin (appels XHR/fetch) ;
+ *   3. Referer (page d'où part la requête : /app.html, /login…) ;
+ *   4. PUBLIC_SITE_URL (réglage explicite de l'exploitant, s'il est défini) ;
+ *   5. site teebo par défaut.
+ * Un Referer ou une origine « localhost/127.0.0.1 » est ignoré (lien inutilisable
+ * pour un destinataire). Le résultat ne contient jamais de double slash final.
+ */
+export function siteBaseFrom(req) {
+  const h = (req && req.headers) || {};
+  // Raccourci : un X-Site-URL valide est la source la plus fiable.
+  const hinted = cleanOrigin(h['x-site-url']);
+  if (hinted && !/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(hinted)) return hinted;
+  const candidates = [h['x-site-url'], h['x-forwarded-host'] && h['x-forwarded-proto']
+    ? `${h['x-forwarded-proto']}://${h['x-forwarded-host']}` : '', h.origin, h.referer];
+  // Une valeur explicite de l'exploitant (PUBLIC_SITE_URL) est respectée :
+  // elle passe avant la dernière origine vue, mais jamais avant les en-têtes
+  // réellement transmis par la requête en cours.
+  const explicitSite = String(process.env.PUBLIC_SITE_URL || '').trim()
+    ? cleanOrigin(process.env.PUBLIC_SITE_URL) : '';
+  const ordered = candidates.slice(0, 4).concat(explicitSite ? [explicitSite] : [], candidates.slice(4));
+  for (const c of ordered) {
+    const o = cleanOrigin(c);
+    if (o && !/localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(o)) return o;
+  }
+  return PUBLIC_SITE_URL;
+}
+
+/** URL de la page de connexion (premier accès + mot de passe). */
+export function loginUrlFor(req) { return `${siteBaseFrom(req)}/login`; }
 
 /**
  * Lien « click-to-chat » WhatsApp (https://wa.me/<numero>?text=...).
@@ -57,6 +107,11 @@ export function verifyDocToken(id, token) {
 /** Lien ABSOLU et PUBLIC (tokenisé) vers la facture définitive, ouvrable par l'IMF. */
 export function invoicePublicUrl(invoiceId) {
   return `${PUBLIC_API_URL}/api/v1/requests/invoices/${invoiceId}.pdf?t=${signDocToken(invoiceId)}`;
+}
+
+/** Indique si une passerelle e-mail (SMTP) est réellement configurée. */
+export function emailGatewayReady() {
+  return Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
 }
 
 let transporter = null;
@@ -98,24 +153,60 @@ export async function notifyWhatsApp(toPhone, message) {
     { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' });
 }
 
-export async function notifyEmail(toEmail, subject, text) {
+/**
+ * Envoi d'e-mail.
+ * opts.fromName / opts.fromEmail : expéditeur propre à l'IMF (paramètres IMF).
+ *   L'enveloppe technique reste celle du compte SMTP (obligatoire), mais
+ *   l'en-tête « De : » et le « Répondre à : » portent l'identité de l'IMF :
+ *   le destinataire voit donc l'institution comme expéditeur et ses
+ *   réponses reviennent à l'adresse de l'IMF.
+ */
+export async function notifyEmail(toEmail, subject, text, opts = {}) {
+  const dest = String(toEmail || '').trim();
+  if (!dest || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(dest)) {
+    return { ok: false, mode: 'invalid_recipient',
+      error: 'Adresse e-mail du destinataire absente ou invalide.' };
+  }
   const t = getTransporter();
   if (!t) {
-    console.log(`[email:DEV] -> ${toEmail} | ${subject}\n${text}`);
-    // Mode dégradé (SMTP non configuré) : lien mailto pour envoi manuel.
-    return { ok: true, mode: 'dev', link: mailtoLink(toEmail, subject, text) };
+    console.log(`[email:NOT_CONFIGURED] -> ${dest} | ${subject}\n${text}`);
+    // Passerelle non configurée : rien n'est envoyé, on renvoie un lien
+    // mailto pour un envoi manuel depuis la messagerie de l'admin.
+    return { ok: false, mode: 'not_configured',
+      error: 'Passerelle e-mail non configurée sur le serveur (SMTP).',
+      link: mailtoLink(dest, subject, text) };
   }
-  const from = process.env.SMTP_FROM || 'teebo <no-reply@teebo.africa>';
+  // Mode démonstration volontairement simulé (aucune passerelle réelle) :
+  // à utiliser uniquement pour les environnements de test.
+  if (String(process.env.EMAIL_SIMULATION || '') === 'true') {
+    console.log(`[email:SIMULATED] -> ${dest} | ${subject}`);
+    return { ok: true, mode: 'sent_simulated', id: 'simulated' };
+  }
+  const fallbackFrom = process.env.SMTP_FROM || 'teebo <no-reply@teebo.africa>';
+  const senderEmail = String(opts.fromEmail || '').trim();
+  const senderName = String(opts.fromName || '').trim();
+  const from = senderEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(senderEmail)
+    ? { name: senderName || senderEmail, address: senderEmail }
+    : fallbackFrom;
+  const replyTo = senderEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(senderEmail) ? senderEmail : undefined;
   try {
     const info = await t.sendMail({
-      from, to: toEmail, subject, text,
-      html: `<div style="font-family:system-ui,Segoe UI,Arial;font-size:14px;line-height:1.6;color:#0b0c26">${text.replace(/\n/g, '<br>')}</div>`
+      from, to: dest, subject, text, replyTo,
+      html: `<div style="font-family:system-ui,Segoe UI,Arial;font-size:14px;line-height:1.6;color:#0b0c26">${escapeHtml(text).replace(/\n/g, '<br>')}</div>`
     });
-    return { ok: true, id: info.messageId };
+    return { ok: true, mode: 'sent', id: info && info.messageId,
+      accepted: info && info.accepted ? info.accepted.length : null,
+      from: typeof from === 'string' ? from : `${from.name} <${from.address}>` };
   } catch (e) {
     console.error('[email] echec envoi :', e.message);
-    return { ok: false, error: e.message };
+    return { ok: false, mode: 'failed', error: e.message,
+      link: mailtoLink(dest, subject, text) };
   }
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function httpPost(url, body, headers) {

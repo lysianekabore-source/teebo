@@ -1,4 +1,8 @@
 import { q } from './db.js';
+import {
+  ID_DOC_TYPES, BIRTH_CERT_STATUSES, PROOF_STATUSES, HOME_PROOF_TYPES,
+  ACTIVITY_PROOF_TYPES, INCOME_BY_PROFESSION, BENEFICIARY_RELATIONS,
+} from './client_documents.js';
 
 /**
  * teebo — Documents officiels de l'IMF
@@ -20,7 +24,14 @@ export const TEEBO_SUPPLIER = {
   address: 'Secteur 51, Ouaga 2000 — Parcelle 10, Lot 26, Section TY',
   address2: '11 BP 74 Ouagadougou 11 — Burkina Faso',
   tel: '+226 50 32 14 32',
-  email: 'hello@teebo.africa'
+  email: 'hello@teebo.africa',
+  // Mentions légales de l'émetteur teebo — à renseigner via variables
+  // d'environnement (ne JAMAIS inventer). Affichées « — » tant que vides.
+  legal_form: process.env.TEEBO_LEGAL_FORM || '',
+  rccm: process.env.TEEBO_RCCM || '',
+  ifu: process.env.TEEBO_IFU || '',
+  vat: process.env.TEEBO_VAT || '',
+  capital: process.env.TEEBO_CAPITAL || ''
 };
 
 export const CURRENCY_LABEL = { XOF: 'FCFA', XAF: 'FCFA' };
@@ -52,10 +63,20 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /** Montant en cents XOF -> « 1 234 567 FCFA » (entiers, séparateur français). */
+/**
+ * Affichage d'un montant en FCFA — SANS AUCUN CALCUL FLOTTANT.
+ * Accepte soit des centimes (convention historique du module), soit un
+ * montant FCFA à 2 décimales déjà formaté. Tout passe par des chaînes.
+ */
 export function moneyFcfa(cents, currency = 'XOF') {
-  const v = Math.round(Number(cents || 0)) / 100;
   const label = CURRENCY_LABEL[currency] || currency;
-  return v.toLocaleString('fr-FR', { maximumFractionDigits: 2 }) + ' ' + label;
+  let s = String(cents == null ? 0 : cents).trim();
+  const neg = s.startsWith('-');
+  if (neg) s = s.slice(1);
+  const [ent, dec] = s.split('.');
+  const entier = (ent || '0').replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  const cent = (dec || '').slice(0, 2).padEnd(2, '0');
+  return (neg ? '− ' : '') + entier + (cent === '00' ? '' : ',' + cent) + ' ' + label;
 }
 
 export function fmtDate(d) {
@@ -138,6 +159,9 @@ function docStyles(embed = false) {
   .legal{margin-top:26px;padding:14px 16px;background:var(--soft);border:1px solid var(--line);border-radius:9px;font-size:11.5px;color:#3c3f57;line-height:1.65}
   .legal h4{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:6px}
   .legal .grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 22px}
+  .legal .pcols{display:grid;grid-template-columns:1fr 1fr;gap:10px 26px}
+  .legal .pcols>div>div{padding:3px 0;border-bottom:1px dotted var(--line);display:flex;justify-content:space-between;gap:10px}
+  .legal .pcols h4{margin:0 0 6px}
   .sign{margin-top:22px;font-size:12px;color:var(--muted);line-height:1.6}
   .foot{margin-top:24px;padding-top:14px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}
   .badge{display:inline-block;background:#eef7d6;color:#3d5c00;border:1px solid #d5e9a8;border-radius:999px;font-size:11px;font-weight:700;padding:3px 10px}
@@ -166,6 +190,50 @@ function docHeadInvoice() {
       ${esc(s.address)}<br>${esc(s.address2)}<br>
       Tél. ${esc(s.tel)} · ${esc(s.email)}
     </div>
+  </div>`;
+}
+
+/* Mentions légales des DEUX parties sur les factures : le CLIENT (l'IMF) et
+   l'ÉMETTEUR (teebo). Toutes les mentions obligatoires OHADA/UEMOA figurent
+   côte à côte (raison sociale, forme juridique, RCCM, IFU/NIF, agrément
+   BCEAO, capital social, siège). Les identifiants teebo proviennent de
+   variables d'environnement — affichés « — » tant qu'ils ne sont pas fournis. */
+function docLegalParties(header) {
+  const b = header;
+  const s = TEEBO_SUPPLIER;
+  const client = [
+    ['Raison sociale', b.legal_name || b.imf.name || ''],
+    ['Forme juridique', b.legal_form || '—'],
+    ['RCCM', b.trade_register_no || '—'],
+    ['IFU / NIF', b.tax_id || '—'],
+    ['N° contribuable / TVA', b.vat_number || '—'],
+    ['Agrément BCEAO', b.bceao_agreement_no || '—'],
+    ['Capital social', b.share_capital_cents != null ? moneyFcfa(b.share_capital_cents) : '—'],
+    ['Siège social', b.legal_address || '—']
+  ];
+  const supplier = [
+    ['Dénomination', s.name],
+    ['Forme / régime', s.legal_form || '—'],
+    ['RCCM', s.rccm || '—'],
+    ['IFU / NIF', s.ifu || '—'],
+    ['N° contribuable / TVA', s.vat || '—'],
+    ['Capital social', s.capital || '—'],
+    ['Siège social', s.address + ' · ' + s.address2],
+    ['Contact', s.tel + ' · ' + s.email]
+  ];
+  const col = (title, rows) =>
+    `<div><h4>${esc(title)}</h4>` +
+    rows.map((r) => `<div><span>${esc(r[0])}</span><b>${esc(r[1] || '—')}</b></div>`).join('') +
+    `</div>`;
+  const bank = b.bank_details
+    ? `<div style="margin-top:10px"><h4>Coordonnées bancaires de règlement</h4>${esc(b.bank_details)}</div>` : '';
+  return `<div class="legal">
+    <h4>Mentions légales obligatoires</h4>
+    <div class="pcols">
+      ${col('Client — l\'IMF', client)}
+      ${col('Émetteur — ' + s.name, supplier)}
+    </div>
+    ${bank}
   </div>`;
 }
 
@@ -307,6 +375,115 @@ export function renderStatement({ header, client, account, operations, generated
   return wrap('Relevé de compte — ' + (client.full_name || ''), body);
 }
 
+/* ============================== FICHE CLIENT ============================ */
+// Libellé d'un code dans une liste { code, label }.
+function lbl(list, code) { const o = (list || []).find((x) => x.code === code); return o ? o.label : (code || '—'); }
+
+const PROFESSION_LABEL = {
+  salarie: 'Salarié', retraite: 'Retraité', informel: 'Activité informelle', etudiant: 'Étudiant',
+};
+
+/**
+ * FICHE CLIENT complète (particulier) imprimable / exportable en PDF, destinée
+ * à la signature du client et de l'utilisateur. Incruste les signatures
+ * numériques déjà capturées (stylet) ou présente des cadres à signer à la main.
+ */
+export function renderClientFiche({ header, client, account, signatures, conformity, generatedAt, generatedBy }) {
+  const c = client || {};
+  const sigOf = (role) => (signatures || []).find((s) => s.role === role) || null;
+  const prof = c.profession || null;
+  const spec = prof ? INCOME_BY_PROFESSION[prof] : null;
+  const incomeTypes = spec && spec.types ? spec.types : [];
+
+  const row = (label, value) => `<div><span>${esc(label)}</span><b>${esc(value == null || value === '' ? '—' : value)}</b></div>`;
+  const yn = (v) => (v === true || v === 't' || v === 'true') ? 'Oui' : 'Non';
+
+  const identite = [
+    row('Code client', c.code_client),
+    row('Nom', c.last_name || c.full_name),
+    row('Prénom', c.first_name),
+    row('Téléphone', c.phone),
+    row('Date de naissance', fmtDate(c.birth_date)),
+    row('Lieu de naissance', c.birth_place),
+  ].join('');
+
+  const piece = [
+    row('Document d’identité', lbl(ID_DOC_TYPES, c.id_doc_type)),
+    row('Document physique reçu', yn(c.id_doc_received)),
+    row('N° de la pièce', c.id_doc_number),
+    row('Date d’établissement', fmtDate(c.id_doc_issue_date)),
+    row('Date d’expiration (calculée)', fmtDate(c.id_doc_expiry_date)),
+    row('Acte de naissance', lbl(BIRTH_CERT_STATUSES, c.birth_cert_status)),
+  ].join('');
+
+  const ayant = [
+    row('Nom de l’ayant droit', c.beneficiary_last_name),
+    row('Prénom de l’ayant droit', c.beneficiary_first_name),
+    row('Lien', lbl(BENEFICIARY_RELATIONS, c.beneficiary_relation)),
+  ].join('');
+
+  const loc = [
+    row('Plan de localisation — domicile', c.home_location_desc),
+    row('Justificatif de domicile', lbl(PROOF_STATUSES, c.home_proof_status)
+      + (c.home_proof_type ? ' — ' + lbl(HOME_PROOF_TYPES, c.home_proof_type) : '')),
+    row('Plan de localisation — activité', c.activity_location_desc),
+    row('Justificatif d’activité', lbl(PROOF_STATUSES, c.activity_proof_status)
+      + (c.activity_proof_type ? ' — ' + lbl(ACTIVITY_PROOF_TYPES, c.activity_proof_type) : '')),
+  ].join('');
+
+  const revenuRows = [row('Profession', PROFESSION_LABEL[prof] || prof)];
+  if (prof === 'salarie' || prof === 'retraite') revenuRows.push(row('Domiciliation du salaire / de la pension', yn(c.salary_domiciliation)));
+  if (c.activity_description) revenuRows.push(row('Description de l’activité', c.activity_description));
+  if (c.school_name) revenuRows.push(row('École / université', c.school_name));
+  if (c.income_proof_status) revenuRows.push(row('Justificatif de revenu',
+    lbl(PROOF_STATUSES, c.income_proof_status) + (c.income_proof_type ? ' — ' + lbl(incomeTypes, c.income_proof_type) : '')));
+  const revenu = revenuRows.join('');
+
+  const conf = (conformity || []);
+  const confLine = conf.length
+    ? `<div class="sign">Conformité des pièces : ${esc(c.conformity_status === 'conforme' ? 'CONFORME' : (c.conformity_status === 'non_conforme' ? 'NON CONFORME' : 'EN ATTENTE'))}`
+      + (conf.some((x) => x.is_conform === false || x.is_conform === 'f')
+         ? ' — à corriger : ' + esc(conf.filter((x) => x.is_conform === false || x.is_conform === 'f').map((x) => x.field_label).join(', '))
+         : '') + '</div>'
+    : '';
+
+  const sigBox = (role, title) => {
+    const s = sigOf(role);
+    let inner;
+    if (s && s.method === 'stylet' && s.image_data_url) {
+      inner = `<img src="${esc(s.image_data_url)}" alt="signature" style="max-height:70px;max-width:100%">`;
+    } else if (s && s.method === 'empreinte') {
+      inner = `<div class="em">✓ Validé par empreinte digitale<br><small>${esc(fmtDateTime(s.captured_at))}</small></div>`;
+    } else {
+      inner = '<div class="em" style="color:#9a9db2">Signature manuscrite</div>';
+    }
+    return `<div class="sigb"><div class="sigt">${esc(title)}</div><div class="sigc">${inner}</div></div>`;
+  };
+
+  const body = `
+  ${docHead(header, 'Logo ' + (header.legal_name || ''))}
+  <div class="title">Fiche client — Particulier
+    <small>Éditée le ${esc(fmtDateTime(generatedAt))}${generatedBy ? ' par ' + esc(generatedBy) : ''}</small>
+  </div>
+  <h4 style="margin:14px 0 4px">Identité</h4><div class="docmeta">${identite}</div>
+  <h4 style="margin:14px 0 4px">Pièce d’identité</h4><div class="docmeta">${piece}</div>
+  <h4 style="margin:14px 0 4px">Ayant droit</h4><div class="docmeta">${ayant}</div>
+  <h4 style="margin:14px 0 4px">Localisation</h4><div class="docmeta">${loc}</div>
+  <h4 style="margin:14px 0 4px">Activité &amp; revenu</h4><div class="docmeta">${revenu}</div>
+  <h4 style="margin:14px 0 4px">Compte</h4><div class="docmeta">${row('N° de compte', account && account.code_account)}${row('Devise', (account && account.currency) || 'XOF')}</div>
+  ${confLine}
+  <style>.sigs{display:flex;gap:18px;margin-top:22px}.sigb{flex:1}
+  .sigt{font-size:12px;color:#5b6076;margin-bottom:4px}
+  .sigc{border:1px solid #c7c9d6;border-radius:8px;height:92px;display:flex;align-items:center;justify-content:center;text-align:center;padding:6px}
+  .sigc .em{font-size:12px}</style>
+  <div class="sigs">${sigBox('client', 'Signature du client')}${sigBox('user', 'Signature de l’agent')}</div>
+  <div class="sign">Je soussigné(e) certifie exactes les informations portées sur la présente fiche et reconnais avoir pris connaissance des conditions d’ouverture de compte.</div>
+  ${docLegal(header)}
+  ${docFoot(header, 'Fiche client générée par teebo')}`;
+
+  return wrap('Fiche client — ' + (c.full_name || ''), body);
+}
+
 /* ============================== FACTURES ================================= */
 export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, dueAt, periodLabel,
   plan, lines, subtotalCents, discountCents = 0, vatRateBp = 0, vatCents = 0, totalCents,
@@ -316,20 +493,35 @@ export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, 
   const title = isFinal ? 'Facture' : 'Facture proforma';
   const statusBadge = status ? `<span class="badge${status === 'payee' ? '' : ' badge--warn'}">${esc(statusLabel(status))}</span>` : '';
 
-  const vatLine = vatRateBp
-    ? `<div><span>TVA (${(Number(vatRateBp) / 100).toLocaleString('fr-FR')} %)</span><b>${esc(moneyFcfa(vatCents, cur))}</b></div>`
-    : `<div><span>TVA</span><b>Non applicable</b></div>`;
-  const discountLine = discountCents
-    ? `<div><span>Remise</span><b>− ${esc(moneyFcfa(discountCents, cur))}</b></div>` : '';
-  const paidLine = (isFinal && amountPaidCents)
-    ? `<div><span>Montant réglé</span><b>${esc(moneyFcfa(amountPaidCents, cur))}</b></div>
-       <div><span>Reste à payer</span><b>${esc(moneyFcfa(Math.max(0, Number(totalCents || 0) - Number(amountPaidCents || 0)), cur))}</b></div>` : '';
+  // Coercition NUMÉRIQUE : node-postgres renvoie les colonnes BIGINT sous
+  // forme de CHAÎNES. Une addition de chaînes devient une concaténation
+  // ("25000000" + "90000000" => "2500000090000000"), ce qui corrompt les
+  // totaux. On force donc tout en entier avant le moindre calcul.
+  const num = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? n : 0; };
+  const discountNum = num(discountCents);
+  const vatNum = num(vatCents);
+  const paidNum = num(amountPaidCents);
 
   const itemLines = (Array.isArray(lines) && lines.length)
-    ? lines
-    : [{ label: plan || 'Abonnement teebo', amountCents: subtotalCents }];
+    ? lines.map((l) => ({ label: l.label || '', amountCents: num(l.amountCents) }))
+    : [{ label: plan || 'Abonnement teebo', amountCents: num(subtotalCents) }];
   const rowsHtml = itemLines.map((l) =>
-    `<tr><td>${esc(l.label || '')}</td><td class="r">${esc(moneyFcfa(l.amountCents || 0, cur))}</td></tr>`).join('');
+    `<tr><td>${esc(l.label)}</td><td class="r">${esc(moneyFcfa(l.amountCents, cur))}</td></tr>`).join('');
+
+  // Source de vérité : le sous-total HT est la SOMME numérique des lignes ;
+  // le total est toujours recoupé (sous-total − remise + TVA). Ce recalcul
+  // répare aussi l'affichage des factures dont le total stocké était erroné.
+  const subtotalNum = itemLines.reduce((s, l) => s + l.amountCents, 0);
+  const totalNum = Math.max(0, subtotalNum - discountNum + vatNum);
+
+  const vatLine = vatRateBp
+    ? `<div><span>TVA (${(Number(vatRateBp) / 100).toLocaleString('fr-FR')} %)</span><b>${esc(moneyFcfa(vatNum, cur))}</b></div>`
+    : `<div><span>TVA</span><b>Non applicable</b></div>`;
+  const discountLine = discountNum
+    ? `<div><span>Remise</span><b>− ${esc(moneyFcfa(discountNum, cur))}</b></div>` : '';
+  const paidLine = (isFinal && paidNum)
+    ? `<div><span>Montant réglé</span><b>${esc(moneyFcfa(paidNum, cur))}</b></div>
+       <div><span>Reste à payer</span><b>${esc(moneyFcfa(Math.max(0, totalNum - paidNum), cur))}</b></div>` : '';
 
   const body = `
   ${docHeadInvoice()}
@@ -351,14 +543,14 @@ export function renderInvoice({ header, kind = 'proforma', invoiceNo, issuedAt, 
     </tbody>
   </table>
   <div class="totals">
-    <div><span>Sous-total HT</span><b>${esc(moneyFcfa(subtotalCents, cur))}</b></div>
+    <div><span>Sous-total HT</span><b>${esc(moneyFcfa(subtotalNum, cur))}</b></div>
     ${discountLine}
     ${vatLine}
-    <div class="gt"><span>Total à payer</span><b>${esc(moneyFcfa(totalCents, cur))}</b></div>
+    <div class="gt"><span>Total à payer</span><b>${esc(moneyFcfa(totalNum, cur))}</b></div>
     ${paidLine}
   </div>
   ${notes ? `<div class="legal"><h4>Observations</h4>${esc(notes)}</div>` : ''}
-  ${docLegalTeebo()}
+  ${docLegalParties(header)}
   <div class="sign">
     ${isFinal
       ? `Facture émise par ${esc(TEEBO_SUPPLIER.name)} (prestataire de la solution teebo). Règlement par virement ou Mobile Money selon les coordonnées ci-dessus.`

@@ -56,7 +56,7 @@ export function computeState(sub) {
     out.banner = {
       days_left: daysLeft,
       message: `Il vous reste ${daysLeft} jour${daysLeft > 1 ? 's' : ''} d’essai gratuit. ` +
-        `Contactez teebo pour activer votre formule et éviter la désactivation de l’application.`,
+        `Contactez teebo pour activer les modules dont vous avez besoin et éviter la désactivation de l’application.`,
       contact: { whatsapp: '+22650321432', email: 'hello@teebo.africa' }
     };
   }
@@ -75,7 +75,7 @@ export async function enforceSubscription(req, res, next) {
     req.trial = state;
     if (state.locked) {
       return res.status(402).json({ error: 'trial_expired', locked: true,
-        message: 'Votre essai gratuit de 30 jours est terminé. L’application est désactivée. Contactez teebo pour activer votre formule.',
+        message: 'Votre essai gratuit de 30 jours est terminé. L’application est désactivée. Contactez teebo pour activer vos modules.',
         contact: { whatsapp: '+22650321432', email: 'hello@teebo.africa' } });
     }
     next();
