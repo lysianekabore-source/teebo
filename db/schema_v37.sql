@@ -37,16 +37,25 @@ BEGIN;
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION fn_tenant_sync() RETURNS TRIGGER AS $$
 BEGIN
-  IF NEW.tenant_id IS NULL THEN
-    NEW.tenant_id := NEW.imf_id;
-  END IF;
-  IF NEW.imf_id IS NULL THEN
-    NEW.imf_id := NEW.tenant_id;
-  END IF;
-  IF NEW.tenant_id IS DISTINCT FROM NEW.imf_id THEN
-    RAISE EXCEPTION 'tenant_incoherent: tenant_id (%) doit être égal à imf_id (%) sur %',
-      NEW.tenant_id, NEW.imf_id, TG_TABLE_NAME;
-  END IF;
+  -- Toutes les tables ne portent pas imf_id (ex. savings_product, table
+  -- produit partagée) : on lit dynamiquement les champs réellement présents.
+  IF NEW IS NULL THEN RETURN NEW; END IF;
+  BEGIN
+    IF NEW.tenant_id IS NULL THEN
+      NEW.tenant_id := NEW.imf_id;
+    END IF;
+  EXCEPTION WHEN undefined_column THEN NULL; END;
+  BEGIN
+    IF NEW.imf_id IS NULL THEN
+      NEW.imf_id := NEW.tenant_id;
+    END IF;
+  EXCEPTION WHEN undefined_column THEN NULL; END;
+  BEGIN
+    IF NEW.tenant_id IS DISTINCT FROM NEW.imf_id THEN
+      RAISE EXCEPTION 'tenant_incoherent: tenant_id (%) doit être égal à imf_id (%) sur %',
+        NEW.tenant_id, NEW.imf_id, TG_TABLE_NAME;
+    END IF;
+  EXCEPTION WHEN undefined_column THEN NULL; END;
   RETURN NEW;
 END; $$ LANGUAGE plpgsql;
 
@@ -59,9 +68,35 @@ BEGIN
       'collecteur_caisse', 'client_sms_log'
   ] LOOP
     EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS tenant_id UUID', t);
-    -- Repli des lignes anciennes : tenant_id = imf_id (jamais l'inverse).
-    EXECUTE format('UPDATE %I SET tenant_id = imf_id WHERE tenant_id IS NULL', t);
-    EXECUTE format('ALTER TABLE %I ALTER COLUMN tenant_id SET NOT NULL', t);
+    -- Certaines tables ne portent pas imf_id : on aligne sur la colonne
+    -- d'institution réellement présente (institution_id, imf_id, ou via jointure).
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name=t AND column_name='imf_id') THEN
+      EXECUTE format('UPDATE %I SET tenant_id = imf_id WHERE tenant_id IS NULL', t);
+    ELSIF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name=t AND column_name='institution_id') THEN
+      EXECUTE format('UPDATE %I SET tenant_id = institution_id WHERE tenant_id IS NULL', t);
+    ELSIF t IN ('client_sms_log') THEN
+      UPDATE client_sms_log SET tenant_id = c.imf_id FROM client c
+        WHERE client_sms_log.client_id = c.id AND client_sms_log.tenant_id IS NULL;
+    ELSIF t IN ('receipt') THEN
+      UPDATE receipt SET tenant_id = o.imf_id FROM operation o
+        WHERE receipt.operation_id = o.id AND receipt.tenant_id IS NULL;
+    ELSIF t IN ('cash_deposit') THEN
+      UPDATE cash_deposit SET tenant_id = a.imf_id FROM account a
+        WHERE cash_deposit.account_id = a.id AND cash_deposit.tenant_id IS NULL;
+    ELSIF t IN ('cash_closing', 'collecteur_caisse') THEN
+      EXECUTE format('UPDATE %I x SET tenant_id = u.imf_id FROM app_user u
+        WHERE x.collecteur_id = u.id AND x.tenant_id IS NULL', t);
+    END IF;
+    -- Colonne globale (savings_product : produit partagé, sans imf_id) :
+    -- on ne force PAS NOT NULL tant qu'aucune institution n'est rattachée.
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name=t AND column_name='imf_id')
+       OR t = 'client_sms_log' OR t = 'receipt' OR t = 'cash_deposit'
+       OR t IN ('cash_closing','collecteur_caisse') THEN
+      EXECUTE format('ALTER TABLE %I ALTER COLUMN tenant_id SET NOT NULL', t);
+    END IF;
     -- Défaut : la base la remplit d'elle-même si le code l'oublie.
     BEGIN
       EXECUTE format(
@@ -117,9 +152,17 @@ ALTER TABLE savings_product ADD COLUMN IF NOT EXISTS cycle_jours INTEGER;
 ALTER TABLE savings_product ADD COLUMN IF NOT EXISTS commission_imf_bp INTEGER NOT NULL DEFAULT 0;
   -- part IMF sur les cotisations du cycle, en points de base (500 = 5 %)
 
+-- Reprise des données existantes : le produit DAT historique ('epargne_dat')
+-- n'avait pas de durée de blocage ; on la fixe à 12 mois avant la contrainte.
+UPDATE savings_product SET duree_blocage_mois = 12
+ WHERE nature = 'bloquee' AND duree_blocage_mois IS NULL;
+
 ALTER TABLE savings_product DROP CONSTRAINT IF EXISTS chk_prod_dat_duree;
 ALTER TABLE savings_product ADD CONSTRAINT chk_prod_dat_duree
   CHECK (nature <> 'bloquee' OR duree_blocage_mois IS NOT NULL);
+
+UPDATE savings_product SET cycle_jours = 31
+ WHERE carnet_tontine = true AND cycle_jours IS NULL;
 
 ALTER TABLE savings_product DROP CONSTRAINT IF EXISTS chk_prod_tontine_cycle;
 ALTER TABLE savings_product ADD CONSTRAINT chk_prod_tontine_cycle

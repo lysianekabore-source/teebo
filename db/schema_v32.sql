@@ -420,12 +420,12 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                   WHERE table_schema='public' AND table_name='operation' AND column_name='device_timestamp')
   THEN
-    ALTER TABLE operation ADD COLUMN device_timestamp TIMESTAMPTZ;  -- horloge du terminal
-    ALTER TABLE operation ADD COLUMN received_at TIMESTAMPTZ NOT NULL DEFAULT now();
-    ALTER TABLE operation ADD COLUMN offline BOOLEAN NOT NULL DEFAULT false;
-    ALTER TABLE operation ADD COLUMN idempotency_key TEXT;
-    ALTER TABLE operation ADD COLUMN gps_lat NUMERIC(10,7);
-    ALTER TABLE operation ADD COLUMN gps_lng NUMERIC(10,7);
+    ALTER TABLE operation ADD COLUMN IF NOT EXISTS device_timestamp TIMESTAMPTZ;  -- horloge du terminal
+    ALTER TABLE operation ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ NOT NULL DEFAULT now();
+    ALTER TABLE operation ADD COLUMN IF NOT EXISTS offline BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE operation ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+    ALTER TABLE operation ADD COLUMN IF NOT EXISTS gps_lat NUMERIC(10,7);
+    ALTER TABLE operation ADD COLUMN IF NOT EXISTS gps_lng NUMERIC(10,7);
   END IF;
 END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_operation_idem

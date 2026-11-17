@@ -6,7 +6,7 @@
 
 BEGIN;
 
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+-- (harnais local : pgcrypto absent ; gen_random_uuid() natif depuis PG13)
 
 -- ---------------------------------------------------------------------------
 -- 1. IMF (tenant racine) — chaque IMF est un espace totalement cloisonné.

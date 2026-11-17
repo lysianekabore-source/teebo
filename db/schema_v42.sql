@@ -181,7 +181,7 @@ INSERT INTO position_default_permission(imf_id, position_code, permission_key, a
 SELECT DISTINCT NULL::uuid, pc.code, v.permission_key, true
   FROM position_catalog pc
   CROSS JOIN (VALUES ('conformite.certificat.read'), ('conformite.certificat.emettre')) AS v(permission_key)
- WHERE pc.is_system IS NOT FALSE
+ WHERE pc.is_custom IS NOT TRUE   -- postes du socle (l'équivalent de is_system ici)
    AND (pc.code ILIKE '%ADMIN%' OR pc.code ILIKE '%DG%')
 ON CONFLICT (COALESCE(imf_id,'00000000-0000-0000-0000-000000000000'::uuid), position_code, permission_key) DO NOTHING;
 
