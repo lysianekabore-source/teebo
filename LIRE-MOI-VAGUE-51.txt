@@ -1,0 +1,74 @@
+================================================================
+ TEEBO — VAGUE 51
+ SCRIPT DE TEST : CREATION DU PERSONNEL & HABILITATIONS
+================================================================
+
+CE QUE CONTIENT CETTE LIVRAISON
+-------------------------------
+1. teebo-SERVEUR-vague51.zip
+   Le serveur complet, avec un nouveau script de controle :
+   backend/test/personnel.test.mjs
+
+2. teebo-SITE-vague51.zip
+   Le site (inchange depuis la vague 50, fourni pour un
+   redeploiement complet).
+
+3. CHECKLIST-VAGUE-51.md
+   La liste des controles a passer apres le deploiement.
+
+A QUOI SERT LE SCRIPT
+---------------------
+Il verifie, sur VOTRE serveur et avec VOS donnees, que la gestion du
+personnel et des habilitations (les droits) fonctionne de bout en bout :
+
+  - creer un agent : un code d'acces est bien attribue, l'agent
+    apparait dans l'annuaire, les droits de son poste sont poses ;
+  - modifier un agent : nom, telephone, rattachement a une unite,
+    rattachement a un responsable hierarchique ;
+  - renvoyer le code d'acces, puis le regenerer ;
+  - decocher puis recocher un droit PAR POSTE et un droit PAR PERSONNE,
+    et verifier que le reglage est bien conserve ;
+  - refuser proprement les creations impossibles : nom ou e-mail
+    manquant, e-mail invalide, poste inexistant, agent de collecte sans
+    responsable, agent de collecte avec un responsable non habilite,
+    compte designe comme son propre responsable ;
+  - refuser l'acces aux comptes d'une autre institution (404 / 403),
+    sans jamais toucher aux donnees reelles ;
+  - verifier qu'un agent ordinaire ne peut ni creer de personnel ni
+    modifier les droits.
+
+Le script NETTOIE derriere lui : tout ce qu'il cree est supprime et
+tout ce qu'il modifie est remis en etat, meme si un controle echoue.
+
+COMMENT LE LANCER (aucune installation)
+---------------------------------------
+Sur un poste disposant de Node.js 18 ou plus, dans le dossier backend
+du serveur :
+
+  TEEBO_URL=https://<adresse-de-votre-serveur> \
+  IMF_EMAIL=votre-compte-admin@mon-imf.bf \
+  IMF_PASSWORD='votre-mot-de-passe' \
+  node test/personnel.test.mjs
+
+Resultat attendu : "0 en echec" a la fin.
+Si un ecart apparait, le script indique precisement le point a traiter.
+
+Options :
+  --sans-ecriture      ne fait que les lectures et les refus (aucune
+                       creation) : ideal pour un controle sans trace
+  STAFF_EMAIL / STAFF_PASSWORD
+                       compte d'un agent ordinaire, pour verifier le
+                       refus 403 qui lui est oppose
+  POSTE_TEST           imposer le poste utilise pour l'agent de test
+
+ORDRE DE DEPLOIEMENT
+--------------------
+1. Deployer le SERVEUR en premier (Render) et attendre la fin du build.
+2. Verifier : ouvrir https://<serveur>/healthz -> reponse ok.
+3. Deployer le SITE (Netlify).
+4. Sur chaque poste : Ctrl + Maj + R (le navigateur garde sinon
+   l'ancienne version en cache).
+
+Rappel : sur l'offre gratuite Render, le service s'endort apres une
+periode d'inactivite. Ouvrez le site une fois et patientez une minute
+avant de lancer le script.

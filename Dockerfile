@@ -1,23 +1,28 @@
-# ===================================================================
-# teebo — image du serveur API (Render)
-# ===================================================================
-# CE FICHIER EST À LA RACINE DU PROJET, à côté de backend/, db/, index.html.
+# teebo — image de l'API (production, Render)
 #
-# CORRECTIF 13/11/2026-E — « sh: 0: cannot open ./start.sh: No such file »
-# -------------------------------------------------------------------
-# Cause racine : le Dockerfile ne copiait que backend/package*.json,
-# backend/src et db/. Le fichier backend/start.sh n'était donc JAMAIS copié
-# dans l'image, alors que la commande de démarrage était « sh ./start.sh »
-# exécutée depuis /app/backend. Le conteneur s'arrêtait (code 2) au démarrage.
+# CORRECTIF 13/11/2026-B — « Application exited early » après un démarrage réussi
+# ---------------------------------------------------------------------------
+# Diagnostic : le code précédent lançait la migration en ARRIÈRE-PLAN avec
+# « (node src/migrate.js || true) & exec node src/server.js ». Le serveur
+# démarrait (log « teebo API en écoute sur 0.0.0.0:3000 ») puis tombait en
+# faute de processus principal : l'image se terminait. Render affichait donc
+# « Application exited early », et la migration — tuée avec le conteneur —
+# ne finissait jamais (d'où « Dossier db/ illisible » et « Schéma absent »).
 #
-# Correctif :
-#   1. start.sh est copié dans l'image (COPY backend/start.sh).
-#   2. La commande de démarrage ne dépend plus du fichier shell :
-#      node src/server.js, avec start.sh en repli. Un souci de script ou de
-#      droits ne peut donc plus empêcher le service de démarrer.
-#   3. Copie explicite, une par une, des seules pièces nécessaires
-#      (jamais « COPY . »), pour ne plus jamais échouer sur un fichier absent.
-# ===================================================================
+# Nouvelle logique : UN SEUL processus, au premier plan, qui ne sort jamais.
+#   1. la migration tourne au premier plan (sans risque de blocage : le script
+#      s'arrête seul au plus tard après 120 s) ;
+#   2. le serveur prend ensuite la main (exec, PID 1).
+#
+# Le contexte de build est LE DOSSIER backend/ : aucun fichier du site n'est
+# recopié (c'est Netlify qui sert les pages).
+# CORRECTIF 13/11/2026-C — « ENOENT stat '/frontend/index.html' » et
+# « ReferenceError: req is not defined » : le serveur cherchait un dossier
+# /frontend inexistant et sa gestion d'erreurs plantait. Corrigé dans
+# src/server.js (détection du dossier + redirection vers le site Netlify).
+#
+# On force node:20-bookworm-slim (Debian) : l'image alpine est très lente à
+# démarrer sous Render et a provoqué des sorties prématurées.
 FROM node:20-bookworm-slim
 
 WORKDIR /app
@@ -25,19 +30,18 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# --- Dépendances (dossier backend/) ---
-COPY backend/package.json backend/package-lock.json ./backend/
-RUN cd backend && npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
+# --- Dépendances ---
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
-# --- Code du serveur ---
-COPY backend/src ./backend/src
+# --- Code applicatif ---
+COPY src ./src
 
-# --- Script de démarrage (c'était le fichier manquant) ---
-COPY backend/start.sh ./backend/start.sh
-RUN chmod +x ./backend/start.sh
+# --- Pages servies par l'API (console administrateur, vague 36) ---
+COPY public ./public
 
-# --- Migrations SQL (dossier db/ à la racine) ---
-COPY db ./db
+# --- Migrations SQL (fournies à la racine du contexte de build) ---
+COPY db* ./db/
 
 ENV NODE_ENV=production
 ENV PORT=3000
@@ -46,13 +50,12 @@ ENV APP_DIR=/app
 ENV TEEBO_DB_DIR=/app/db
 ENV MIGRATION_MAX_MS=120000
 
-WORKDIR /app/backend
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=5 \
   CMD curl -fsS http://127.0.0.1:3000/healthz || exit 1
 
-# Le serveur démarre en PREMIER (port ouvert immédiatement), puis la migration
-# tourne en tâche de fond : une base endormie ne retarde plus la mise en ligne.
-# Démarrage direct par node : ne dépend d'aucun fichier shell.
-CMD ["node", "src/server.js"]
+# Le serveur démarre en PREMIER (port ouvert tout de suite), puis la migration
+# tourne en tâche de fond : une base endormie ne retarde plus la mise en ligne
+# et ne peut plus provoquer « Application exited early ».
+CMD ["sh", "./start.sh"]

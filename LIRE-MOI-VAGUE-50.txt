@@ -1,0 +1,63 @@
+teebo — VAGUE 50 — chaine d'acces complete + test Gouvernance + procedure IMF
+==========================================================================
+
+A. CORRECTIF PRINCIPAL — l'acces d'une nouvelle IMF va jusqu'au bout
+   Constat : une demande deposee sur le site pouvait etre approuvee alors
+   qu'AUCUN compte n'existait pour cette institution. Le nouvel IMF etait
+   « ouvert » mais personne ne pouvait se connecter.
+
+   Desormais, le bouton « Approuver » (console editeur -> Demandes d'acces) :
+     1. cree le compte administrateur de l'IMF (nom, e-mail et telephone
+        saisis par le prospect dans le formulaire) ;
+     2. lui attribue son code d'acces TBO-CC-NNNNNN-U00001 ;
+     3. met en place la structure de depart (direction, departements,
+        services) ;
+     4. ouvre l'essai gratuit de 30 jours ;
+     5. transmet le code par WhatsApp et/ou e-mail, avec le lien
+        https://teebo-imf.netlify.app/login ;
+     6. renvoie a l'ecran le code, le resultat de l'envoi et la marche a
+        suivre, en francais.
+
+   Le mot de passe n'est jamais cree par teebo : l'administrateur cree le sien
+   au premier acces, puis active la double authentification.
+   Si un compte administrateur existait deja, il est reactive et son code
+   reste valable (aucun doublon).
+
+   Un identifiant de demande illisible renvoie maintenant un refus propre
+   (404) au lieu d'une erreur 500.
+
+B. NOUVEAU — TEST DE NON-REGRESSION DU MODULE GOUVERNANCE
+   test/governance.test.mjs        (44 controles)
+   test/CHECKLIST-VAGUE-50.md      mode d'emploi
+
+   Lancement (Node 18+, aucune installation) :
+     TEEBO_URL=https://teebo-api-p825.onrender.com \
+     IMF_EMAIL=admin@mon-imf.bf IMF_PASSWORD='...' \
+     node test/governance.test.mjs
+
+   Ce qui est verifie :
+     - les 12 ecrans de lecture + le rapport PDF (aucune erreur 500) ;
+     - le cloisonnement : un identifiant inconnu ou appartenant a une autre
+       IMF est toujours refuse (404), jamais modifie ;
+     - un agent sans habilitation ne peut pas ecrire (403) ;
+     - cycle complet creation / modification / suppression sur organe,
+       membre, mandat, session, resolution et detenteur de capital.
+   Tout ce qui est cree porte le prefixe [TEST-TECHNIQUE] et est supprime a
+   la fin (meme en cas d'echec). Option --sans-ecriture pour ne rien creer.
+
+C. NOUVEAU — PROCEDURE DE L'ADMINISTRATEUR IMF
+   PROCEDURE-ADMIN-IMF.md (livree aussi separement)
+   8 etapes : demande d'acces, reception du code, premiere connexion,
+   parametres de l'institution, organisation, personnel, habilitations,
+   travail quotidien — plus un tableau de depannage.
+
+D. VERIFICATION APRES DEPLOIEMENT
+   1. Deployer, puis ouvrir le site une fois (reveil du service gratuit).
+   2. Executer test/governance.test.mjs -> « 0 en echec ».
+   3. Approuver une demande de test -> le code doit s'afficher et arriver.
+   4. Faire Ctrl + Maj + R sur chaque poste (cache du navigateur).
+
+E. CE QUI N'A PAS CHANGE
+   Aucune donnee n'est supprimee. Les migrations se jouent automatiquement
+   au demarrage du serveur. Le site (Netlify) n'a pas besoin d'etre redeploye
+   pour ces correctifs : ils sont uniquement cote serveur.
