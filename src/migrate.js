@@ -16,8 +16,11 @@ import { pool, q } from './db.js';
 const MIGRATION_MAX_MS = Number(process.env.MIGRATION_MAX_MS || 120000);
 const watchdog = setTimeout(() => {
   console.error('!! Migration interrompue apres ' + Math.round(MIGRATION_MAX_MS / 1000) +
-    ' s (base lente ou verrou). Le serveur demarre ; les schemas seront rattrapes.');
-  process.exit(0);
+    ' s (base lente ou verrou). Les schemas restants seront rattrapes au prochain demarrage.');
+  // CORRECTIF 52 : on ne tue le processus QUE si la migration tourne seule
+  // (ligne de commande). Quand elle tourne dans le serveur, couper le processus
+  // rendait l'API injoignable (502) : on se contente d'abandonner la migration.
+  if (process.env.TEEBO_MIGRATE_STANDALONE === '1') process.exit(0);
 }, MIGRATION_MAX_MS);
 watchdog.unref && watchdog.unref();
 
@@ -54,16 +57,45 @@ async function main() {
     return false;
   }
 
-  // Est-ce deja migre ? On evite ainsi de rejouer 29 scripts SQL a chaque
-  // redemarrage (Render redemarre souvent sur l'offre gratuite).
+  // CORRECTIF 52 — CAUSE RACINE DU BUG « relation saas_modules_pricing does
+  // not exist » : l'ancien test « la base est deja a jour ? » se contentait de
+  // regarder deux tables du socle. Comme elles existaient, la migration
+  // s'arretait la « pour toujours » : les vagues 33 et suivantes (tarifs des
+  // modules, abonnements, vues et fonctions SaaS) n'ont JAMAIS été appliquées
+  // en production. On remplace ce test par un VRAI marqueur : la table
+  // schema_migrations retient, fichier par fichier, ce qui a été appliqué.
+  let dejaAppliques = new Set();
   try {
-    const v = await q("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='app_user'");
-    const o = await q("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='detenteurs_capital'");
-    if (v.rows.length && o.rows.length) {
-      console.log('Base déjà à jour (schema v33) : migration ignorée.');
-      return true;
+    await q(`CREATE TABLE IF NOT EXISTS schema_migrations (
+               filename TEXT PRIMARY KEY,
+               applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+               note TEXT)`);
+    const base = await q("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='app_user'");
+    const nb = await q('SELECT count(*)::int AS n FROM schema_migrations');
+    if (base.rows.length && (nb.rows[0].n || 0) === 0) {
+      // Base historique : le socle (jusqu'a la vague 32) est forcement passe.
+      // On le marque pour ne pas le rejouer, et on laisse la main aux vagues
+      // 33+ : ce sont exactement celles qui manquaient.
+      await q(`INSERT INTO schema_migrations (filename, note)
+                 SELECT f, 'socle historique (vague <= 32)'
+                   FROM unnest($1::text[]) AS f
+               ON CONFLICT DO NOTHING`,
+        [['schema.sql','schema_v3.sql','schema_v4.sql','schema_v5.sql','schema_v6.sql',
+          'schema_v7.sql','schema_v8.sql','schema_v9.sql','schema_v10.sql','schema_v11.sql',
+          'schema_v12.sql','schema_v13.sql','schema_v14.sql','schema_v15.sql','schema_v16.sql',
+          'schema_v17.sql','schema_v18.sql','schema_v19.sql','schema_v20.sql','schema_v21.sql',
+          'schema_v22.sql','schema_v23.sql','schema_v24.sql','schema_v25.sql','schema_v26.sql',
+          'schema_v27.sql','schema_v28.sql','schema_v29.sql','schema_v30.sql','schema_v31.sql',
+          'schema_v32.sql']]);
+      console.log('[migration] Marqueur initialise : socle (<= v32) considere comme applique. ' +
+        'Les vagues 33+ vont etre appliquees.');
+    } else if (base.rows.length) {
+      console.log('[migration] Marqueur present : ' + nb.rows[0].n + ' schema(s) deja applique(s).');
     }
-  } catch (e) { /* on continue, la migration verra */ }
+  } catch (e) {
+    console.error('[migration] Marqueur indisponible (' + (e && (e.code || e.message)) +
+      ') : tous les schemas seront rejoues, sans danger (scripts idempotents).');
+  }
 
   // Applique les schémas dans l'ordre : socle puis extensions (VAGUE 7).
   // CORRECTIF VAGUE 34 : la liste etait ecrite a la main et s'arretait a
@@ -115,8 +147,24 @@ async function main() {
   if (!schemaFiles.length) {
     schemaFiles = ['schema.sql', 'schema_v30.sql', 'schema_v31.sql', 'schema_v32.sql', 'schema_v33.sql'];
   }
-  console.log('Schemas a appliquer : ' + schemaFiles.join(', '));
-  for (const file of schemaFiles) {
+  // Relit le marqueur pour ne rejouer que les schemas jamais appliques.
+  try {
+    const r = await q('SELECT filename FROM schema_migrations');
+    r.rows.forEach((x) => dejaAppliques.add(x.filename));
+  } catch (e) { /* table absente : on rejoue tout */ }
+  const aFaire = schemaFiles.filter((f) => !dejaAppliques.has(f));
+  if (!aFaire.length) {
+    console.log('Tous les schemas sont deja appliques (' + schemaFiles.length + ' fichiers).');
+  } else {
+    console.log('Schemas a appliquer (' + aFaire.length + '/' + schemaFiles.length + ') : ' + aFaire.join(', '));
+  }
+
+  const marquer = async (file, note) => {
+    try { await q('INSERT INTO schema_migrations (filename, note) VALUES ($1,$2) ON CONFLICT DO NOTHING', [file, note || null]); }
+    catch (e) { /* marqueur facultatif */ }
+  };
+
+  for (const file of aFaire) {
     const schemaPath = path.resolve(dbDir, file);
     if (!fs.existsSync(schemaPath)) {
       console.log('Schéma absent, ignoré : ' + file);
@@ -136,10 +184,12 @@ async function main() {
       await client.query(sql);
       await client.query('COMMIT');
       console.log('Schéma appliqué : ' + file);
+      await marquer(file, 'applique');
     } catch (e) {
       try { await client.query('ROLLBACK'); } catch (_) { /* session déjà fermée */ }
       if (/already exists/.test(e.message)) {
         console.log('Schéma déjà présent (' + file + '), on continue.');
+        await marquer(file, 'deja present');
       } else {
         // Un schema qui echoue ne doit PAS faire echouer le demarrage :
         // le serveur se met en ligne, l'etat reste visible dans /ready,

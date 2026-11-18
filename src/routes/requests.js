@@ -4,7 +4,7 @@ import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL, verifyDocToke
 import { getBranding, renderInvoice, moneyFcfa, setDocumentCsp } from '../documents.js';
 import {
   computePricing, buildInvoiceLines, normalizeModules, catalogModule,
-  BILLING_CYCLES, LICENCE_CENTS, TRIAL_BILLING_NOTE, MODULE_KEYS
+  BILLING_CYCLES, LICENCE_CENTS, TRIAL_BILLING_NOTE, MODULE_KEYS, MODULE_CATALOG
 } from '../pricing.js';
 
 const router = express.Router();
@@ -89,12 +89,29 @@ async function ensureRequestSchema() {
 // un prix bricolé dans le navigateur n'a donc aucun effet.
 router.get('/plans', async (req, res, next) => {
   try {
-    const { rows } = await q(
-      `SELECT p.module_key AS code, p.module_name AS label,
-              p.monthly_subscription_price::bigint AS price_cents,
-              p.is_available, p.position AS sort_order
-         FROM saas_modules_pricing p
-        ORDER BY p.position, p.module_key`);
+    // CORRECTIF 52 : si la table des tarifs n'existe pas encore (migration
+    // partielle), on NE renvoie PLUS une erreur 500 : le catalogue du code
+    // (pricing.js) est la reference et suffit a afficher la grille.
+    let rows = [];
+    try {
+      ({ rows } = await q(
+        `SELECT p.module_key AS code, p.module_name AS label,
+                p.monthly_subscription_price::bigint AS price_cents,
+                p.is_available, p.position AS sort_order
+           FROM saas_modules_pricing p
+          ORDER BY p.position, p.module_key`));
+    } catch (e) {
+      console.error('[plans] table de tarifs indisponible, catalogue du code utilise :', e && (e.code || e.message));
+      rows = [];
+    }
+    if (!rows.length) {
+      // Catalogue de secours : libelles, prix et descriptions viennent du code.
+      rows = MODULE_CATALOG.map((m) => ({
+        code: m.key, label: m.label,
+        price_cents: m.monthlyCents, is_available: true,
+        sort_order: MODULE_CATALOG.indexOf(m) * 10 + 10
+      }));
+    }
     const catalogue = rows.map((r) => ({
       code: r.code,
       label: r.label,
@@ -269,11 +286,29 @@ router.post('/:id/select-plan', async (req, res, next) => {
       message: 'Choisissez au moins un module pour établir la proforma.' });
     const billing = BILLING_CYCLES.includes(billing_cycle) ? billing_cycle : 'mensuel';
     // Tarifs lus en BASE (source de vérité), jamais envoyés par le navigateur.
-    const { rows: modRows } = await q(
-      `SELECT module_key AS code, module_name AS label,
-              monthly_subscription_price::bigint AS price_cents
-         FROM saas_modules_pricing WHERE module_key = ANY($1)`, [codes]);
-    if (!modRows.length) return res.status(404).json({ error: 'module_not_found' });
+    let modRows = [];
+    try {
+      ({ rows: modRows } = await q(
+        `SELECT module_key AS code, module_name AS label,
+                monthly_subscription_price::bigint AS price_cents
+           FROM saas_modules_pricing WHERE module_key = ANY($1)`, [codes]));
+    } catch (e) {
+      // Table absente (migration partielle) : on continue avec le catalogue
+      // du code, sinon la proforma etait impossible a generer.
+      console.error('[select-plan] table de tarifs indisponible :', e && (e.code || e.message));
+      modRows = [];
+    }
+    if (!modRows.length) {
+      // Les modules demandes sont connus du catalogue : on les facture au
+      // tarif officiel du code plutot que d'echouer.
+      const connus = codes.filter((c) => catalogModule(c));
+      if (!connus.length) return res.status(404).json({ error: 'module_not_found',
+        message: 'Ces modules ne sont pas reconnus. Choisissez-les dans la liste affichee.' });
+      modRows = connus.map((c) => {
+        const m = catalogModule(c);
+        return { code: c, label: m.label, price_cents: m.monthlyCents };
+      });
+    }
     const modules = normalizeModules(modRows.map((m) => ({
       key: m.code, label: m.label, monthlyCents: Number(m.price_cents) })));
     const pr = computePricing(modules, billing, { fullPack: true });
