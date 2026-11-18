@@ -42,3 +42,24 @@ CE QUI CHANGE DANS LE SERVEUR
  Aucun test en ligne n'a pu être fait de mon côté : la confirmation vient
  de votre déploiement. En cas de souci, envoyez la capture du journal
  Render en entier.
+
+=====================================================================
+ AJOUT 18/11/2026 — SESSION QUI DURE TOUTE LA JOURNEE
+=====================================================================
+ 1. Inactivite : 8 heures par defaut (au lieu de 60 minutes). La variable
+    IDLE_MINUTES reste lisible, mais toute valeur inferieure a 60 minutes
+    est ignoree : plus de deconnexion en pleine saisie.
+ 2. Cookie de session : 30 jours, et il est PROLONGE par le serveur a
+    chaque activite (au plus une fois toutes les 10 minutes). Avant, il
+    mourait au bout d'une heure sans jamais se renouveler.
+ 3. La balise d'activite de l'ecran passe toutes les 4 minutes.
+ 4. Defaut de securite conserve : le compteur repart a chaque requete, un
+    vrai abandon de poste finit donc par fermer la session.
+
+A FAIRE EN PLUS, DANS RENDER (1 minute)
+ 1. Onglet « Environment » du service teebo-api-p825.
+ 2. Si une ligne IDLE_MINUTES existe (par exemple 10), supprimez-la avec
+    la corbeille, puis « Save changes ». Le service redemarre seul.
+
+DEPLOIEMENT : Render > Deploys > Manual Deploy > Clear build cache et
+deploy, en envoyant tout le contenu du dossier decompresse.
