@@ -1,0 +1,88 @@
+teebo — API : correctif 53 « la base n'avait jamais recu les vagues 33+ »
+===========================================================================
+
+1. CE QUE MONTRE VOTRE DERNIERE CAPTURE RENDER
+---------------------------------------------------------------------------
+   « Deploy succeeded | Live » : le demarrage est REGLE (le correctif 52 a
+   fonctionne). Le serveur repond, la migration se lance, la reparation passe
+   (« 33 objets verifies/crees »).
+
+   Mais une erreur reste dans le journal :
+     ERREUR GET /api/v1/requests/plans -> 500 missing_table
+     cause : relation "saas_modules_pricing" does not exist
+
+   Traduction : la table qui contient les TARIFS DES MODULES n'existe pas
+   dans votre base. Ce n'est pas un bug du site : la base n'a jamais recu les
+   vagues de migration 33 et suivantes.
+
+2. LA VRAIE CAUSE (pourquoi cela revenait sans arret)
+---------------------------------------------------------------------------
+   L'ancien programme de migration commencait par cette question :
+     « les tables app_user et detenteurs_capital existent-elles ? »
+   Si oui, il affichait « Base deja a jour (schema v33) » et s'arretait.
+   Ces deux tables datant des premieres vagues, la reponse etait toujours OUI :
+   les vagues 33 a 52 (tarifs, abonnements, licences, factures, fonctions
+   d'essai...) n'ont donc JAMAIS ete jouees en production.
+   Comme la grille tarifaire et la console lisent ces tables, elles tombaient
+   en erreur 500, et le site affichait « Une erreur est survenue ».
+
+3. CE QUI EST CORRIGE DANS CE PAQUET
+---------------------------------------------------------------------------
+   a) Le programme de migration ne devine plus : il tient un registre
+      (table schema_migrations) des fichiers deja joues. Sur votre base, il
+      marque le socle (jusqu'a la vague 32) comme deja fait, puis applique
+      ENFIN les vagues 33 a 52, fichier par fichier, chacun dans sa propre
+      transaction. Un fichier en echec est signale mais n'empeche pas les
+      autres.
+   b) La grille tarifaire ne peut plus renvoyer 500 : si la table des tarifs
+      est absente ou vide, l'API renvoie le catalogue officiel du code
+      (75 000 / 100 000 / 25 000 / 100 000 FCFA par mois). Le formulaire
+      s'affiche donc dans tous les cas.
+   c) La demande de devis (proforma) ne peut plus echouer pour la meme raison :
+      elle facture au tarif officiel si la table manque.
+   d) La reparation au demarrage cree desormais aussi : tarifs des modules,
+      reglages globaux, abonnements par IMF, statut de licence, factures et
+      lignes de facture. Vos tarifs deja personnalises ne sont jamais ecrases
+      (ON CONFLICT DO NOTHING).
+   e) Le minuteur de securite de la migration ne coupe plus le serveur :
+      avant, au-dela de 2 minutes, il arretait tout le processus (donc 502).
+
+4. COMMENT DEPLOYER (5 minutes)
+---------------------------------------------------------------------------
+   a) Decompressez l'archive teebo-api-render-v53.zip.
+      Vous devez voir DIRECTEMENT :
+        Dockerfile   package.json   package-lock.json   start.sh
+        src/   public/   db/   DEPLOIEMENT-RENDER.txt   LIRE-MOI-CORRECTIF-53.txt
+   b) Render > service teebo-api-p825 > onglet Deploys >
+      bouton « Manual Deploy » > « Clear build cache & deploy ».
+      Puis envoyez TOUT le contenu du dossier decompresse (Dockerfile inclus,
+      a la racine — pas le dossier parent).
+   c) Attendez « Live », puis laissez le service travaille 1 a 3 minutes :
+      il rattrape les vagues 33 a 52 en tache de fond.
+
+5. VERIFIER (dans cet ordre, dans le navigateur)
+---------------------------------------------------------------------------
+   1) https://teebo-api-p825.onrender.com/healthz
+        -> {"ok":true}
+   2) https://teebo-api-p825.onrender.com/ready
+        -> "pret": true, "migration": "terminee", "reparation": "ok"
+        (si "reparation": "partielle (n)", notez le nombre et dites-le moi)
+   3) https://teebo-api-p825.onrender.com/api/v1/requests/plans
+        -> une liste de 4 modules avec leurs prix. Si vous voyez cette liste,
+           le blocage de la grille tarifaire est termine.
+   4) Formulaire public « Demander un acces » > etape 2 : les 4 modules
+      s'affichent avec les prix, sans bandeau rouge.
+
+   Rappel : offre gratuite = le service s'endort apres 15 min d'inactivite ;
+   le premier appel peut prendre jusqu'a 50 secondes. C'est normal.
+
+6. SI UNE ERREUR APPARAIT ENCORE
+---------------------------------------------------------------------------
+   Envoyez-moi la capture du journal Render en entier (pas seulement la
+   derniere ligne) : les lignes « Schema applique : ... » et
+   « !! Schema en echec (...) : ... » disent exactement quel fichier bloque,
+   et je corrige celui-la precisement.
+
+   Aucun test en ligne n'a pu etre fait de mon cote : ces correctifs sont
+   verifies par analyse et par controle de syntaxe, la confirmation vient de
+   votre deploiement.

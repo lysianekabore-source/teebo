@@ -1,19 +1,17 @@
 teeBo API — deploiement Render : la bonne methode
 ============================================================
 
-ETAT VERIFIE LE 18/11/2026 A 09h30
+ETAT VERIFIE LE 18/11/2026 (matin)
 ------------------------------------------------------------
-  https://teebo-api-p825.onrender.com/healthz  ->  HTTP 502
-
-  Un 502 ne vient PAS de l'application : il signifie qu'aucun processus
-  n'ecoute derriere l'adresse. Le conteneur est arrete ou n'a pas demarre.
-  C'est la raison des trois messages empiles sur l'ecran « Demander un
-  acces » : le site interrogeait un serveur absent.
+  Deploiement « Live » obtenu ; le serveur demarre et la reparation passe.
+  Reste une erreur de BASE : la table des tarifs (saas_modules_pricing)
+  n'existe pas, car les vagues de migration 33 et suivantes n'ont jamais ete
+  jouees. Le paquet v53 corrige cela (voir LIRE-MOI-CORRECTIF-53.txt).
 
 
 OPTION A (recommandee) — REDEPLOYER LE PAQUET CORRIGE
 ------------------------------------------------------------
-  1. Decompressez teebo-api-render-v52.zip.
+  1. Decompressez teebo-api-render-v53.zip.
      A la racine vous devez voir : Dockerfile, src/, db/, public/,
      start.sh, package.json, package-lock.json.
   2. Render > teebo-api-p825 > onglet Deploys > Manual Deploy >
@@ -22,8 +20,13 @@ OPTION A (recommandee) — REDEPLOYER LE PAQUET CORRIGE
   3. Regardez le journal jusqu'au bout. Vous devez lire :
         ==> Demarrage du serveur API ...
         teebo API en ecoute sur 0.0.0.0:3000
-     Si vous lisez encore « cannot open ./start.sh », c'est que l'ancien
-     Dockerfile a ete utilise : le paquet n'a pas ete pris en compte.
+        [migration] Marqueur initialise : socle (<= v32) considere comme applique.
+        Schemas a appliquer (18/49) : schema_v33.sql, ... schema_v52.sql
+        Schema applique : schema_v33.sql  (etc.)
+        Etat migration : terminee
+        [schema] reparation ... : N objet(s) verifie(s)/cree(s)
+     Si un fichier echoue, la ligne « !! Schema en echec (schema_vXX.sql) »
+     indique lequel : envoyez-la moi, je corrige ce fichier precisement.
 
 
 OPTION B (blindee) — SERVICE SANS DOCKER
@@ -44,17 +47,19 @@ OPTION B (blindee) — SERVICE SANS DOCKER
      (fichier de configuration du site) et supprimez l'ancien service.
 
 
-APRES LE DEPLOIEMENT — VERIFICATIONS (2 minutes)
+APRES LE DEPLOIEMENT — VERIFICATIONS (3 minutes)
 ------------------------------------------------------------
   a) https://teebo-api-p825.onrender.com/healthz
         -> {"ok":true}
   b) https://teebo-api-p825.onrender.com/ready
-        -> "pret": true   et   "reparation": "ok"
-  c) https://teebo-api-p825.onrender.com/api/v1/uemoa-countries
-        -> la liste des 8 pays (Benin, Burkina, Cote d'Ivoire, Guinee-Bissau,
-           Mali, Niger, Senegal, Togo)
-  d) Sur le site : Ctrl + Maj + Suppr, puis rechargez, puis testez
-     « Demander un acces ».
+        -> "pret": true, "migration": "terminee", "reparation": "ok"
+  c) https://teebo-api-p825.onrender.com/api/v1/requests/plans
+        -> les 4 modules avec leurs prix (75 000 / 100 000 / 25 000 /
+           100 000 FCFA par mois) et la licence a 250 000 FCFA
+  d) https://teebo-api-p825.onrender.com/api/v1/uemoa-countries
+        -> la liste des 8 pays de l'UEMOA
+  e) Sur le site : Ctrl + Maj + Suppr, rechargez, puis testez
+     « Demander un acces » (etape 2 : les 4 modules s'affichent).
 
   Rappel : offre gratuite = mise en veille apres 15 min sans visite ;
   le premier appel peut demander jusqu'a 50 secondes. Un 502 qui dure
