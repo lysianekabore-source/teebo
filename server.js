@@ -250,7 +250,8 @@ app.get('/ready', async (_req, res) => {
   res.status(pret ? 200 : 503).json({
     pret, base, tables, essai: etat.essai || 'en attente',
     ...(manquantes.length ? { tables_manquantes: manquantes } : {}),
-    migration: etat.migration, erreur: etat.erreur, depuis: etat.demarre
+    migration: etat.migration, reparation: etat.reparation || 'en attente',
+    erreur: etat.erreur, depuis: etat.demarre
   });
 });
 
@@ -273,6 +274,21 @@ async function lancerMigration() {
     etat.migration = ok ? 'terminee' : 'reportee';
     etat.erreur = ok ? null : 'Base injoignable pour le moment';
     console.log('Etat migration : ' + etat.migration);
+    // CORRECTIF VAGUE 52 : migrate() s'arrete des que la base est « deja a jour »
+    // et ne rejoue donc jamais les correctifs plus recents sur une base existante.
+    // On applique ici, a chaque demarrage, une reparation ciblee et idempotente
+    // des objets manquants (statut 'deleted', colonnes de access_request,
+    // mentions legales). Un echec est journalise mais ne bloque jamais le service.
+    if (ok) {
+      try {
+        const { reparerSchemaConsole } = await import('./schema_repair.js');
+        const rep = await reparerSchemaConsole();
+        etat.reparation = rep.ok ? 'ok' : ('partielle (' + rep.echecs.length + ')');
+      } catch (e) {
+        etat.reparation = 'differee';
+        console.error('[schema] reparation non executee :', e && (e.message || e));
+      }
+    }
     // VAGUES 44 + 45 : rattrapage des IMF passees en essai AVANT ce deploiement
     // (les IMF qui s inscrivent APRES ne sont PAS basculees : voir schema_v45.sql).
     // Une seule passe apres une migration reussie ; chaque IMF est isolee et

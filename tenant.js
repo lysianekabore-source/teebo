@@ -23,13 +23,16 @@ function isUuid(v) {
 export function tenantContext(req, res, next) {
   const u = req.user;
   if (!u) { req.dbImfId = null; req.tenant = null; return next(); }
+  // CORRECTIF 51 : un en-tete laisse par un autre onglet ne doit jamais
+  // bloquer une requete (comparaison insensible a la casse, espaces ignores).
+  const hdrTenant = String(req.headers[TENANT_HEADER] || '').trim();
 
   let imfId = u.imf_id || null;
   let switched = false;
 
   // MB-05 : l'éditeur peut viser une IMF précise pour le support.
   if (u.role === PLATFORM_ROLE) {
-    const asked = req.headers[TENANT_HEADER];
+    const asked = hdrTenant;
     if (asked) {
       if (!isUuid(asked)) {
         return res.status(400).json({
@@ -44,8 +47,8 @@ export function tenantContext(req, res, next) {
 
   // MB-02 : divergence impossible côté IMF classique. Si la session portait
   // déjà une IMF et que l'en-tête tente d'en imposer une autre, on REFUSE.
-  if (u.role !== PLATFORM_ROLE && req.headers[TENANT_HEADER] &&
-      req.headers[TENANT_HEADER] !== u.imf_id) {
+  if (u.role !== PLATFORM_ROLE && hdrTenant &&
+      hdrTenant.toLowerCase() !== String(u.imf_id || '').toLowerCase()) {
     return res.status(403).json({
       error: 'tenant_mismatch',
       message: 'Changez d’institution n’est pas autorisé pour ce compte.'

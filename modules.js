@@ -168,7 +168,7 @@ export function REQUIRED_MODULE_FOR_PATH(pathname) {
   const path = String(pathname || '').toLowerCase();
   if (!path.startsWith('/')) return null;
   const FREE = ['/auth', '/institution', '/settings', '/me', '/devices', '/saas',
-                '/notifications', '/requests', '/teebo', '/health', '/ready'];
+                '/notifications', '/requests', '/teebo', '/super-admin', '/health', '/ready'];
   // /saas : abonnement et factures — doivent rester accessibles même si un
   // module est coupé, sinon l'IMF ne pourrait plus le réactiver.
   if (FREE.some((f) => path === f || path.startsWith(f + '/'))) return null;

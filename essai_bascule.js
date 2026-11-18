@@ -79,6 +79,20 @@ export async function rattraperEssaisAuDemarrage() {
     console.log('[essai] rattrapage différé : base non joignable (' + (e && (e.code || e.message)) + ')');
     return { ok: false, motif: 'base_indisponible' };
   }
+  // CORRECTIF 51 : on ne tente le rattrapage que si les fonctions SQL sont
+  // bien presentes (sinon PostgreSQL repond 42883 et l'ecran /ready signalait
+  // une « erreur » alors que rien n'etait casse).
+  try {
+    const { rows: pre } = await q(
+      `SELECT to_regprocedure('public.fn_basculer_imfs_en_essai(uuid)') IS NOT NULL AS ok,
+              to_regprocedure('public.fn_reference_bascule_essai()') IS NOT NULL AS ref`);
+    if (!pre[0] || !pre[0].ok || !pre[0].ref) {
+      console.log('[essai] rattrapage differe : fonctions SQL de la vague 45 absentes (migration a finir).');
+      return { ok: false, motif: 'fonctions_absentes' };
+    }
+  } catch (e) {
+    return { ok: false, motif: (e && e.code) || 'erreur' };
+  }
   try {
     // La fonction SQL itère et isole chaque IMF (voir schema_v44.sql).
     const { rows } = await q('SELECT fn_basculer_imfs_en_essai(NULL) AS r');
