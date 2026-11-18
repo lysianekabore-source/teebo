@@ -10,7 +10,7 @@ import httpMod from 'http';
 import { fileURLToPath } from 'url';
 
 import { q, tx, pool } from './db.js';
-import { authenticate, requireFreshPassword, requireRole, createSession } from './auth.js';
+import { authenticate, attachUser, requireFreshPassword, requireRole, createSession } from './auth.js';
 import authRoutes, { court as authCourtesRoutes } from './routes/auth.js';
 import { tenantContext } from './tenant.js';
 import { checkModuleActivation } from './modules.js';
@@ -103,6 +103,10 @@ app.use((req, _res, next) => {
 });
 app.use(express.json({ limit: '12mb' }));
 app.use(cookieParser());
+// CORRECTIF 18/11/2026 : identifie l'utilisateur pour TOUTE l'API, avant les
+// routeurs. Les routeurs qui oubliaient authenticate ne renvoient plus un
+// 401 trompeur qui ejectait l'utilisateur vers la page de connexion.
+app.use('/api/v1', attachUser);
 
 // Limitation des tentatives (anti brute-force)
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });

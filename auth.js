@@ -134,6 +134,60 @@ export async function authenticate(req, res, next) {
   }
 }
 
+/**
+ * CORRECTIF 18/11/2026 — « chaque clic sur Clients éjecte l'utilisateur ».
+ * Cause racine : plusieurs routeurs métier (clients, caisse, crédit, collecte,
+ * terminaux, visibilité…) n'appelaient pas authenticate. Leurs gardes
+ * (requireRole, habilit) recevaient donc req.user vide et répondaient
+ * 401 « not_authenticated » : l'écran croyait la session morte et renvoyait
+ * à la page de connexion.
+ *
+ * attachUser est un filet de sécurité GLOBAL, monté avant tous les routeurs :
+ *  - si un cookie de session valide existe, il renseigne req.user ;
+ *  - sinon il laisse passer SANS répondre (les routes publiques continuent de
+ *    fonctionner, et les routes protégées refusent elles-mêmes).
+ * Il ne renvoie jamais d'erreur : aucune panne de base ne peut déconnecter.
+ */
+export async function attachUser(req, res, next) {
+  if (req.user) return next();
+  try {
+    const token = req.cookies?.teebo_session;
+    if (!token) return next();
+    const { rows } = await q(
+      `SELECT s.id AS session_id, s.last_seen_at, s.expires_at, s.revoked,
+              u.id, u.imf_id, u.role, u.email, u.full_name, u.code_user,
+              u.position_code, u.password_set_at, u.must_change_password, u.is_active
+         FROM session s JOIN app_user u ON u.id = s.user_id
+        WHERE s.token_hash = $1`, [hashToken(token)]
+    );
+    if (!rows.length) return next();
+    const row = rows[0];
+    if (row.revoked || !row.is_active) return next();
+    if (!row.expires_at || new Date(row.expires_at) < new Date()) return next();
+    const lastSeen = row.last_seen_at ? new Date(row.last_seen_at).getTime() : Date.now();
+    const idleMs = Date.now() - lastSeen;
+    if (idleMs > idleMinutes() * 60 * 1000) return next();
+    if (idleMs > 60 * 1000) {
+      await q('UPDATE session SET last_seen_at = now() WHERE id = $1', [row.session_id]);
+    }
+    if (idleMs > 10 * 60 * 1000) {
+      try { res.cookie('teebo_session', token, cookieOptions()); } catch (e) {}
+    }
+    req.user = {
+      id: row.id, imf_id: row.imf_id, role: row.role, email: row.email,
+      full_name: row.full_name, code_user: row.code_user,
+      position_code: row.position_code || null,
+      password_set_at: row.password_set_at,
+      must_change_password: row.must_change_password
+    };
+    req.sessionId = row.session_id;
+    req.passwordExpired = isPasswordExpired(row.password_set_at);
+    return next();
+  } catch (e) {
+    return next();   // jamais de déconnexion à cause d'une erreur technique
+  }
+}
+
 /** Bloque l'accès aux routes métier si le mot de passe doit être changé/expiré. */
 export function requireFreshPassword(req, res, next) {
   if (req.user.must_change_password || req.passwordExpired) {
