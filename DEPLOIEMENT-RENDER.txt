@@ -1,0 +1,62 @@
+teeBo API — deploiement Render : la bonne methode
+============================================================
+
+ETAT VERIFIE LE 18/11/2026 A 09h30
+------------------------------------------------------------
+  https://teebo-api-p825.onrender.com/healthz  ->  HTTP 502
+
+  Un 502 ne vient PAS de l'application : il signifie qu'aucun processus
+  n'ecoute derriere l'adresse. Le conteneur est arrete ou n'a pas demarre.
+  C'est la raison des trois messages empiles sur l'ecran « Demander un
+  acces » : le site interrogeait un serveur absent.
+
+
+OPTION A (recommandee) — REDEPLOYER LE PAQUET CORRIGE
+------------------------------------------------------------
+  1. Decompressez teebo-api-render-v52.zip.
+     A la racine vous devez voir : Dockerfile, src/, db/, public/,
+     start.sh, package.json, package-lock.json.
+  2. Render > teebo-api-p825 > onglet Deploys > Manual Deploy >
+     « Clear build cache & deploy » (ou « Add files via upload » puis
+     selectionnez tout le contenu du dossier).
+  3. Regardez le journal jusqu'au bout. Vous devez lire :
+        ==> Demarrage du serveur API ...
+        teebo API en ecoute sur 0.0.0.0:3000
+     Si vous lisez encore « cannot open ./start.sh », c'est que l'ancien
+     Dockerfile a ete utilise : le paquet n'a pas ete pris en compte.
+
+
+OPTION B (blindee) — SERVICE SANS DOCKER
+------------------------------------------------------------
+  Le probleme vient du fichier de construction de l'image. En passant en
+  execution Node, ce fichier n'existe plus : l'erreur ne peut plus revenir.
+
+  1. Render > New + > Web Service.
+  2. Connectez le meme depot (ou ajoutez les fichiers), Runtime : Node.
+  3. Build Command :   npm ci --omit=dev
+     Start Command :   node src/server.js
+  4. Recopiez les variables d'environnement du service actuel
+     (Settings > Environment) : DATABASE_URL, TEEBO_ADMIN_EMAIL,
+     TEEBO_ADMIN_PASSWORD, TEEBO_WHATSAPP, TEEBO_EMAIL, PUBLIC_SITE_URL,
+     DOC_LINK_SECRET, SMTP_*, WHATSAPP_*.
+  5. Health Check Path : /healthz
+  6. Une fois « Live », mettez a jour l'adresse utilisee par le site
+     (fichier de configuration du site) et supprimez l'ancien service.
+
+
+APRES LE DEPLOIEMENT — VERIFICATIONS (2 minutes)
+------------------------------------------------------------
+  a) https://teebo-api-p825.onrender.com/healthz
+        -> {"ok":true}
+  b) https://teebo-api-p825.onrender.com/ready
+        -> "pret": true   et   "reparation": "ok"
+  c) https://teebo-api-p825.onrender.com/api/v1/uemoa-countries
+        -> la liste des 8 pays (Benin, Burkina, Cote d'Ivoire, Guinee-Bissau,
+           Mali, Niger, Senegal, Togo)
+  d) Sur le site : Ctrl + Maj + Suppr, puis rechargez, puis testez
+     « Demander un acces ».
+
+  Rappel : offre gratuite = mise en veille apres 15 min sans visite ;
+  le premier appel peut demander jusqu'a 50 secondes. Un 502 qui dure
+  plusieurs minutes n'est pas une mise en veille : c'est un conteneur
+  arrete.
