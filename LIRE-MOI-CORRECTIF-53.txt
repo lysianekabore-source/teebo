@@ -63,3 +63,20 @@ A FAIRE EN PLUS, DANS RENDER (1 minute)
 
 DEPLOIEMENT : Render > Deploys > Manual Deploy > Clear build cache et
 deploy, en envoyant tout le contenu du dossier decompresse.
+
+=====================================================================
+ AJOUT 18/11/2026 (2) — UN SEUL REFUS NE DECONNECTE PLUS
+=====================================================================
+ 1. Nouveau filet de securite global (attachUser) monte avant tous les
+    routeurs : si le cookie de session est valide, l'utilisateur est
+    reconnu pour TOUS les ecrans, y compris ceux qui oubliaient de le
+    verifier (clients, caisse, credit, collecte, terminaux, visibilite).
+    C'est la cause des 401 « not_authenticated » qui ejectaient vers la
+    page de connexion a chaque clic.
+ 2. attachUser ne renvoie jamais d'erreur : une panne de base ne peut pas
+    deconnecter les equipes.
+ 3. Les routes publiques restent publiques (aucun cookie = on laisse
+    passer, la route protegee refuse elle-meme).
+
+DEPLOIEMENT : Render > Deploys > Manual Deploy > Clear build cache et
+deploy, en envoyant tout le contenu du dossier decompresse.
