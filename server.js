@@ -33,6 +33,7 @@ import enrollmentRoutes from './routes/enrollment.js';
 import productRoutes from './routes/products.js';
 import visibilityRoutes from './routes/visibility.js';
 import roundRoutes from './routes/round.js';
+import monTableauBordRoutes from './routes/mon_tableau_bord.js'; // VAGUE 57 : tableau de bord personnel (agent de collecte)
 import collecteRoutes from './routes/collecte.js';
 import collecte6Routes from './routes/collecte6.js';
 import collecteEsRoutes from './routes/collecte_es.js';
@@ -174,6 +175,9 @@ app.use('/api/v1', (req, res, next) => {
 });
 app.use('/api/v1', visibilityRoutes);              // autorisations fines inter-entités
 app.use('/api/v1', roundRoutes);                   // tournée du jour de la collectrice
+// VAGUE 57 : tableau de bord personnel de l'agent de collecte (un seul appel :
+// caisse vs plafond, versements, tournée, objectifs, commissions, crédit, historique).
+app.use('/api/v1', monTableauBordRoutes);
 // VAGUE 5 : plafonds de collecte, versements caisse/Mobile Money, reçus simples,
 // journal SMS clients. Monté après clients.js (les chemins /collecte/* sont
 // distincts) mais avant le fallback HTML.
