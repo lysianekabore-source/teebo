@@ -201,15 +201,26 @@ export function hasFullAccess(role) {
 }
 
 /**
- * Habilitations qu'un profil de SURVEILLANCE (direction, PCA) ne peut jamais
- * exercer, même si le catalogue les propose : gestion du personnel, de la
- * structure et de la matrice des droits. C'est ce qui empêche un compte de
- * surveillance de se créer des comptes, de s'octroyer des droits ou de modifier
- * les autorisations d'autrui.
+ * Habilitations qu'un profil ORDINAIRE ne peut jamais exercer, même si la
+ * base ou la matrice les propose : gestion du personnel, de la structure, des
+ * paramètres de l'IMF et de la matrice des droits. Seuls le compte de
+ * l'administrateur de l'IMF et celui de l'éditeur y échappent.
+ * CORRECTIF 18/11/2026 : ce plafond ne visait que la direction et le PCA.
+ * Un chef d'agence (ou tout autre poste) pouvait donc recevoir, par surcharge,
+ * les droits de l'administrateur et retrouver ses menus. Le plafond s'applique
+ * désormais à TOUS les profils, sans exception : c'est la règle « un seul
+ * administrateur par IMF ».
  */
 const SUPERFICIE_EXCLUE = Object.freeze([
   'users.manage', 'access.manage', 'org.manage', 'settings.manage'
 ]);
+
+/** Habilitations jamais exercees par ce profil (vide pour l'administrateur). */
+export function superficieExcluePour(user) {
+  const role = user ? (effectiveRoleOf(user) || user.role) : null;
+  if (hasFullAccess(role)) return [];
+  return SUPERFICIE_EXCLUE.slice();
+}
 
 /** Vrai si c'est un profil de surveillance soumis au plafond de superficie. */
 export function estProfilSurveillance(user) {
@@ -223,10 +234,8 @@ export function filtrerHabilitations(user, keys) {
   const list = Array.isArray(keys) ? keys : [];
   const role = user ? (effectiveRoleOf(user) || user.role) : null;
   if (hasFullAccess(role)) return list.slice();
-  if (role === 'pca_admin' || role === 'direction') {
-    return list.filter((k) => !SUPERFICIE_EXCLUE.includes(k));
-  }
-  return list.slice();
+  // Plafond commun à tous les profils ordinaires (voir SUPERFICIE_EXCLUE).
+  return list.filter((k) => !SUPERFICIE_EXCLUE.includes(k));
 }
 
 /**
@@ -272,8 +281,9 @@ export async function userHasPermission(user, permissionKey) {
   // l'IMF. La direction et le PCA passent par le calcul réel (poste +
   // surcharge + matrice de rôle), avec un plafond de superficie.
   if (hasFullAccess(role)) return true;
-  if ((role === 'pca_admin' || role === 'direction') &&
-      SUPERFICIE_EXCLUE.includes(permissionKey)) return false;
+  // Aucun profil ordinaire n'exerce les droits de l'administrateur, même si
+  // une ligne user_permission les lui accordait par erreur.
+  if (SUPERFICIE_EXCLUE.includes(permissionKey)) return false;
   // 1) Surcharge explicite par utilisateur (prioritaire si présente).
   const direct = await q(
     `SELECT allowed FROM user_permission

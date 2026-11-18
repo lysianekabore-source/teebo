@@ -2,7 +2,7 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { q, tx } from '../db.js';
-import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken, userHasPermission, effectivePermissionKeys, idleMinutes, effectiveRoleOf, hasFullAccess, estProfilSurveillance, filtrerHabilitations } from '../auth.js';
+import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken, userHasPermission, effectivePermissionKeys, idleMinutes, effectiveRoleOf, hasFullAccess, estProfilSurveillance, filtrerHabilitations, superficieExcluePour } from '../auth.js';
 import { notifyEmail, notifyWhatsApp, loginUrlFor } from '../notify.js';
 import { isCashierPosition } from '../org_structure.js';
 import { accesUtilisateur } from '../saas_engine.js';   // VAGUE 47 : modules actifs + lecture seule
@@ -487,8 +487,9 @@ enregistrer('get', '/me', authenticate, async (req, res, next) => {
       // de la structure et des habilitations (bug des droits identiques).
       acces_complet: hasFullAccess(effectiveRoleOf(req.user) || req.user.role),
       profil_surveillance: estProfilSurveillance(req.user),
-      habilitations_exclues: estProfilSurveillance(req.user)
-        ? ['users.manage', 'access.manage', 'org.manage', 'settings.manage'] : [],
+      // CORRECTIF 18/11/2026 : le plafond ne concerne plus seulement la
+      // direction et le PCA — il s'applique a TOUS les profils ordinaires.
+      habilitations_exclues: superficieExcluePour(req.user),
       acces
     });
   } catch (e) { next(e); }

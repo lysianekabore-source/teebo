@@ -1,7 +1,7 @@
 import express from 'express';
 import crypto from 'crypto';
 import { q, tx } from '../db.js';
-import { authenticate, requireFreshPassword, requireRole, filtrerHabilitations } from '../auth.js';
+import { authenticate, requireFreshPassword, requireRole, requirePermission, filtrerHabilitations } from '../auth.js';
 import { notifyWhatsApp, notifyEmail, waLink, mailtoLink, loginUrlFor, emailGatewayReady } from '../notify.js';
 import { getBranding } from '../documents.js';
 import { defaultPermissionKeysForRole, buildProfilesMatrix } from '../permissions.js';
@@ -116,7 +116,7 @@ router.get('/units', async (req, res) => {
   res.json({ units: rows, degraded: degraded || undefined });
 });
 
-router.post('/units', requireRole('admin_imf','direction'), async (req, res, next) => {
+router.post('/units', requirePermission('org.manage'), async (req, res, next) => {
   try {
     const { kind, name, city, parent_id } = req.body || {};
     if (!KIND_ORDER[kind]) return res.status(422).json({ error: 'invalid_kind' });
@@ -146,7 +146,7 @@ router.post('/units', requireRole('admin_imf','direction'), async (req, res, nex
 // hiérarchique : le type doit rester égal à (type du parent + 1) et être
 // égal à (type de chaque enfant − 1). Le code d'unité est régénéré si le type
 // change, pour refléter la nouvelle nature (DIR/DEP/SRV/AGC).
-router.patch('/units/:id', requireRole('admin_imf','direction'), async (req, res, next) => {
+router.patch('/units/:id', requirePermission('org.manage'), async (req, res, next) => {
   try {
     const { kind, name, city } = req.body || {};
     if (kind !== undefined && !KIND_ORDER[kind]) return res.status(422).json({ error: 'invalid_kind' });
@@ -190,7 +190,7 @@ router.patch('/units/:id', requireRole('admin_imf','direction'), async (req, res
 });
 
 // --- Suppression d'une unité (cascade sur les sous-unités) ------------------
-router.delete('/units/:id', requireRole('admin_imf','direction'), async (req, res, next) => {
+router.delete('/units/:id', requirePermission('org.manage'), async (req, res, next) => {
   try {
     const { rows } = await q('SELECT id, imf_id FROM org_unit WHERE id=$1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'not_found' });
@@ -230,7 +230,7 @@ async function maySuperviseCollectors(c, positionCode, imfId) {
   return false;
 }
 
-router.post('/users', requireRole('admin_imf','direction'), async (req, res, next) => {
+router.post('/users', requirePermission('users.manage'), async (req, res, next) => {
   try {
     const bodyIn = req.body || {};
     const full_name = typeof bodyIn.full_name === 'string' ? bodyIn.full_name.trim() : bodyIn.full_name;
@@ -426,7 +426,7 @@ router.post('/users', requireRole('admin_imf','direction'), async (req, res, nex
 // Corps facultatif : { channel: 'both' | 'email' | 'whatsapp', email, phone }.
 // L'administrateur peut donc corriger l'adresse du destinataire et déclencher
 // un envoi immédiat depuis le serveur (expéditeur = e-mail de l'IMF).
-router.post('/users/:id/resend-code', requireRole('admin_imf','direction'), async (req, res, next) => {
+router.post('/users/:id/resend-code', requirePermission('users.manage'), async (req, res, next) => {
   try {
     const u = (await q(
       `SELECT id, imf_id, full_name, email, phone, code_user
@@ -523,7 +523,7 @@ router.post('/notify-test', requireRole('admin_imf','direction'), async (req, re
 // --- Rattachement hiérarchique (module Objectifs) ---------------------------
 // Définit le responsable direct (parent_id) d'un agent : une collectrice
 // dépend d'un superviseur, un superviseur d'un DG. Anti-cycle garanti.
-router.patch('/users/:id', requireRole('admin_imf','direction'), async (req, res, next) => {
+router.patch('/users/:id', requirePermission('users.manage'), async (req, res, next) => {
   try {
     const { parent_id, position, full_name, phone, email, org_unit_id } = req.body || {};
     const u = (await q(
@@ -589,7 +589,7 @@ router.patch('/users/:id', requireRole('admin_imf','direction'), async (req, res
 });
 
 // --- Suppression d'un utilisateur ------------------------------------------
-router.delete('/users/:id', requireRole('admin_imf','direction'), async (req, res, next) => {
+router.delete('/users/:id', requirePermission('users.manage'), async (req, res, next) => {
   try {
     const u = (await q('SELECT id, imf_id FROM app_user WHERE id=$1', [req.params.id])).rows[0];
     if (!u) return res.status(404).json({ error: 'not_found' });
@@ -603,7 +603,7 @@ router.delete('/users/:id', requireRole('admin_imf','direction'), async (req, re
 // Un code perdu, mal diffuse ou communique a la mauvaise personne ne bloque
 // plus l'institution : l'administrateur IMF regenere, puis renvoie.
 // Corps : { motif, channel, email, phone, envoyer }
-router.post('/users/:id/regenerate-code', requireRole('admin_imf','direction'), async (req, res, next) => {
+router.post('/users/:id/regenerate-code', requirePermission('users.manage'), async (req, res, next) => {
   try {
     const u = (await q('SELECT id, imf_id FROM app_user WHERE id=$1', [req.params.id])).rows[0];
     if (!u) return res.status(404).json({ error: 'not_found' });
