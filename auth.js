@@ -4,13 +4,33 @@ import { q, tx } from './db.js';
 import { defaultPermissionKeysForRole } from './permissions.js';
 
 export const MDP_MAX_DAYS = 60;      // expiration mot de passe
-// Inactivité -> déconnexion : 60 minutes par défaut, réglable sans toucher
-// au code via la variable d'environnement IDLE_MINUTES (Render > Environment).
+// Inactivité -> déconnexion. CORRECTIF 18/11/2026 : une journée de travail
+// entière (8 h) par défaut. Un utilisateur qui travaille n'est plus jamais
+// renvoyé à l'écran de connexion au bout de quelques minutes.
+// La variable IDLE_MINUTES ne peut plus descendre sous 60 minutes : une valeur
+// trop basse laissée dans Render (10, 15…) déconnectait les équipes en pleine
+// saisie. Elle est donc ignorée en dessous de 60.
+export const IDLE_MINUTES_DEFAUT = 480;
+export const IDLE_MINUTES_MIN = 60;
 export function idleMinutes() {
   const v = parseInt(process.env.IDLE_MINUTES, 10);
-  return Number.isFinite(v) && v >= 5 && v <= 720 ? v : 60;
+  if (!Number.isFinite(v)) return IDLE_MINUTES_DEFAUT;
+  if (v < IDLE_MINUTES_MIN) return IDLE_MINUTES_DEFAUT;
+  return Math.min(v, 1440);
 }
-const IDLE_MINUTES = 60;
+// Cookie de session : 30 jours, et NON plus 60 minutes figées. Avant, le
+// cookie expirait une heure après la connexion même si la personne travaillait
+// encore : c'était la deuxième cause des déconnexions surprises.
+export const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export function cookieOptions() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: COOKIE_MAX_AGE_MS
+  };
+}
 export const SESSION_TOKEN_TTL = '60d';
 
 // Matrice des habilitations par ROLE (source unique : permissions.js).
@@ -75,7 +95,8 @@ export async function authenticate(req, res, next) {
     }
     // Inactivité : 60 min par défaut (IDLE_MINUTES). Le compteur repart à
     // chaque requête authentifiée (voir le marquage d'activité plus bas).
-    const idleMs = Date.now() - new Date(row.last_seen_at).getTime();
+    const lastSeen = row.last_seen_at ? new Date(row.last_seen_at).getTime() : Date.now();
+    const idleMs = Date.now() - lastSeen;
     if (idleMs > idleMinutes() * 60 * 1000) {
       await q('UPDATE session SET revoked = true WHERE id = $1', [row.session_id]);
       return res.status(401).json({ error: 'idle_timeout' });
@@ -87,9 +108,15 @@ export async function authenticate(req, res, next) {
     // sont écrits qu'une fois par minute maximum, pour ne pas surcharger la
     // base quand plusieurs onglets sont ouverts.
     const isKeepAlive = req.headers['x-teebo-keepalive'] === '1';
-    const sinceLastSeen = Date.now() - new Date(row.last_seen_at).getTime();
-    if (!isKeepAlive || sinceLastSeen > 60 * 1000) {
+    if (!isKeepAlive || idleMs > 60 * 1000) {
       await q('UPDATE session SET last_seen_at = now() WHERE id = $1', [row.session_id]);
+    }
+    // COOKIE GLISSANT : on repousse l'échéance du cookie à chaque activité
+    // (au plus une fois toutes les 10 minutes pour ne pas alourdir la réponse).
+    // Sans cela, le navigateur supprimait le cookie au bout de sa durée de vie
+    // alors que la session serveur était encore valide.
+    if (idleMs > 10 * 60 * 1000) {
+      try { res.cookie('teebo_session', token, cookieOptions()); } catch (e) {}
     }
 
     req.user = {
@@ -201,15 +228,26 @@ export function hasFullAccess(role) {
 }
 
 /**
- * Habilitations qu'un profil de SURVEILLANCE (direction, PCA) ne peut jamais
- * exercer, même si le catalogue les propose : gestion du personnel, de la
- * structure et de la matrice des droits. C'est ce qui empêche un compte de
- * surveillance de se créer des comptes, de s'octroyer des droits ou de modifier
- * les autorisations d'autrui.
+ * Habilitations qu'un profil ORDINAIRE ne peut jamais exercer, même si la
+ * base ou la matrice les propose : gestion du personnel, de la structure, des
+ * paramètres de l'IMF et de la matrice des droits. Seuls le compte de
+ * l'administrateur de l'IMF et celui de l'éditeur y échappent.
+ * CORRECTIF 18/11/2026 : ce plafond ne visait que la direction et le PCA.
+ * Un chef d'agence (ou tout autre poste) pouvait donc recevoir, par surcharge,
+ * les droits de l'administrateur et retrouver ses menus. Le plafond s'applique
+ * désormais à TOUS les profils, sans exception : c'est la règle « un seul
+ * administrateur par IMF ».
  */
 const SUPERFICIE_EXCLUE = Object.freeze([
   'users.manage', 'access.manage', 'org.manage', 'settings.manage'
 ]);
+
+/** Habilitations jamais exercees par ce profil (vide pour l'administrateur). */
+export function superficieExcluePour(user) {
+  const role = user ? (effectiveRoleOf(user) || user.role) : null;
+  if (hasFullAccess(role)) return [];
+  return SUPERFICIE_EXCLUE.slice();
+}
 
 /** Vrai si c'est un profil de surveillance soumis au plafond de superficie. */
 export function estProfilSurveillance(user) {
@@ -223,10 +261,8 @@ export function filtrerHabilitations(user, keys) {
   const list = Array.isArray(keys) ? keys : [];
   const role = user ? (effectiveRoleOf(user) || user.role) : null;
   if (hasFullAccess(role)) return list.slice();
-  if (role === 'pca_admin' || role === 'direction') {
-    return list.filter((k) => !SUPERFICIE_EXCLUE.includes(k));
-  }
-  return list.slice();
+  // Plafond commun à tous les profils ordinaires (voir SUPERFICIE_EXCLUE).
+  return list.filter((k) => !SUPERFICIE_EXCLUE.includes(k));
 }
 
 /**
@@ -272,8 +308,9 @@ export async function userHasPermission(user, permissionKey) {
   // l'IMF. La direction et le PCA passent par le calcul réel (poste +
   // surcharge + matrice de rôle), avec un plafond de superficie.
   if (hasFullAccess(role)) return true;
-  if ((role === 'pca_admin' || role === 'direction') &&
-      SUPERFICIE_EXCLUE.includes(permissionKey)) return false;
+  // Aucun profil ordinaire n'exerce les droits de l'administrateur, même si
+  // une ligne user_permission les lui accordait par erreur.
+  if (SUPERFICIE_EXCLUE.includes(permissionKey)) return false;
   // 1) Surcharge explicite par utilisateur (prioritaire si présente).
   const direct = await q(
     `SELECT allowed FROM user_permission

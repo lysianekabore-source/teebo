@@ -82,6 +82,11 @@ const ALL = PERMISSIONS.map((p) => p.key);
 const SUPERVISION = ['objectives.set', 'objectives.dashboard', 'objectives.read',
   'clients.enroll', 'round.view', 'cash.validate', 'reports.read'];
 
+// Profils d'encadrement (département / service) : supervision + consultation de
+// la structure, de l'annuaire et du parc de terminaux de leur périmètre. Aucun
+// droit de création de comptes ni de paramétrage de l'IMF.
+const ENCADREMENT = SUPERVISION.concat(['org.read', 'users.read', 'devices.read', 'security.read']);
+
 // VAGUE 47 — la direction n'est plus « tout ouvert » : elle conserve la
 // consultation, l'export et les validations, mais n'hérite plus de la gestion
 // du personnel, de la structure, des paramètres ni de la matrice des droits
@@ -108,9 +113,16 @@ export const ROLE_DEFAULTS = Object.freeze({
   direction:  DIRECTION_KEYS,
   // Profil technique du poste « Président du Conseil d'Administration ».
   pca_admin:  PCA_KEYS,
-  department: SUPERVISION.slice(),
-  service:    SUPERVISION.slice(),
-  agency:     SUPERVISION.concat(['users.manage']),
+  department: ENCADREMENT.slice(),
+  service:    ENCADREMENT.slice(),
+  // CORRECTIF 18/11/2026 — « le chef d'agence a les mêmes menus que
+  // l'administrateur de l'IMF ». Le profil Agence recevait « users.manage »
+  // (créer des comptes, renvoyer les codes) : il pouvait donc gérer le
+  // personnel, ce qui est le rôle propre de l'administrateur de l'IMF.
+  // Désormais l'agence CONSULTE l'organisation et l'annuaire de son périmètre
+  // (org.read, users.read) sans jamais créer ni modifier un compte.
+  agency:     SUPERVISION.concat(['org.read', 'users.read']),
+
   staff:      ['objectives.read', 'clients.enroll', 'round.view', 'cash.declare'],
   caissier:   ['cash.declare', 'cash.validate', 'objectives.read', 'reports.read'],
   // Alias du module objectifs (tolérance).

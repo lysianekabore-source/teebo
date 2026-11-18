@@ -14,6 +14,7 @@
  *   POST   /clients/new                    (hook) nouveaux comptes
  * =================================================================== */
 import { Router } from 'express';
+import { habilit } from '../rbac_strict.js';
 import { requireRole } from '../auth.js';
 import {
   ROLES, canonicalRole, KPI_TYPES, PERIODS, ObjectiveError,
@@ -53,7 +54,7 @@ r.get('/objectives/kpi-types', requireRole(...READERS), (_req, res) => {
 
 /* ------------------------------- Création -------------------------------- */
 
-r.post('/objectives', requireRole(...MANAGERS), async (req, res, next) => {
+r.post('/objectives', requireRole(...MANAGERS), habilit('objectives.set'), async (req, res, next) => {
   try {
     const out = await createObjective(req.user, req.body || {});
     res.status(201).json({

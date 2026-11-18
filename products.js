@@ -1,6 +1,8 @@
 import { Router } from 'express';
+import { detecterApparente } from '../credit_apparentes.js';
 import { q, tx } from '../db.js';
-import { requireRole } from '../auth.js';
+import { requireRole, requirePermission, userHasPermission } from '../auth.js';
+import { habilit } from '../rbac_strict.js';
 import {
   monthBounds, monthsStarted, computeCollectionFee, computeEarlyWithdrawalFee,
   chargeFee, recoverPendingFees, monthDeposits, minPermanentOf, isLastDayOfMonth, lastDayOfMonth,
@@ -30,7 +32,7 @@ function int(v, d = 0) { const n = Number(v); return Number.isFinite(n) ? Math.r
 /* ------------------------------------------------------------------ */
 /*  Types de compte d'épargne : catalogue complet (spécifications IMF)  */
 /* ------------------------------------------------------------------ */
-r.get('/savings-products', requireRole(...STAFF), async (req, res) => {
+r.get('/savings-products', requireRole(...STAFF), habilit('savings.read','savings.manage'), async (req, res) => {
   const { rows } = await q(
     `SELECT code,label,description,is_active,
             nature,targets,
@@ -50,7 +52,7 @@ r.get('/savings-products', requireRole(...STAFF), async (req, res) => {
 /*  Un compte est créé à l'ouverture du client ; on lui affecte ensuite  */
 /*  le produit d'épargne choisi (frais de tenue, intérêts, commissions). */
 /* ------------------------------------------------------------------ */
-r.post('/accounts/:id/product', requireRole(...STAFF), async (req, res, next) => {
+r.post('/accounts/:id/product', requireRole(...STAFF), habilit('savings.manage'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const code = String(b.product_code || '').trim().toLowerCase();
@@ -136,7 +138,7 @@ r.post('/savings-products', requireRole(...ADM), async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 /*  Types de demande personnalisés (admin, infinité) + frais fixes      */
 /* ------------------------------------------------------------------ */
-r.get('/request-types', requireRole(...STAFF), async (req, res) => {
+r.get('/request-types', requireRole(...STAFF), habilit('clients.read','clients.manage','operations.read'), async (req, res) => {
   const { rows } = await q(
     `SELECT id,code,label,description,fee_cents,requires_doc,is_active,sort_order
        FROM request_type WHERE imf_id=$1 ORDER BY sort_order, label`, [req.user.imf_id]);
@@ -172,7 +174,7 @@ r.delete('/request-types/:id', requireRole(...ADM), async (req, res) => {
 /* ------------------------------------------------------------------ */
 /*  Demande client : les frais sont DÉBITÉS À LA SOURCE sur son compte  */
 /* ------------------------------------------------------------------ */
-r.post('/client-requests', requireRole(...STAFF), async (req, res, next) => {
+r.post('/client-requests', requireRole(...STAFF), habilit('clients.manage','clients.enroll','operations.write'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const out = await tx(async (c) => {
@@ -218,7 +220,7 @@ r.post('/client-requests', requireRole(...STAFF), async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-r.get('/client-requests', requireRole(...STAFF), async (req, res) => {
+r.get('/client-requests', requireRole(...STAFF), habilit('clients.read','clients.manage','operations.read'), async (req, res) => {
   const { rows } = await q(
     `SELECT cr.*, rt.label AS type_label, c.full_name AS client_name, c.code_client,
             a.code_account
@@ -233,7 +235,7 @@ r.get('/client-requests', requireRole(...STAFF), async (req, res) => {
 /* ------------------------------------------------------------------ */
 /*  FRAIS : liste, en attente, et clôture mensuelle                     */
 /* ------------------------------------------------------------------ */
-r.get('/fees', requireRole(...STAFF), async (req, res) => {
+r.get('/fees', requireRole(...STAFF), habilit('fees.manage','operations.read','reports.read'), async (req, res) => {
   const { rows } = await q(
     `SELECT f.*, a.code_account, c.full_name AS client_name, c.code_client
        FROM account_fee f JOIN account a ON a.id=f.account_id JOIN client c ON c.id=a.client_id
@@ -244,7 +246,7 @@ r.get('/fees', requireRole(...STAFF), async (req, res) => {
   res.json({ fees: rows, pending: { total_cents: Number(pending.total), count: pending.n } });
 });
 
-r.get('/fees/pending', requireRole(...STAFF), async (req, res) => {
+r.get('/fees/pending', requireRole(...STAFF), habilit('fees.manage','operations.read','reports.read'), async (req, res) => {
   const { rows } = await q(
     `SELECT f.id, f.kind, f.amount_cents, f.period_start, f.period_end, f.detail, f.created_at,
             a.code_account, a.balance_cents, c.full_name AS client_name, c.code_client,
@@ -266,7 +268,7 @@ r.get('/fees/pending', requireRole(...STAFF), async (req, res) => {
  *   - Si le solde disponible < solde minimum permanent => prélèvement ACTÉ
  *     « en attente » (rattrapage automatique).
  */
-r.post('/fees/close-month', requireRole(...SUP), async (req, res, next) => {
+r.post('/fees/close-month', requireRole(...SUP), habilit('fees.manage'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const ref = b.period_date ? new Date(b.period_date) : new Date();
@@ -345,7 +347,7 @@ r.post('/fees/close-month', requireRole(...SUP), async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 /*  Récupération PRIORITAIRE des frais en attente (à l'alimentation)    */
 /* ------------------------------------------------------------------ */
-r.post('/fees/recover/:accountId', requireRole(...STAFF), async (req, res, next) => {
+r.post('/fees/recover/:accountId', requireRole(...STAFF), habilit('fees.manage','operations.write'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const out = await tx(async (c) => {
@@ -375,7 +377,7 @@ r.post('/fees/recover/:accountId', requireRole(...STAFF), async (req, res, next)
 /*   2. Commission de retrait anticipé (% du montant retiré)            */
 /*   3. Exonération si le retrait n'entame pas les nouveaux dépôts      */
 /* ------------------------------------------------------------------ */
-r.post('/operations/withdraw-early', requireRole(...STAFF), async (req, res, next) => {
+r.post('/operations/withdraw-early', requireRole(...STAFF), habilit('operations.write','operations.validate'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const amount = int(b.amount_cents);
@@ -429,7 +431,11 @@ r.post('/operations/withdraw-early', requireRole(...STAFF), async (req, res, nex
       }
 
       // --- ÉTAPE 2 + 3 : commission de retrait anticipé / exonération ---
-      const ew = computeEarlyWithdrawalFee(acc, amount, depositsMonth);
+      // Solde antérieur = solde courant du compte MOINS les dépôts du mois en
+      // cours (borné à 0). Sert à déterminer si le retrait entame les nouveaux
+      // dépôts du mois (règle d'exonération).
+      const priorBalance = Math.max(0, Number(acc.balance_cents || 0) - Number(depositsMonth || 0));
+      const ew = computeEarlyWithdrawalFee(acc, amount, depositsMonth, priorBalance);
       let ewFee = 0;
       if (!ew.exempt && ew.amount_cents > 0) {
         ewFee = ew.amount_cents;
@@ -479,7 +485,7 @@ r.post('/operations/withdraw-early', requireRole(...STAFF), async (req, res, nex
 /* ------------------------------------------------------------------ */
 /*  DÉPÔT avec rattrapage automatique prioritaire des frais en attente  */
 /* ------------------------------------------------------------------ */
-r.post('/operations/deposit', requireRole(...STAFF), async (req, res, next) => {
+r.post('/operations/deposit', requireRole(...STAFF), habilit('operations.write','cash.declare'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const amount = int(b.amount_cents);
@@ -522,7 +528,7 @@ r.post('/operations/deposit', requireRole(...STAFF), async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 /*  GESTION DES SORTIES : clôture de compte (frais de clôture)          */
 /* ------------------------------------------------------------------ */
-r.post('/accounts/:id/close', requireRole(...SUP), async (req, res, next) => {
+r.post('/accounts/:id/close', requireRole(...SUP), habilit('operations.validate','clients.freeze'), async (req, res, next) => {
   try {
     const out = await tx(async (c) => {
       const acc = (await c.query(
@@ -549,15 +555,19 @@ r.post('/accounts/:id/close', requireRole(...SUP), async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 /*  SIMULATEUR DE FRAIS (barème + retrait anticipé) — transparence IMF  */
 /* ------------------------------------------------------------------ */
-r.post('/fees/simulate', requireRole(...STAFF), async (req, res, next) => {
+r.post('/fees/simulate', requireRole(...STAFF), habilit('fees.manage','operations.read','reports.read'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const prod = (await q('SELECT * FROM savings_product WHERE code=$1', [b.product_code])).rows[0];
     if (!prod) return res.status(404).json({ error: 'produit_introuvable' });
     const deposits = int(b.month_deposits_cents);
     const withdraw = int(b.withdraw_cents);
+    // Solde antérieur optionnel pour simuler l'exonération (retrait couvert par
+    // l'ancien solde). Absent => pas d'exonération simulée (commission due).
+    const priorBalance = b.prior_balance_cents === undefined || b.prior_balance_cents === null
+      ? null : int(b.prior_balance_cents);
     const cf = computeCollectionFee(prod, deposits);
-    const ew = computeEarlyWithdrawalFee(prod, withdraw, deposits);
+    const ew = computeEarlyWithdrawalFee(prod, withdraw, deposits, priorBalance);
     res.json({
       product: { code: prod.code, label: prod.label, nature: prod.nature },
       opening: { opening_fee_cents: Number(prod.opening_fee_cents),
@@ -583,12 +593,16 @@ async function logCreditEvent(c, fileId, from, to, user, note) {
 }
 
 /** Soumission : par le CLIENT ou saisie par la COLLECTRICE. */
-r.post('/credits', requireRole(...STAFF), async (req, res, next) => {
+r.post('/credits', requireRole(...STAFF), habilit('credit.initiate','credit.process','credit.read'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const amount = int(b.amount_cents);
     if (!(amount > 0)) return res.status(400).json({ error: 'montant_invalide' });
     const origin = ['client', 'collectrice', 'guichet'].includes(b.origin) ? b.origin : 'collectrice';
+    // VAGUE 29 — DETECTION AUTOMATIQUE A L'OCTROI : un dossier dont le client (ou
+    // l'un de ses ayants droit) est une personne apparentee est marque et une
+    // convention reglementee est ouverte pour le suivi du CAC.
+    const det = await detecterApparente(req.user.imf_id, b.client_id, amount);
     const out = await tx(async (c) => {
       const cl = (await c.query('SELECT * FROM client WHERE id=$1 AND imf_id=$2',
         [b.client_id, req.user.imf_id])).rows[0];
@@ -605,7 +619,11 @@ r.post('/credits', requireRole(...STAFF), async (req, res, next) => {
          cl.collectrice_user_id || req.user.id, cl.superviseur_user_id,
          amount, b.duration_months || null, b.purpose || null, b.activity || null,
          b.collateral || null, b.comments || null,
-         JSON.stringify(Array.isArray(b.documents) ? b.documents : [])])).rows[0];
+         JSON.stringify(Array.isArray(b.documents) ? b.documents : []), Boolean(det.apparente)])).rows[0];
+      if (det.convention_id) {
+        await c.query('UPDATE conventions_reglementees SET credit_file_id=$1 WHERE id=$2 AND imf_id=$3',
+          [f.id, det.convention_id, req.user.imf_id]);
+      }
       await logCreditEvent(c, f.id, null, 'en_attente', req.user, 'Dossier soumis (' + origin + ')');
       return { file: f, client: cl };
     });
@@ -613,6 +631,10 @@ r.post('/credits', requireRole(...STAFF), async (req, res, next) => {
       credit: { id: out.file.id, reference: out.file.reference, status: out.file.status,
         amount_cents: Number(out.file.amount_cents) },
       client: { id: out.client.id, full_name: out.client.full_name, code_client: out.client.code_client },
+      conformite: { apparente: Boolean(det.apparente), apparentes: det.apparentes || [],
+        alerte: det.alerte || null, convention_reference: det.convention_reference || null,
+        plafond_individuel_pct: det.situation ? det.situation.plafond_individuel_pct : null,
+        ratio_individuel_pct: det.ratio_individuel_pct || null },
       workflow: { en_attente: 'En attente', a_l_etude: 'À l\'étude', approuve: 'Approuvé', rejete: 'Rejeté', decaisse: 'Décaissé' },
       note: 'Dossier de crédit enregistré. Visible en temps réel par le Client, la Collectrice et le Superviseur.',
     });
@@ -620,7 +642,7 @@ r.post('/credits', requireRole(...STAFF), async (req, res, next) => {
 });
 
 /** Liste des dossiers — filtrée selon le rôle (visibilité partagée). */
-r.get('/credits', requireRole(...STAFF), async (req, res) => {
+r.get('/credits', requireRole(...STAFF), habilit('credit.read','credit.process','credit.initiate','credit.validate_final'), async (req, res) => {
   const role = req.user.role;
   const params = [req.user.imf_id];
   let where = 'cf.imf_id=$1';
@@ -654,8 +676,29 @@ r.get('/credits', requireRole(...STAFF), async (req, res) => {
     labels: { en_attente: 'En attente', a_l_etude: 'À l\'étude', approuve: 'Approuvé', rejete: 'Rejeté', decaisse: 'Décaissé' } });
 });
 
+/** ÉCRAN DE VALIDATION FINALE — file d'attente des dossiers à valider.
+ *  Réservé aux postes habilités (credit.validate_final). Déclaré AVANT
+ *  /credits/:id pour ne pas être capturé comme un identifiant. */
+r.get('/credits/final-queue', requirePermission('credit.validate_final'), async (req, res, next) => {
+  try {
+    const { rows } = await q(
+      `SELECT cf.id, cf.reference, cf.status, cf.amount_cents, cf.approved_amount_cents,
+              cf.duration_months, cf.purpose, cf.origin, cf.created_at,
+              c.full_name AS client_name, c.code_client,
+              col.full_name AS collectrice_name, off.full_name AS officer_name
+         FROM credit_file cf
+         JOIN client c ON c.id=cf.client_id
+         LEFT JOIN app_user col ON col.id=cf.collectrice_user_id
+         LEFT JOIN app_user off ON off.id=cf.officer_user_id
+        WHERE cf.imf_id=$1 AND cf.status IN ('en_attente','a_l_etude')
+        ORDER BY cf.created_at`, [req.user.imf_id]);
+    res.json({ queue: rows,
+      labels: { en_attente: 'En attente', a_l_etude: 'À l\'étude', approuve: 'Approuvé', rejete: 'Rejeté', decaisse: 'Décaissé' } });
+  } catch (e) { next(e); }
+});
+
 /** Tableau de bord partagé d'un dossier (Client, Collectrice, Superviseur). */
-r.get('/credits/:id', requireRole(...STAFF), async (req, res, next) => {
+r.get('/credits/:id', requireRole(...STAFF), habilit('credit.read','credit.process','credit.initiate','credit.validate_final','credit.recovery'), async (req, res, next) => {
   try {
     const f = (await q(
       `SELECT cf.*, c.full_name AS client_name, c.code_client, c.phone AS client_phone,
@@ -690,10 +733,28 @@ r.post('/credits/:id/process', requireRole(...OFFICER), async (req, res, next) =
     const b = req.body || {};
     const to = b.status;
     if (!CREDIT_STATUSES.includes(to)) return res.status(400).json({ error: 'statut_invalide', allowed: CREDIT_STATUSES });
+    // VALIDATION FINALE réservée : l'octroi définitif (approuve / decaisse) exige
+    // l'habilitation 'credit.validate_final'. L'instruction (a_l_etude) et le
+    // rejet restent ouverts aux agents de crédit habilités (OFFICER).
+    if ((to === 'approuve' || to === 'decaisse') &&
+        !(await userHasPermission(req.user, 'credit.validate_final'))) {
+      return res.status(403).json({ error: 'final_validation_reserved',
+        message: 'L\'octroi définitif est réservé aux postes habilités à la validation finale du crédit.' });
+    }
     const out = await tx(async (c) => {
       const f = (await c.query('SELECT * FROM credit_file WHERE id=$1 AND imf_id=$2 FOR UPDATE',
         [req.params.id, req.user.imf_id])).rows[0];
       if (!f) { const e = new Error('dossier_introuvable'); e.status = 404; throw e; }
+      // VAGUE 29 — CREDIT A UN APPARENTE : l'approbation est subordonnee a
+      // l'autorisation prealable de la convention par l'organe competent.
+      if (f.apparente && ['approuve', 'decaisse'].includes(decision)) {
+        const cv = (await c.query(
+          `SELECT statut FROM conventions_reglementees WHERE imf_id=$1 AND credit_file_id=$2 ORDER BY created_at DESC LIMIT 1`,
+          [req.user.imf_id, f.id])).rows[0];
+        if (cv && !['AUTORISEE', 'EN_COURS', 'CLOTUREE'].includes(cv.statut)) {
+          const e = new Error('convention_non_autorisee'); e.status = 409; throw e;
+        }
+      }
       const note = b.note || null;
       const officer = to === 'a_l_etude' ? req.user.id : f.officer_user_id;
       const approved = to === 'approuve' ? (b.approved_amount_cents !== undefined ? int(b.approved_amount_cents) : Number(f.amount_cents)) : f.approved_amount_cents;
@@ -712,9 +773,41 @@ r.post('/credits/:id/process', requireRole(...OFFICER), async (req, res, next) =
   } catch (e) { next(e); }
 });
 
+/** VALIDATION FINALE d'un dossier (octroi définitif ou rejet définitif).
+ *  Réservée aux postes habilités (credit.validate_final), réaffectables par
+ *  l'admin IMF via /access/positions/:code/permission. */
+r.post('/credits/:id/final-validate', requirePermission('credit.validate_final'), async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const decision = b.decision; // 'approuve' | 'rejete' | 'decaisse'
+    if (!['approuve', 'rejete', 'decaisse'].includes(decision))
+      return res.status(400).json({ error: 'decision_invalide', allowed: ['approuve', 'rejete', 'decaisse'] });
+    const out = await tx(async (c) => {
+      const f = (await c.query('SELECT * FROM credit_file WHERE id=$1 AND imf_id=$2 FOR UPDATE',
+        [req.params.id, req.user.imf_id])).rows[0];
+      if (!f) { const e = new Error('dossier_introuvable'); e.status = 404; throw e; }
+      const note = b.note || null;
+      const approved = decision === 'approuve'
+        ? (b.approved_amount_cents !== undefined ? int(b.approved_amount_cents) : Number(f.amount_cents))
+        : f.approved_amount_cents;
+      const decided = ['approuve', 'rejete'].includes(decision) ? new Date() : f.decided_at;
+      const f2 = (await c.query(
+        `UPDATE credit_file SET status=$2::credit_status,
+              decided_at=$3, decision_note=COALESCE($4,decision_note),
+              approved_amount_cents=$5, updated_at=now()
+          WHERE id=$1 RETURNING *`,
+        [f.id, decision, decided, note, approved])).rows[0];
+      await logCreditEvent(c, f.id, f.status, decision, req.user, note || 'Validation finale');
+      return f2;
+    });
+    res.json({ ok: true, credit: { id: out.id, reference: out.reference, status: out.status,
+      approved_amount_cents: out.approved_amount_cents !== null ? Number(out.approved_amount_cents) : null },
+      note: 'Validation finale enregistrée — suivi visible en temps réel par la Collectrice, le Superviseur et le Client.' });
+  } catch (e) { next(e); }
+});
+
 /** Suivi côté collectrice / superviseur (tableau de bord partagé). */
-r.get('/credits/dashboard/summary', requireRole(...STAFF), async (req, res) => {
-  const rows = (await q(
+r.get('/credits/dashboard/summary', requireRole(...STAFF), habilit('credit.read','credit.process','reports.read'), async (req, res) => {  const rows = (await q(
     `SELECT cf.status, COUNT(*)::int AS n, COALESCE(SUM(cf.amount_cents),0)::bigint AS total_cents
        FROM credit_file cf WHERE cf.imf_id=$1 GROUP BY cf.status`, [req.user.imf_id])).rows;
   const { rows: recent } = await q(
@@ -728,7 +821,7 @@ r.get('/credits/dashboard/summary', requireRole(...STAFF), async (req, res) => {
 /* ------------------------------------------------------------------ */
 /*  Tableau de bord IMF : soldes bloqués / état des demandes            */
 /* ------------------------------------------------------------------ */
-r.get('/imf/dashboard', requireRole(...STAFF), async (req, res) => {
+r.get('/imf/dashboard', requireRole(...STAFF), habilit('reports.read','operations.read','objectives.read'), async (req, res) => {
   const blocks = (await q(
     `SELECT a.code_account, c.full_name AS client_name FROM account a JOIN client c ON c.id=a.client_id
       WHERE a.imf_id=$1 AND a.status='blocked' LIMIT 50`, [req.user.imf_id])).rows;

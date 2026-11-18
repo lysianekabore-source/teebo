@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { habilit } from '../rbac_strict.js';
 import { q, tx } from '../db.js';
 import { requireRole } from '../auth.js';
 import { deviceFromReq } from './devices.js';
@@ -64,7 +65,7 @@ async function findAccount({ imfId, account_code, client_code, client_id, collec
 
 /* ----------------------------- Opérations ------------------------------ */
 
-r.get('/operations', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res) => {
+r.get('/operations', habilit('operations.read'), requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res) => {
   const { rows } = await q(
     `SELECT o.*, a.code_account, c.id AS client_id, c.full_name AS client_name
        FROM operation o
@@ -81,7 +82,7 @@ r.get('/operations', requireRole('admin_imf','direction','department','service',
  *  - génération d’un REÇU simple (affiché 60 s côté terrain) ;
  *  - SMS automatique au client si l’IMF l’a paramétré.
  */
-r.post('/operations/deposit', requireRole('agency','staff','admin_imf','direction','department','service'), async (req, res, next) => {
+r.post('/operations/deposit', habilit('operations.write'), requireRole('agency','staff','admin_imf','direction','department','service'), async (req, res, next) => {
   try {
     const { account_code, amount_cents, reference, note } = req.body || {};
     const amount = Number(amount_cents || 0);
@@ -158,7 +159,7 @@ r.post('/operations/deposit', requireRole('agency','staff','admin_imf','directio
  *
  * VALIDATION STRICTE : la DATE DE L’OPÉRATION et le MONTANT sont OBLIGATOIRES.
  */
-r.post('/operations/guichet-regularization', requireRole('agency','staff','admin_imf','direction','department','service'), async (req, res, next) => {
+r.post('/operations/guichet-regularization', habilit('operations.write'), requireRole('agency','staff','admin_imf','direction','department','service'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const dir = Number(b.direction || 0);
@@ -206,7 +207,7 @@ r.post('/operations/guichet-regularization', requireRole('agency','staff','admin
 });
 
 /** Recherche de client pour la collectrice (régularisation, demande de crédit…). */
-r.get('/clients/search', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
+r.get('/clients/search', habilit('clients.read','clients.manage','operations.read'), requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res, next) => {
   try {
     const Q = String(req.query.q || '').trim();
     const me = req.user;
@@ -236,7 +237,7 @@ r.get('/clients/search', requireRole('admin_imf','direction','department','servi
 });
 
 /** Historique des opérations pour une collectrice (aujourd’hui ou période). */
-r.get('/operations/mine', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res) => {
+r.get('/operations/mine', habilit('operations.read'), requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res) => {
   const { rows } = await q(
     `SELECT o.*, a.code_account, c.id AS client_id, c.full_name AS client_name
        FROM operation o
@@ -251,7 +252,7 @@ r.get('/operations/mine', requireRole('admin_imf','direction','department','serv
  * Demande d’annulation d’une opération : reste EN ATTENTE de validation du
  * superviseur. Le solde n’est PAS modifié tant que ce n’est pas validé.
  */
-r.post('/operations/:id/cancel-request', requireRole('agency','staff','admin_imf','direction','department','service'), async (req, res) => {
+r.post('/operations/:id/cancel-request', habilit('operations.write'), requireRole('agency','staff','admin_imf','direction','department','service'), async (req, res) => {
   const { reason } = req.body || {};
   const { rows } = await q(
     `UPDATE operation SET status='en_attente', cancel_requested_at=now(), cancel_reason=$3
@@ -262,7 +263,7 @@ r.post('/operations/:id/cancel-request', requireRole('agency','staff','admin_imf
 });
 
 /** Validation/refus par le superviseur : ajuste le solde seulement à la validation. */
-r.post('/operations/:id/cancel-validate', requireRole('admin_imf','direction','department','service'), async (req, res) => {
+r.post('/operations/:id/cancel-validate', habilit('operations.validate','cash.approve'), requireRole('admin_imf','direction','department','service'), async (req, res) => {
   const { approve } = req.body || {};
   const op = (await q('SELECT * FROM operation WHERE id=$1 AND imf_id=$2',
     [req.params.id, req.user.imf_id])).rows[0];
@@ -287,7 +288,7 @@ r.post('/operations/:id/cancel-validate', requireRole('admin_imf','direction','d
  * Demande de crédit saisie par la collectrice.
  * VALIDATION STRICTE : le client, la DATE ET LE MONTANT sont obligatoires.
  */
-r.post('/operations/credit-request', requireRole('agency','staff','admin_imf','direction','department','service'), async (req, res, next) => {
+r.post('/operations/credit-request', habilit('credit.initiate','credit.process','operations.write'), requireRole('agency','staff','admin_imf','direction','department','service'), async (req, res, next) => {
   try {
     const b = req.body || {};
     // 1) Date + montant obligatoires.
@@ -330,7 +331,7 @@ r.post('/operations/credit-request', requireRole('agency','staff','admin_imf','d
  * Demande personnalisée (type de demande créé par l’admin).
  * VALIDATION STRICTE : le client, la DATE ET LE MONTANT sont obligatoires.
  */
-r.post('/operations/request', requireRole('agency','staff','admin_imf','direction','department','service'), async (req, res, next) => {
+r.post('/operations/request', habilit('operations.write'), requireRole('agency','staff','admin_imf','direction','department','service'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const chk = requireDateAndAmount(b);
@@ -362,7 +363,7 @@ r.post('/operations/request', requireRole('agency','staff','admin_imf','directio
 });
 
 /** Liste des demandes de crédit en attente (back-office superviseur). */
-r.get('/credit-requests', requireRole('admin_imf','direction','department','service'), async (req, res) => {
+r.get('/credit-requests', habilit('credit.read','credit.process','credit.initiate'), requireRole('admin_imf','direction','department','service'), async (req, res) => {
   const { rows } = await q(
     `SELECT o.*, a.code_account, c.id AS client_id, c.full_name AS client_name
        FROM operation o JOIN account a ON a.id=o.account_id JOIN client c ON c.id=a.client_id

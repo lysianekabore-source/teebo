@@ -1,11 +1,12 @@
 import express from 'express';
 import { q, tx } from '../db.js';
 import { authenticate, requireFreshPassword, requireRole } from '../auth.js';
+import { habilit } from '../rbac_strict.js';
 import { getBranding, TEEBO_SUPPLIER, renderInvoice, setDocumentCsp } from '../documents.js';
-import { TRIAL_BILLING_NOTE } from '../pricing.js';
+import { TRIAL_BILLING_NOTE, computePricing, buildInvoiceLines } from '../pricing.js';
 
 const router = express.Router();
-router.use(authenticate, requireFreshPassword);
+router.use(['/org-settings'], authenticate, requireFreshPassword);
 
 /**
  * Paramètres de l'IMF — identité visuelle (logo) + mentions légales obligatoires.
@@ -20,12 +21,13 @@ const MAX_LOGO_BYTES = 400 * 1024; // 400 Ko : suffisant pour un logo net, lége
 
 // GDPR/périmètre : réservé aux IMF (pas au super-admin teebo).
 router.use((req, res, next) => {
+  if (!req.user) return next();
   if (req.user.role === 'teebo_admin') return res.status(403).json({ error: 'use_teebo_console' });
   next();
 });
 
 /** GET /api/v1/org-settings — identité visuelle + mentions légales + tarif TVA. */
-router.get('/org-settings', async (req, res, next) => {
+router.get('/org-settings', habilit('settings.manage'), async (req, res, next) => {
   try {
     const b = await getBranding(req.user.imf_id);
     res.json({
@@ -42,7 +44,9 @@ router.get('/org-settings', async (req, res, next) => {
         bank_details: b.bank_details,
         footer_note: b.footer_note,
         notify_whatsapp: b.notify_whatsapp,
-        notify_email: b.notify_email
+        notify_email: b.notify_email,
+        part_sociale_nominal_cents: await currentPartSociale(req.user.imf_id),
+        id_doc_validity_months: await currentIdDocValidity(req.user.imf_id)
       },
       imf: {
         code_imf: b.imf.code_imf, name: b.imf.name, type: b.imf.type,
@@ -57,7 +61,7 @@ router.get('/org-settings', async (req, res, next) => {
 });
 
 /** POST /api/v1/org-settings — enregistre (réservé admin_imf / direction). */
-router.post('/org-settings', requireRole('admin_imf', 'direction'), async (req, res, next) => {
+router.post('/org-settings', habilit('settings.manage'), requireRole('admin_imf', 'direction'), async (req, res, next) => {
   try {
     const b = req.body || {};
     const hasLogo = b.logo_data_url !== undefined;
@@ -120,6 +124,25 @@ router.post('/org-settings', requireRole('admin_imf', 'direction'), async (req, 
            ON CONFLICT (imf_id) DO UPDATE SET vat_rate_bp=EXCLUDED.vat_rate_bp, updated_at=now()`,
           [req.user.imf_id, bp]);
       }
+      // Valeur nominale de la part sociale (SCOOP) : paramètre IMF.
+      if (b.part_sociale_nominal_cents !== undefined) {
+        const ps = b.part_sociale_nominal_cents === null || b.part_sociale_nominal_cents === ''
+          ? null : Math.max(0, Math.round(Number(b.part_sociale_nominal_cents)));
+        await c.query(
+          `INSERT INTO imf_document_settings(imf_id, part_sociale_nominal_cents) VALUES ($1,$2)
+           ON CONFLICT (imf_id) DO UPDATE SET part_sociale_nominal_cents=EXCLUDED.part_sociale_nominal_cents, updated_at=now()`,
+          [req.user.imf_id, ps]);
+      }
+      // Durée de validité par défaut (en mois) de chaque type de pièce d'identité,
+      // selon la localité de l'IMF. Sert au calcul automatique de la date
+      // d'expiration lors de la création d'un client particulier.
+      if (b.id_doc_validity_months !== undefined) {
+        const vm = normalizeIdDocValidity(b.id_doc_validity_months);
+        await c.query(
+          `INSERT INTO imf_document_settings(imf_id, id_doc_validity_months) VALUES ($1,$2)
+           ON CONFLICT (imf_id) DO UPDATE SET id_doc_validity_months=EXCLUDED.id_doc_validity_months, updated_at=now()`,
+          [req.user.imf_id, vm]);
+      }
       // Répercussion des mentions légales sur la fiche imf (cohérence).
       if (b.legal_name || b.legal_address) {
         await c.query(
@@ -167,16 +190,42 @@ router.get('/org-settings/preview', async (req, res, next) => {
   try {
     const header = await getBranding(req.user.imf_id);
     const vatBp = (await currentVatBp(req.user.imf_id)) || 0;
-    const subtotal = 12000000;                                   // plan Business : 120 000 FCFA
+    // Aperçu de facture : on reprend les MODULES réellement souscrits par l'IMF
+    // (abonnement par module). À défaut de module facturable, on montre le
+    // module le plus courant (collecte & tontines) pour que la vignette reste
+    // toujours lisible. Plus aucune formule « Starter / Business / Enterprise ».
+    let modules = [];
+    try {
+      const { rows } = await q(
+        `SELECT p.module_key AS code, p.module_name AS label,
+                p.monthly_subscription_price::bigint AS price_cents
+           FROM institution_module_subscriptions s
+           JOIN saas_modules_pricing p ON p.module_key = s.module_key
+          WHERE s.institution_id = $1 AND COALESCE(s.is_active, TRUE)
+          ORDER BY p.position`, [req.user.imf_id]);
+      modules = rows.map((m) => ({ key: m.code, label: m.label, monthlyCents: Number(m.price_cents) }));
+    } catch (_) { modules = []; }
+    if (!modules.length) {
+      const { rows } = await q(
+        `SELECT module_key AS code, module_name AS label,
+                monthly_subscription_price::bigint AS price_cents
+           FROM saas_modules_pricing ORDER BY position LIMIT 1`);
+      modules = rows.map((m) => ({ key: m.code, label: m.label, monthlyCents: Number(m.price_cents) }));
+    }
+    const pr = computePricing(modules, 'mensuel');
+    const subtotal = pr.subtotalCents;                           // licence (1 fois) + modules du mois
     const vatCents = vatBp ? Math.round(subtotal * vatBp / 10000) : 0;
-    const total = subtotal + vatCents;
+    const total = subtotal - pr.discountCents + vatCents;
     const html = renderInvoice({
       header,
       kind: 'proforma',
       invoiceNo: 'PRO-' + new Date().getFullYear() + '-000001',
       issuedAt: new Date(),
-      plan: 'Abonnement teebo — Business',
+      periodLabel: '1 mois (mensuel)',
+      plan: 'Abonnement par module — ' + modules.map((m) => m.label).join(' + '),
+      lines: buildInvoiceLines({ modules, billing: 'mensuel', licenceCents: pr.licenceCents }),
       subtotalCents: subtotal,
+      discountCents: pr.discountCents,
       vatRateBp: vatBp,
       vatCents,
       totalCents: total,
@@ -198,6 +247,28 @@ function canEdit(role) { return ['admin_imf', 'direction'].includes(role); }
 async function currentVatBp(imfId) {
   const r = (await q('SELECT vat_rate_bp FROM imf_document_settings WHERE imf_id=$1', [imfId])).rows[0];
   return r ? r.vat_rate_bp : null;
+}
+async function currentPartSociale(imfId) {
+  const r = (await q('SELECT part_sociale_nominal_cents FROM imf_document_settings WHERE imf_id=$1', [imfId])).rows[0];
+  return r && r.part_sociale_nominal_cents != null ? Number(r.part_sociale_nominal_cents) : null;
+}
+async function currentIdDocValidity(imfId) {
+  const r = (await q('SELECT id_doc_validity_months FROM imf_document_settings WHERE imf_id=$1', [imfId])).rows[0];
+  return r && r.id_doc_validity_months ? r.id_doc_validity_months : {};
+}
+// Ne garde que les 4 types de pièce connus, convertis en nombre de mois > 0.
+const ID_DOC_CODES = ['cni', 'passeport', 'cedeao', 'consulaire_sejour'];
+function normalizeIdDocValidity(input) {
+  const out = {};
+  if (input && typeof input === 'object') {
+    for (const k of ID_DOC_CODES) {
+      const v = input[k];
+      if (v === undefined || v === null || v === '') continue;
+      const m = Math.trunc(Number(v));
+      if (Number.isFinite(m) && m > 0) out[k] = m;
+    }
+  }
+  return out;
 }
 
 export default router;

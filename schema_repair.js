@@ -75,7 +75,95 @@ END $$;`, 'imf_status.deleted'],
   ['ALTER TABLE imf_branding ADD COLUMN IF NOT EXISTS share_capital_cents BIGINT', 'imf_branding.share_capital_cents'],
   ['ALTER TABLE imf_branding ADD COLUMN IF NOT EXISTS legal_address TEXT', 'imf_branding.legal_address'],
 
-  // --- 4. Index (facultatifs) --------------------------------------------
+
+  // --- 4. Table des TARIFS DES MODULES (cause du 500 sur /plans) ----------
+  // Sans elle : « relation saas_modules_pricing does not exist » et la grille
+  // tarifaire, la proforma et la console renvoyaient une erreur 500.
+  [`CREATE TABLE IF NOT EXISTS saas_modules_pricing (
+     module_key VARCHAR(50) PRIMARY KEY,
+     module_name VARCHAR(100) NOT NULL,
+     monthly_subscription_price NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (monthly_subscription_price >= 0),
+     is_available BOOLEAN NOT NULL DEFAULT TRUE,
+     position INTEGER NOT NULL DEFAULT 100,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`, 'saas_modules_pricing.table'],
+
+  ['ALTER TABLE saas_modules_pricing ADD COLUMN IF NOT EXISTS is_available BOOLEAN NOT NULL DEFAULT TRUE', 'saas_modules_pricing.is_available'],
+  ['ALTER TABLE saas_modules_pricing ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 100', 'saas_modules_pricing.position'],
+
+  // Tarifs officiels (ceux du code). ON CONFLICT DO NOTHING : un tarif deja
+  // personnalise par l editeur n est JAMAIS ecrase.
+  [`INSERT INTO saas_modules_pricing (module_key, module_name, monthly_subscription_price, position) VALUES
+      ('MODULE_COLLECTE_TONTINE',     'Collecte et tontines',        75000.00, 10),
+      ('MODULE_DOSSIER_CREDIT',       'Dossiers de credit',        100000.00, 20),
+      ('MODULE_COMPLIANCE_KYC',       'Conformite et KYC (LCB-FT)',  25000.00, 30),
+      ('MODULE_COMPTABILITE_AVANCEE', 'Comptabilite avancee',      100000.00, 40)
+    ON CONFLICT (module_key) DO NOTHING`, 'saas_modules_pricing.tarifs'],
+
+  // --- 5. Reglages globaux (licence unique, remise annuelle) ---------------
+  [`CREATE TABLE IF NOT EXISTS saas_global_settings (
+     setting_key VARCHAR(50) PRIMARY KEY,
+     setting_value NUMERIC(12,2) NOT NULL,
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`, 'saas_global_settings.table'],
+  [`INSERT INTO saas_global_settings (setting_key, setting_value) VALUES
+      ('UNIQUE_LICENSE_PRICE', 250000.00),
+      ('ANNUAL_DISCOUNT_PERCENT', 15.00)
+    ON CONFLICT (setting_key) DO NOTHING`, 'saas_global_settings.valeurs'],
+
+  // --- 6. Modules souscrits par chaque IMF (console editeur) --------------
+  [`CREATE TABLE IF NOT EXISTS institution_module_subscriptions (
+     subscription_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+     institution_id UUID NOT NULL REFERENCES imf(id) ON DELETE CASCADE,
+     module_key VARCHAR(50) NOT NULL REFERENCES saas_modules_pricing(module_key),
+     is_active BOOLEAN NOT NULL DEFAULT TRUE,
+     activated_at DATE NOT NULL DEFAULT CURRENT_DATE,
+     deactivated_at DATE,
+     is_trial BOOLEAN NOT NULL DEFAULT FALSE,
+     trial_end_date DATE,
+     last_billed_month DATE,
+     created_by UUID,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     UNIQUE (institution_id, module_key))`, 'institution_module_subscriptions.table'],
+  ['CREATE INDEX IF NOT EXISTS idx_ims_institution ON institution_module_subscriptions (institution_id, is_active)', 'index.ims'],
+
+
+  // --- 6 bis. Licence, factures SaaS (console editeur : factures, revenus) --
+  [`CREATE TABLE IF NOT EXISTS institution_license_status (
+     institution_id UUID PRIMARY KEY REFERENCES imf(id) ON DELETE CASCADE,
+     license_paid BOOLEAN NOT NULL DEFAULT FALSE,
+     paid_at TIMESTAMPTZ,
+     invoice_ref TEXT,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`, 'institution_license_status.table'],
+  [`CREATE TABLE IF NOT EXISTS saas_invoices (
+     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+     institution_id UUID NOT NULL REFERENCES imf(id) ON DELETE CASCADE,
+     invoice_number TEXT,
+     billing_period_start DATE NOT NULL,
+     billing_period_end DATE NOT NULL,
+     fixed_cost_total NUMERIC(12,2) NOT NULL DEFAULT 0,
+     variable_cost_total NUMERIC(12,2) NOT NULL DEFAULT 0,
+     grand_total NUMERIC(12,2) NOT NULL DEFAULT 0,
+     status TEXT NOT NULL DEFAULT 'UNPAID',
+     generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     paid_at TIMESTAMPTZ,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now())`, 'saas_invoices.table'],
+  ['CREATE UNIQUE INDEX IF NOT EXISTS uq_saas_invoices_imf_period ON saas_invoices (institution_id, billing_period_start)', 'index.saas_invoices'],
+  [`CREATE TABLE IF NOT EXISTS saas_invoice_lines (
+     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+     invoice_id UUID NOT NULL REFERENCES saas_invoices(id) ON DELETE CASCADE,
+     institution_id UUID NOT NULL REFERENCES imf(id) ON DELETE CASCADE,
+     module_key VARCHAR(50),
+     line_type TEXT NOT NULL,
+     label TEXT NOT NULL,
+     statut_ligne TEXT NOT NULL DEFAULT 'facture',
+     trial_end_date DATE,
+     amount_fcfa NUMERIC(12,2) NOT NULL DEFAULT 0,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now())`, 'saas_invoice_lines.table'],
+  ['CREATE INDEX IF NOT EXISTS idx_saas_invoice_lines_invoice ON saas_invoice_lines (invoice_id)', 'index.saas_invoice_lines'],
+
+  // --- 7. Index (facultatifs) --------------------------------------------
   ['CREATE INDEX IF NOT EXISTS idx_access_request_imf ON access_request (imf_id)', 'index.access_request_imf'],
   ['CREATE INDEX IF NOT EXISTS idx_imf_status ON imf (status)', 'index.imf_status']
 ];
