@@ -26,7 +26,14 @@ const r = Router();
 // un identifiant d'institution inconnu provoquait une erreur 500 (cle
 // etrangere) au lieu d'un refus lisible. Le controle est pose UNE fois,
 // pour toutes les routes du fichier : impossible d'en oublier une.
+// CORRECTIF 51 — CE GARDE NE S'EXECUTE PLUS SANS SESSION.
+// Monte sur /api/v1, il s'appliquait a TOUTE l'API (login, pays UEMOA, demandes…)
+// et, sans session, repondait 404 « imf_introuvable » AVANT le routeur
+// d'authentification : l'ecran restait sur « Chargement… ».
 r.use(async (req, res, next) => {
+  const p = String(req.path || '');
+  if (!/^\/saas(\/|$)/.test(p)) return next();          // hors facturation : on passe
+  if (!req.user) return next();                          // non connecte : la route repondra 401
   try {
     if (await imfExiste(res, req.dbImfId)) return next();
   } catch (e) { return next(e); }

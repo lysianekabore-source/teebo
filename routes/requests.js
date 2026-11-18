@@ -63,6 +63,18 @@ async function ensureRequestSchema() {
     ALTER TABLE access_request ADD COLUMN IF NOT EXISTS subscription_cents  BIGINT;
     ALTER TABLE access_request ADD COLUMN IF NOT EXISTS discount_cents      BIGINT DEFAULT 0;
     ALTER TABLE access_request ADD COLUMN IF NOT EXISTS decision            TEXT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS plan_code            TEXT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS proforma_no          TEXT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS proforma_amount_cents BIGINT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS proforma_validated    BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS proforma_validated_at TIMESTAMPTZ;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS decided_by            UUID;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS decided_at            TIMESTAMPTZ;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS module_codes          TEXT[] NOT NULL DEFAULT '{}'::text[];
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS module_count          INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS full_pack             BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS pack_discount_cents   BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS annual_discount_cents BIGINT NOT NULL DEFAULT 0;
   `);
   _requestSchemaEnsured = true;
 }
@@ -130,7 +142,6 @@ function validEmail(e) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e || ''); }
 router.post('/', async (req, res, next) => {
   try {
     const b = req.body || {};
-    await ensureRequestSchema();
     const required = ['lastname','firstname','position','country_code','imf_type',
       'capital_cents','bceao_agreement_no','rccm','ifu','whatsapp','phone_main','city','email','admin_name','imf_name'];
     // On renvoie TOUS les champs manquants (et pas seulement le premier) : le
@@ -138,10 +149,24 @@ router.post('/', async (req, res, next) => {
     // à renvoyer autant de fois qu'il manque de champs.
     const missing = required.filter(f => b[f] === undefined || b[f] === null || b[f] === '');
     if (missing.length)
-      return res.status(422).json({ error: 'missing_field', field: missing[0], missing });
-    if (!UEMOA_CODES.includes(b.country_code)) return res.status(422).json({ error: 'country_not_uemoa' });
-    if (!['SA','SCOOP'].includes(b.imf_type)) return res.status(422).json({ error: 'invalid_imf_type' });
-    if (!validEmail(b.email)) return res.status(422).json({ error: 'invalid_email' });
+      return res.status(422).json({ error: 'missing_field', field: missing[0], missing,
+        message: 'Certaines informations obligatoires sont manquantes. Complétez-les puis renvoyez le formulaire.' });
+    if (!UEMOA_CODES.includes(b.country_code))
+      return res.status(422).json({ error: 'country_not_uemoa', field: 'country_code',
+        message: 'Le pays de l’institution doit appartenir à l’UEMOA.' });
+    if (!['SA','SCOOP'].includes(b.imf_type))
+      return res.status(422).json({ error: 'invalid_imf_type', field: 'imf_type',
+        message: 'Choisissez la forme juridique de l’institution (SA ou SCOOP).' });
+    if (!validEmail(b.email))
+      return res.status(422).json({ error: 'invalid_email', field: 'email',
+        message: 'L’adresse e-mail saisie n’est pas valide.' });
+
+    // Le schéma n'est réparé qu'APRÈS la validation : un formulaire incomplet ne
+    // doit jamais dépendre d'un accès à la base pour afficher son message. Si la
+    // réparation échoue, on continue : les colonnes existent déjà en production,
+    // et l'insertion signalera elle-même la cause exacte si ce n'est pas le cas.
+    try { await ensureRequestSchema(); }
+    catch (err) { console.error('[requests] ensureRequestSchema:', err && err.message); }
 
     // --- Anti-doublon : une seule demande d'accès par IMF -------------------
     // On refuse une 2e demande pour la même IMF, identifiée par son numéro
