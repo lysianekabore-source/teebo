@@ -1,0 +1,72 @@
+teeBo — API : correctif « Deploy failed / Exited with status 2 »
+====================================================================
+
+1. LA CAUSE (lue dans VOTRE journal Render)
+--------------------------------------------------------------------
+   sh: 0: cannot open ./start.sh: No such file
+   ==> Exited with status 2
+
+   Le conteneur a bien ete construit (toutes les couches #14 et #15 sont
+   OK), il a bien demarre... puis il a cherche le fichier ./start.sh pour
+   lancer l'application et ne l'a pas trouve. Il s'est donc arrete tout de
+   suite : c'est exactement ce que signifie « Exited with status 2 ».
+
+   Pourquoi le fichier manquait ? Le Dockerfile terminait par :
+        CMD ["sh", "./start.sh"]
+   alors qu'aucune ligne COPY ne copiait start.sh dans l'image.
+   Les versions precedentes EXPLIQUAIENT ce correctif dans les commentaires
+   sans jamais l'ecrire : c'est pour cela que l'erreur revenait a chaque
+   deploiement.
+
+   Deuxieme probleme trouve dans le paquet precedent : un dossier nomme
+   « Dockerfile » contenait une ANCIENNE copie du serveur (sans les
+   correctifs, migrations arretees a la vague 9). Il pouvait etre pris a la
+   place du vrai Dockerfile. Il est supprime.
+
+2. CE QUI EST CORRIGE, DEFINITIVEMENT
+--------------------------------------------------------------------
+   a) start.sh est COPIE dans l'image (COPY + chmod +x).
+   b) La commande de demarrage ne depend plus de ce script :
+        CMD ["node", "src/server.js"]
+      Meme si start.sh disparaissait, le service demarrerait.
+   c) Garde-fou de construction : si src/server.js manque, la construction
+      echoue avec un message clair au lieu d'echouer au demarrage.
+   d) Le dossier en double nomme « Dockerfile » est supprime.
+   e) Un seul niveau de dossiers : le Dockerfile est A LA RACINE du paquet.
+
+3. COMMENT DEPLOYER CE PAQUET
+--------------------------------------------------------------------
+   a) Decompressez l'archive. Vous devez voir DIRECTEMENT :
+        Dockerfile   package.json   package-lock.json   start.sh
+        src/   public/   db/
+      (et non un dossier « SERVEUR » contenant un autre dossier.)
+   b) Render > service teebo-api-p825 > onglet Deploys >
+      « Manual Deploy » > « Clear build cache & deploy ».
+      Si l'ecran vous demande d'ajouter les fichiers (« Add files via
+      upload »), selectionnez TOUT le contenu du dossier decompresse
+      (Dockerfile inclus, a la racine).
+   c) Attendez le statut « Live ». Le journal doit afficher :
+        ==> Demarrage du serveur API ...
+        teebo API en ecoute sur 0.0.0.0:3000
+
+4. SI VOUS VOULEZ DEBLOQUER TOUT DE SUITE (sans reconstruire)
+--------------------------------------------------------------------
+   L'image actuelle contient bien src/server.js, seul start.sh manque.
+   a) Render > teebo-api-p825 > Settings > section « Docker » >
+      champ « Docker Command ».
+   b) Saisissez exactement :   node src/server.js
+   c) Save Changes, puis Manual Deploy > Deploy latest commit.
+   Cela fait demarrer l'image existante. Mais le CODE reste l'ancien :
+   faites quand meme le deploiement du point 3 pour beneficier des
+   correctifs (formulaire « Demander un acces », console editeur).
+
+5. VERIFICATION APRES DEPLOIEMENT
+--------------------------------------------------------------------
+   Ouvrez dans le navigateur :
+     https://teebo-api-p825.onrender.com/ready
+        -> "pret": true  et  "reparation": "ok"
+     https://teebo-api-p825.onrender.com/api/v1/uemoa-countries
+        -> la liste des 8 pays de l'UEMOA (plus d'erreur)
+
+   Rappel : compte gratuit = le service s'endort apres inactivite ; le
+   premier appel peut prendre jusqu'a 50 secondes. C'est normal.
