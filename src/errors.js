@@ -25,10 +25,14 @@ const PG_ERRORS = {
   '23514': [422, 'check_violation', 'Une valeur saisie ne respecte pas le format attendu par la réglementation.'],
   '22P02': [400, 'invalid_input_syntax', 'Le format d’une valeur saisie est invalide (nombre ou date).'],
   '22001': [400, 'value_too_long', 'Une valeur saisie est trop longue pour le champ concerné.'],
+  // VAGUE 52 : capital / montant hors des limites autorisées par la base :
+  // ce n'est pas une panne du serveur mais une saisie à corriger.
+  '22003': [422, 'numeric_out_of_range', 'Un montant saisi est hors des limites autorisées (capital trop élevé ou trop faible). Vérifiez le capital social.'],
   '42703': [500, 'missing_column', 'Le serveur n’est pas à jour (colonne manquante en base). Prévenez l’administrateur.'],
   '42P01': [500, 'missing_table', 'Le serveur n’est pas à jour (table manquante en base). Prévenez l’administrateur.'],
   '42P02': [500, 'missing_type', 'Le serveur n’est pas à jour (type manquant en base). Prévenez l’administrateur.'],
   '40001': [503, 'retry_later', 'Trop d’opérations simultanées sur ce compte. Réessayez dans un instant.'],
+  '42883': [503, 'fonction_absente', 'La base de données termine sa mise à jour. Réessayez dans une minute.'],
   '57014': [503, 'query_timeout', 'Le traitement a dépassé le temps imparti. Réessayez dans un instant.']
 };
 
@@ -39,6 +43,11 @@ const SAFE_STATUS = new Set([400, 401, 402, 403, 404, 405, 409, 410, 413, 415, 4
 /* (les routes lèvent souvent Error('compte_bloque') ; ce dictionnaire évite */
 /*  d'afficher au client un identifiant technique à la place d'une phrase).  */
 const METIER = {
+  imf_introuvable: 'Cette institution (IMF) est introuvable : vérifiez son identifiant.',
+  tenant_mismatch: 'Changement d’institution non autorisé pour ce compte.',
+  feature_disabled: 'Le module demandé n’est pas actif pour votre institution.',
+  fonction_absente: 'La base de données termine sa mise à jour. Réessayez dans une minute.',
+  route_inconnue: 'Cette adresse de l’API n’existe pas ou a changé de version.',
   compte_bloque: 'Ce compte est bloqué : aucune opération n’est possible.',
   compte_introuvable: 'Le compte demandé est introuvable.',
   client_introuvable: 'Le client demandé est introuvable.',

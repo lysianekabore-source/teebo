@@ -13,6 +13,16 @@ import { defaultPermissionKeysForRole } from '../permissions.js';
 import { envoyerCodeAcces } from '../codes_acces.js';
 
 const router = express.Router();
+// CORRECTIF 52 — CAUSE RACINE DES ECRANS DE LA CONSOLE.
+// Toutes les routes de ce fichier sont ecrites SANS prefixe (/stats, /imfs,
+// /requests, /imf-admins, /profiles-matrix, /me…). Le serveur les montait
+// pourtant telles quelles sur /api/v1, alors que le site appelle
+// /api/v1/teebo/stats, /api/v1/teebo/imfs, etc. Resultat : 404 sur CHAQUE
+// ecran de la console (tableau de bord fige sur « Chargement… », demandes et
+// institutions en « Une erreur est survenue »). On pose donc le prefixe ici,
+// a un seul endroit, pour que l'adresse publique soit /api/v1/teebo/...
+// (et surtout pour qu'aucune de ces routes sensibles ne soit joignable a la
+// racine de l'API sans la garde teebo_admin).
 
 /*  VAGUE 49 — REFUS PROPRE QUAND L'IMF N'EXISTE PAS (plus de 500)       */
 // La console editeur vise une IMF par son identifiant. Si cet identifiant
@@ -47,9 +57,10 @@ async function imfExiste(res, id) {
 // existe ; sans session il repond 401 « not_authenticated » et coupe TOUTE
 // requete inconnue de /api/v1 placee apres lui (dont /2fa/enroll/start).
 // La garde ne s'exerce donc plus que sur les chemins de la console editeur.
+// Le routeur est desormais entierement reserve a l'editeur : plus de liste de
+// prefixes a tenir a jour (c'est cette liste incomplete qui laissait passer
+// certaines routes et en bloquait d'autres).
 router.use((req, res, next) => {
-  const p = String(req.path || '');
-  if (!/^\/(teebo|tenants|tableau-de-bord|profiles-matrix|me|requests)(\/|$)/.test(p)) return next();
   return authenticate(req, res, (e) => (e ? next(e) : requireRole('teebo_admin')(req, res, next)));
 });
 
@@ -238,7 +249,24 @@ router.post('/requests/:id/reject', async (req, res, next) => {
 // --- Liste des IMF ---------------------------------------------------------
 router.get('/imfs', async (_req, res, next) => {
   try {
-    const { rows } = await q(`SELECT * FROM imf ORDER BY created_at DESC`);
+    // CORRECTIF 52 : l'ecran « Institutions » affiche le code d'acces de
+    // l'administrateur de chaque IMF. La liste ne le renvoyait pas : la
+    // colonne restait vide et les boutons « Renvoyer / Regenerer » n'avaient
+    // aucun compte cible.
+    const { rows } = await q(
+      `SELECT i.*,
+              (SELECT u.code_user FROM app_user u
+                WHERE u.imf_id = i.id AND u.role = 'admin_imf'
+                ORDER BY u.created_at ASC LIMIT 1) AS admin_code,
+              (SELECT u.must_change_password FROM app_user u
+                WHERE u.imf_id = i.id AND u.role = 'admin_imf'
+                ORDER BY u.created_at ASC LIMIT 1) AS admin_must_change,
+              (SELECT u.id FROM app_user u
+                WHERE u.imf_id = i.id AND u.role = 'admin_imf'
+                ORDER BY u.created_at ASC LIMIT 1) AS admin_id
+         FROM imf i
+        WHERE i.status::text <> 'deleted'
+        ORDER BY i.created_at DESC`);
     res.json({ imfs: rows });
   } catch (e) { next(e); }
 });
@@ -258,11 +286,16 @@ router.get('/imfs/:id', async (req, res, next) => {
          LEFT JOIN institution_license_status l ON l.institution_id = im.id
         WHERE im.id = $1`, [req.params.id])).rows[0];
     if (!imf) return res.status(404).json({ error: 'imf_introuvable' });
+    // CORRECTIF 52 : l'ecran « Detail » lit d.users ; le serveur ne renvoyait
+    // que d.imf_admins -> « Aucun utilisateur » s'affichait pour toutes les
+    // IMF. On renvoie desormais les deux noms, avec le code d'acces, la 2FA
+    // et l'etat de chaque compte.
     const admins = (await q(
-      `SELECT id, email, full_name, phone, is_active, created_at
-         FROM app_user WHERE imf_id = $1 AND role = 'admin_imf'
-        ORDER BY is_active DESC, created_at`, [req.params.id])).rows;
-    res.json({ imf, imf_admins: admins });
+      `SELECT id, email, full_name, phone, is_active, created_at, role,
+              code_user, twofa_enabled
+         FROM app_user WHERE imf_id = $1
+        ORDER BY (role = 'admin_imf') DESC, is_active DESC, created_at`, [req.params.id])).rows;
+    res.json({ imf, users: admins, imf_admins: admins });
   } catch (e) { next(e); }
 });
 
@@ -287,7 +320,10 @@ router.post('/imfs/:id/status', async (req, res, next) => {
     const STATUTS = { activer: 'active', suspendre: 'suspended',
       reactiver: 'active', essai: 'trial', rejeter: 'rejected' };
     const action = String(b.action || b.status || '').toLowerCase();
-    const statut = STATUTS[action] || (['active','trial','suspended','rejected'].includes(action) ? action : null);
+    // CORRECTIF 52 : la liste deroulante propose aussi « Approuvee » et
+    // « En attente » ; elles etaient refusees (400 statut_invalide).
+    const VALIDES = ['pending', 'approved', 'trial', 'active', 'suspended', 'rejected'];
+    const statut = STATUTS[action] || (VALIDES.includes(action) ? action : null);
     if (!statut) {
       return res.status(400).json({ error: 'statut_invalide',
         message: 'Statut attendu : activer, suspendre, réactiver, essai ou rejeter.' });
@@ -361,16 +397,100 @@ router.post('/users/:id/toggle', async (req, res, next) => {
 // plus dans les listes. Une réactivation reste possible par le statut.
 router.post('/imfs/:id/delete', async (req, res, next) => {
   try {
-    const { rows } = await q(
-      `UPDATE imf SET status = 'deleted', updated_at = now()
-        WHERE id = $1 RETURNING id, name, code_imf`, [req.params.id]);
-    if (!rows[0]) return res.status(404).json({ error: 'imf_introuvable' });
+    const b = req.body || {};
+    const mode = String(b.mode || 'soft') === 'hard' ? 'hard' : 'soft';
+    const cible = (await q('SELECT id, name, code_imf FROM imf WHERE id=$1', [req.params.id])).rows[0];
+    if (!cible) return res.status(404).json({ error: 'imf_introuvable',
+      message: 'Cette institution est introuvable.' });
+    if (cible.code_imf === 'TBO-SYS-000000') {
+      return res.status(403).json({ error: 'cannot_delete_system_tenant',
+        message: 'Le tenant systeme teebo ne peut pas etre supprime.' });
+    }
+    // Mode « definitif » : purge en cascade, uniquement sur demande explicite
+    // (le formulaire exige la saisie du code de l'IMF).
+    if (mode === 'hard') {
+      await q('DELETE FROM imf WHERE id=$1', [req.params.id]);
+      res.json({ ok: true,
+        message: "L'IMF a ete supprimee definitivement, avec ses donnees." });
+      return;
+    }
+    // Mode « archiver ». CORRECTIF 52 : la valeur 'deleted' n'existait pas dans
+    // le type enum imf_status -> l'archivage renvoyait une erreur 500. Le
+    // script de migration v52 ajoute la valeur ; si la base n'a pas encore ete
+    // mise a jour, on retombe proprement sur « suspendue ».
+    let statut = 'deleted';
+    try {
+      await q(`UPDATE imf SET status = 'deleted'::imf_status, updated_at = now() WHERE id = $1`,
+        [req.params.id]);
+    } catch (e) {
+      if (String(e && e.code) !== '22P02') throw e;
+      await q(`UPDATE imf SET status = 'suspended'::imf_status, updated_at = now() WHERE id = $1`,
+        [req.params.id]);
+      statut = 'suspended';
+    }
     await q(`UPDATE app_user SET is_active = FALSE WHERE imf_id = $1 AND role <> 'teebo_admin'`,
       [req.params.id]);
     await q(`INSERT INTO audit_log(imf_id, actor_id, action, entity, entity_id, payload)
-             VALUES ($1,$2,'imf.archive','imf',$1,'{}'::jsonb)`, [req.params.id, req.user.id]);
-    res.json({ ok: true,
-      message: 'L\'IMF a été archivée : ses données sont conservées, l\'accès est fermé.' });
+             VALUES ($1,$2,'imf.archive','imf',$1,$3::jsonb)`,
+      [req.params.id, req.user.id, JSON.stringify({ statut })]);
+    res.json({ ok: true, statut,
+      message: statut === 'deleted'
+        ? "L'IMF a ete archivee : ses donnees sont conservees, l'acces est ferme."
+        : "L'IMF a ete suspendue et son acces ferme (mise a jour de la base en cours)." });
+  } catch (e) { next(e); }
+});
+
+// ---------------------------------------------------------------------------
+// CORRECTIF 52 — RENVOYER / REGENERER LE CODE D'ACCES DEPUIS LES INSTITUTIONS
+// ---------------------------------------------------------------------------
+// Les boutons de l'ecran « Institutions » appelaient /imfs/:id/resend-code et
+// /imfs/:id/regenerate-code : ces deux adresses n'existaient pas (404). Elles
+// sont ajoutees ici et s'appuient sur le moteur de codes d'acces (meme envoi,
+// memes liens WhatsApp / e-mail, meme journal).
+router.post('/imfs/:id/resend-code', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    if (!(await imfExiste(res, id))) return undefined;
+    const u = (await q(
+      `SELECT u.id, u.full_name, u.email, u.phone, u.code_user, u.imf_id, i.name AS imf_name
+         FROM app_user u JOIN imf i ON i.id = u.imf_id
+        WHERE u.imf_id = $1 AND u.role = 'admin_imf'
+        ORDER BY u.created_at ASC LIMIT 1`, [id])).rows[0];
+    if (!u) return res.status(404).json({ error: 'no_admin',
+      message: "Aucun administrateur n'est rattache a cette institution." });
+    const code = u.code_user || (await import('../codes_acces.js')).verifierEtCompleterCode(u.id);
+    const envoi = await envoyerCodeAcces(u.imf_id, {
+      id: u.id, full_name: u.full_name, email: u.email, phone: u.phone, code_user: code
+    }, { channel: 'both', dispatchedBy: req.user.id, req, origin: 'console_teebo',
+         dispatchedRole: req.user.role, notes: req.body && req.body.notes });
+    res.json({ ok: true, code_user: code, imf_name: u.imf_name,
+      send: Object.assign({ auto_sent: !!envoi.sent_now }, envoi) });
+  } catch (e) { next(e); }
+});
+
+router.post('/imfs/:id/regenerate-code', async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    if (!(await imfExiste(res, id))) return undefined;
+    const u = (await q(
+      `SELECT u.id, u.full_name, u.email, u.phone, u.imf_id, i.name AS imf_name
+         FROM app_user u JOIN imf i ON i.id = u.imf_id
+        WHERE u.imf_id = $1 AND u.role = 'admin_imf'
+        ORDER BY u.created_at ASC LIMIT 1`, [id])).rows[0];
+    if (!u) return res.status(404).json({ error: 'no_admin',
+      message: "Aucun administrateur n'est rattache a cette institution." });
+    const moteur = await import('../codes_acces.js');
+    const nouveau = await moteur.regenererCodeAcces(u.id,
+      (req.body && req.body.motif) || 'Regeneration depuis la console editeur', req.user.id);
+    await q('UPDATE app_user SET is_active = TRUE WHERE id = $1', [u.id]);
+    const envoi = await envoyerCodeAcces(u.imf_id, {
+      id: u.id, full_name: nouveau.full_name || u.full_name,
+      email: u.email, phone: u.phone, code_user: nouveau.nouveau_code
+    }, { channel: 'both', dispatchedBy: req.user.id, req, origin: 'console_teebo',
+         dispatchedRole: req.user.role, previousCode: nouveau.ancien_code,
+         notes: 'Regeneration depuis la console editeur' });
+    res.json({ ok: true, code_user: nouveau.nouveau_code, imf_name: u.imf_name,
+      send: Object.assign({ auto_sent: !!envoi.sent_now }, envoi) });
   } catch (e) { next(e); }
 });
 
@@ -426,7 +546,7 @@ router.get('/stats', async (_req, res, next) => {
         (SELECT count(*) FROM imf WHERE status='trial') AS trials,
         (SELECT count(*) FROM imf WHERE status='active') AS actives,
         (SELECT count(*) FROM imf WHERE status='suspended') AS suspended,
-        (SELECT count(*) FROM imf WHERE status='deleted') AS supprimees,
+        (SELECT count(*) FROM imf WHERE status::text = 'deleted') AS supprimees,
         (SELECT count(*) FROM access_request WHERE decision IS NULL AND proforma_validated) AS pending,
         (SELECT count(*) FROM app_user) AS users,
         (SELECT count(*) FROM app_user WHERE is_active) AS users_actifs,
@@ -701,4 +821,7 @@ router.post('/saas/imfs/:id/licence', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-export default router;
+// Prefixe unique et definitif : /api/v1/teebo/... (voir l'en-tete du fichier).
+const app = express.Router();
+app.use('/teebo', router);
+export default app;
