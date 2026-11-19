@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 import { userHasPermission } from './auth.js';
 import { q } from './db.js';
+import { ensureUser } from './auth.js';
 
 /**
  * Middleware : exige AU MOINS UNE des habilitations fournies.
@@ -26,6 +27,8 @@ export function habilit(...keys) {
   const list = keys.flat().filter(Boolean);
   return async (req, res, next) => {
     try {
+      // VAGUE 59 : on retente l'identification avant de refuser (voir auth.js).
+      if (!req.user) { try { await ensureUser(req); } catch (e) {} }
       if (!req.user) return res.status(401).json({ error: 'not_authenticated' });
       for (const k of list) {
         if (await userHasPermission(req.user, k)) {

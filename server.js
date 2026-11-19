@@ -232,7 +232,7 @@ app.use('/api/v1/governance', governanceConformiteRoutes);
 // ligne : c'est ce qui manquait pour distinguer « session refusée » et
 // « ancien serveur encore actif ».
 // ---------------------------------------------------------------------------
-const API_BUILD = 'v58-attachuser-2026-11-19';
+const API_BUILD = 'v59-gardes-globales-2026-11-19';
 app.get('/api/v1/version', (_req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({
