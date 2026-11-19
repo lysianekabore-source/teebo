@@ -10,7 +10,7 @@ import httpMod from 'http';
 import { fileURLToPath } from 'url';
 
 import { q, tx, pool } from './db.js';
-import { authenticate, attachUser, requireFreshPassword, requireRole, createSession } from './auth.js';
+import { authenticate, attachUser, requireFreshPassword, requireRole, createSession, hashToken } from './auth.js';
 import authRoutes, { court as authCourtesRoutes } from './routes/auth.js';
 import { tenantContext } from './tenant.js';
 import { checkModuleActivation } from './modules.js';
@@ -226,6 +226,46 @@ app.use('/api/v1', governanceRoutes);
 // VAGUE 29 — conformite prudentielle, risques & PCA, echeancier, exports reglementaires
 app.use('/api/v1/governance', governanceConformiteRoutes);
 
+// ---------------------------------------------------------------------------
+// VAGUE 58 — REPÈRES DE DÉPLOIEMENT (publics, sans aucune donnée sensible).
+// Sert à vérifier d'un coup d'œil que la bonne version du serveur est en
+// ligne : c'est ce qui manquait pour distinguer « session refusée » et
+// « ancien serveur encore actif ».
+// ---------------------------------------------------------------------------
+const API_BUILD = 'v58-attachuser-2026-11-19';
+app.get('/api/v1/version', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    ok: true, build: API_BUILD, attach_user: true,
+    routes: { mon_tableau_bord: true, clients: true, clients_new: true },
+    now: new Date().toISOString()
+  });
+});
+app.get('/api/v1/diag-session', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const out = { build: API_BUILD, cookie_present: false, cookie_len: 0, session_found: false,
+    user: null, idle_minutes: null, server_time: new Date().toISOString() };
+  try {
+    const token = (req.cookies && req.cookies.teebo_session) || '';
+    out.cookie_present = !!token;
+    out.cookie_len = token ? String(token).length : 0;
+    if (token) {
+      const r = await q(
+        `SELECT s.last_seen_at, s.expires_at, s.revoked, u.role, u.code_user
+           FROM session s JOIN app_user u ON u.id = s.user_id
+          WHERE s.token_hash = $1`, [hashToken(token)]);
+      if (r.rows.length) {
+        const row = r.rows[0];
+        out.session_found = !row.revoked;
+        out.user = { role: row.role, code_user: row.code_user };
+        out.idle_minutes = row.last_seen_at
+          ? Math.round((Date.now() - new Date(row.last_seen_at).getTime()) / 60000) : null;
+      }
+    }
+  } catch (e) { out.error = String(e && e.message || e).slice(0, 120); }
+  res.json(out);
+});
+
 // État de préparation, exposé sur /ready (et utilisé par /healthz).
 const etat = { migration: 'en attente', demarre: new Date().toISOString(), erreur: null };
 app.get('/ready', async (_req, res) => {
@@ -344,7 +384,36 @@ if (hasSite) {
 }
 
 // Sante
-app.get('/healthz', (_req, res) => res.json({ ok: true }));
+// VAGUE 58 — marqueur de version : permet de vérifier en une seconde que le
+// serveur déployé est bien celui-ci (et non une version plus ancienne).
+app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v58', attache: true }));
+
+/* VAGUE 58 — DIAGNOSTIC « non connecté alors que je suis connecté ».
+   Ouvrez /api/v1/diag-session dans le navigateur APRÈS vous être connecté :
+     cookieRecu = true  -> le cookie de session circule bien
+     session = valide   -> la session existe en base : le problème n'est pas là
+   Aucune donnée sensible n'est renvoyée. */
+app.get('/api/v1/diag-session', async (req, res) => {
+  const token = req.cookies && req.cookies.teebo_session;
+  if (!token) {
+    return res.json({ cookieRecu: false, session: 'aucun_cookie',
+      message: 'Le navigateur ne transmet pas le cookie de session (refusé ou bloqué).' });
+  }
+  try {
+    const r = await q(`SELECT s.id, s.revoked, s.expires_at, u.email
+                         FROM session s JOIN app_user u ON u.id = s.user_id
+                        WHERE s.token_hash = $1`, [hashToken(token)]);
+    if (!r.rows.length) {
+      return res.json({ cookieRecu: true, session: 'inconnue',
+        message: 'Cookie transmis mais aucune session correspondante en base.' });
+    }
+    const s = r.rows[0];
+    return res.json({ cookieRecu: true, session: s.revoked ? 'revoquee' : 'valide',
+      expire_le: s.expires_at, compte: s.email });
+  } catch (e) {
+    return res.json({ cookieRecu: true, session: 'erreur', message: e.message });
+  }
+});
 
 // Pages (fallback HTML)
 const SITE = process.env.PUBLIC_SITE_URL || 'https://teebo-imf.netlify.app';
