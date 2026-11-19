@@ -1,7 +1,14 @@
 =====================================================================
- teebo — SERVEUR (Render) — correctif du 19/11/2026 (vague 66)
- UNITÉS : agences, POINTS DE SERVICE rattachés, et affectation des agents
+ teebo — SERVEUR (Render) — correctif du 20/11/2026 (vague 66)
+ UNITÉS : agences, POINTS DE SERVICE rattachés, affectation des agents
+ ET CONTRÔLE DE VERSION POUR LE DIAGNOSTIC
 =====================================================================
+
+POURQUOI CETTE LIVRAISON
+ Le message « Type d'unité invalide. » à la création d'un point de
+ service vient du SERVEUR : celui qui est en ligne ne connaît pas encore
+ le type « point de service ». Le site était à jour, le serveur non.
+ Le correctif rend la création possible ET rend ce diagnostic évident.
 
 CE QUI CHANGE DANS LE SERVEUR (ce zip)
  1. NOUVEAU TYPE D'UNITÉ : « Point de service » (guichet, caisse, marché,
@@ -9,24 +16,33 @@ CE QUI CHANGE DANS LE SERVEUR (ce zip)
     code du type ...-PDS-001, distinct de celui de son agence (...-AGC-001).
     Un point de service ne peut pas exister seul : l'API refuse toute
     création sans agence parente.
- 2. Script de base db/schema_v54.sql : ajoute la valeur « point_service »
-    au type unit_kind et met à jour la génération des codes. Idempotent,
-    joué automatiquement au démarrage.
- 3. GET /api/v1/users renvoie en plus la nature de l'unité (unit_kind),
+ 2. La valeur « point_service » est ajoutée automatiquement à la base au
+    démarrage (script db/schema_v54.sql, idempotent, aucune action manuelle).
+ 3. Si la base n'a pas encore la valeur, l'API ne renvoie plus un refus
+    obscur mais un code explicite « serveur pas encore à jour » ; le site
+    l'affiche en clair.
+ 4. Adresse de contrôle /healthz : elle affiche maintenant
+    build = v66-points-de-service et point_service: true.
+    /api/v1/version indique également la liste des types d'unité gérés.
+    → Après déploiement, ouvrez https://VOTRE-API.onrender.com/healthz :
+      si vous lisez build v66, le serveur est bien à jour.
+ 5. GET /api/v1/users renvoie en plus la nature de l'unité (unit_kind),
     son code et sa ville : le personnel affiche « Agence · CODEC-Manga »
     ou « Point de service · Guichet Marché ».
- 4. PATCH /api/v1/users/:id contrôle désormais l'unité de rattachement :
-    impossible de rattacher un agent à l'unité d'une autre IMF
-    (403 BAD_UNIT). Cloisonnement garanti même par appel direct de l'API.
+ 6. PATCH /api/v1/users/:id contrôle l'unité de rattachement : impossible
+    de rattacher un agent à l'unité d'une autre IMF (403 BAD_UNIT).
+    Cloisonnement garanti même par appel direct de l'API.
 
-RAPPEL DU CORRECTIF PRÉCÉDENT (toujours inclus)
+RAPPEL (toujours inclus)
  • Hiérarchie contrôlée : direction › département › service › agence ›
    point de service. Une unité sans parent ne peut être qu'une direction.
 
-À FAIRE CÔTÉ UTILISATEUR
- • Redéployer ce zip serveur sur Render (il applique schema_v54).
- • Redéployer aussi le zip site (Netlify) : nouveau bouton « + Point de
-   service » sur chaque agence, sélecteur groupé, bouton « Agence / Unité ».
- • Rafraîchissement forcé (Ctrl+Maj+R) après déploiement.
+ORDRE DE DÉPLOIEMENT (important)
+ 1) CE ZIP SERVEUR sur Render. Attendre la fin du déploiement, puis
+    ouvrir /healthz et vérifier « build v66 ».
+ 2) Le zip site sur Netlify.
+ 3) Ctrl+Maj+R dans le navigateur (le cache du site est renouvelé).
+ Ne déployer que le site ne suffit pas : le type d'unité est géré par le
+ serveur.
 
 Aucune action manuelle en base : la migration est automatique.
