@@ -1,0 +1,55 @@
+=====================================================================
+ teebo — SERVEUR (Render) — correctif du 20/11/2026 (vague 67)
+ POINTS DE SERVICE + REPERES DE DEPLOIEMENT FIABLES
+=====================================================================
+
+CE QUI A ETE CONSTATÉ (preuve, pas supposition)
+ L'adresse de l'API réellement utilisée par le site a été interrogée :
+   • /healthz        répond seulement {"ok":true}  → aucune version annoncée
+   • /api/v1/version répond 404 « route inconnue »
+ Cette adresse de version existe depuis la vague 58 : le serveur en ligne est
+ donc une version ANCIENNE, de plusieurs semaines. C'est la seule cause du
+ message « Type d'unité invalide » : le serveur ne connaît pas encore le type
+ « point de service ». Aucun correctif du site ne peut le remplacer.
+ → Ce zip doit être déployé sur Render, et le déploiement doit être VÉRIFIÉ.
+
+CE QUE CE ZIP APPORTE
+ 1. Type d'unité « Point de service » : création acceptée, code
+    ...-PDS-001, obligatoirement rattaché à une agence (jamais à la racine).
+ 2. Migration automatique au démarrage (db/schema_v54.sql) : la valeur
+    « point_service » est ajoutée au type unit_kind, sans intervention.
+ 3. Repères de déploiement déplacés EN TOUT DÉBUT de l'API, avant tout
+    contrôle de session ou d'abonnement : ils répondent désormais toujours,
+    même déconnecté (c'est ce qui manquait pour diagnostiquer sans douter).
+ 4. /healthz annonce maintenant : build v67, api_build complet,
+    point_service: true.
+ 5. /api/v1/version annonce la liste des types gérés (dont point_service).
+ 6. En-tête X-Teebo-Build sur chaque réponse : visible dans l'onglet
+    « Réseau » du navigateur, il dit quelle version a répondu.
+ 7. Personnel : chaque agent affiche son unité (Agence · CODEC-Manga ou
+    Point de service · Guichet Marché) ; une affectation vers l'unité d'une
+    autre IMF est refusée (cloisonnement garanti, même par appel direct).
+
+DÉPLOYER SUR RENDER — PAS À PAS
+ 1. Ouvrir le service Render de l'API et noter son adresse exacte
+    (elle ressemble à https://teebo-api-xxxx.onrender.com).
+ 2. Envoyer ce zip dans le dépôt relié au service, puis « Manual Deploy »
+    → « Deploy latest commit » (ou « Clear build cache et deploy » si un
+    ancien build traîne).
+ 3. Attendre la mention « Live » dans le journal de déploiement.
+ 4. Ouvrir <adresse-du-service>/healthz dans le navigateur :
+      attendu → {"ok":true,"build":"v67","point_service":true,...}
+    Si vous lisez encore seulement {"ok":true} : le déploiement n'a pas pris
+    (build en échec, ou dépôt différent de celui du service).
+
+LE PIÈGE À VÉRIFIER EN PRIORITÉ
+ Le site transmet /api/* à une adresse fixe : teebo-api-p825.onrender.com
+ (fichier netlify.toml / _redirects). Si le service que vous déployez porte
+ une AUTRE adresse, le site continuera d'interroger l'ancien serveur et rien
+ ne changera, quelle que soit la qualité du zip. Dans ce cas, dites-moi
+ l'adresse exacte du service : je réaligne la redirection du site.
+
+ORDRE
+ 1) ce zip serveur sur Render, puis vérifier /healthz (build v67) ;
+ 2) le zip site sur Netlify ;
+ 3) Ctrl+Maj+R dans le navigateur.
