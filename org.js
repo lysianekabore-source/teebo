@@ -146,7 +146,15 @@ router.post('/units', requirePermission('org.manage'), async (req, res, next) =>
       return r;
     });
     res.json({ ok: true, unit: out });
-  } catch (e) { next(e); }
+  } catch (e) {
+    // Base encore dépourvue du type « point de service » (migration non
+    // passée) : on répond un message ACTIONNABLE au lieu d'une erreur 500.
+    if (e && e.code === '22P02' && /point_service/.test(String(e.message || ''))) {
+      return res.status(503).json({ error: 'server_outdated',
+        message: "Le serveur n'a pas encore activé les points de service. Redéployez le zip serveur (Render), attendez la fin du déploiement, puis réessayez." });
+    }
+    next(e);
+  }
 });
 
 // --- Modification d'une unité (type / nom / ville) --------------------------
@@ -195,7 +203,15 @@ router.patch('/units/:id', requirePermission('org.manage'), async (req, res, nex
       return r;
     });
     res.json({ ok: true, unit: out });
-  } catch (e) { next(e); }
+  } catch (e) {
+    // Base encore dépourvue du type « point de service » (migration non
+    // passée) : on répond un message ACTIONNABLE au lieu d'une erreur 500.
+    if (e && e.code === '22P02' && /point_service/.test(String(e.message || ''))) {
+      return res.status(503).json({ error: 'server_outdated',
+        message: "Le serveur n'a pas encore activé les points de service. Redéployez le zip serveur (Render), attendez la fin du déploiement, puis réessayez." });
+    }
+    next(e);
+  }
 });
 
 // --- Suppression d'une unité (cascade sur les sous-unités) ------------------

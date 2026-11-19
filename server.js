@@ -259,11 +259,14 @@ app.use('/api/v1/governance', governanceConformiteRoutes);
 // ligne : c'est ce qui manquait pour distinguer « session refusée » et
 // « ancien serveur encore actif ».
 // ---------------------------------------------------------------------------
-const API_BUILD = 'v63-clients-agent-rapidite-2026-11-19';
+const API_BUILD = 'v66-points-de-service-2026-11-19';
 app.get('/api/v1/version', (_req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({
     ok: true, build: API_BUILD, attach_user: true,
+    // Liste des natures d'unité acceptées : permet au site de vérifier que
+    // l'API en ligne sait bien créer un POINT DE SERVICE avant de l'essayer.
+    kinds: ['direction', 'department', 'service', 'agency', 'point_service'],
     routes: { mon_tableau_bord: true, clients: true, clients_new: true },
     corrections: { clients_agent_collecte: true, cache_saas_60s: true,
       cache_modules_30s: true, gzip_json: true, creation_client_agent: true },
@@ -365,6 +368,16 @@ async function lancerMigration() {
         etat.reparation = 'differee';
         console.error('[schema] reparation non executee :', e && (e.message || e));
       }
+      // VAGUE 66 — Une agence peut avoir des POINTS DE SERVICE rattachés
+      // (guichet, caisse, marché). Le type est ajouté ici, idempotent, pour
+      // que la création fonctionne dès le premier clic après le déploiement.
+      try {
+        await q("ALTER TYPE unit_kind ADD VALUE IF NOT EXISTS 'point_service'");
+        etat.point_service = 'ok';
+      } catch (e) {
+        etat.point_service = 'indisponible';
+        console.warn('[units] type point_service :', e && (e.message || e));
+      }
     }
     // VAGUES 44 + 45 : rattrapage des IMF passees en essai AVANT ce deploiement
     // (les IMF qui s inscrivent APRES ne sont PAS basculees : voir schema_v45.sql).
@@ -415,7 +428,7 @@ if (hasSite) {
 // Sante
 // VAGUE 58 — marqueur de version : permet de vérifier en une seconde que le
 // serveur déployé est bien celui-ci (et non une version plus ancienne).
-app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v58', attache: true }));
+app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v66', point_service: true, attache: true }));
 
 /* VAGUE 58 — DIAGNOSTIC « non connecté alors que je suis connecté ».
    Ouvrez /api/v1/diag-session dans le navigateur APRÈS vous être connecté :
