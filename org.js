@@ -27,7 +27,7 @@ router.use((req, res, next) => {
 // CLOISONNEMENT : toute requête est filtrée par imf_id de l'utilisateur.
 // Aucune donnée d'une autre IMF n'est accessible, sauf teebo_admin.
 // ---------------------------------------------------------------------------
-const KIND_ORDER = { direction: 1, department: 2, service: 3, agency: 4 };
+const KIND_ORDER = { direction: 1, department: 2, service: 3, agency: 4, point_service: 5 };
 
 // ---------------------------------------------------------------------------
 // AUTO-RÉPARATION : si la base d'une IMF ne contient pas (ou plus) la table
@@ -38,9 +38,14 @@ const KIND_ORDER = { direction: 1, department: 2, service: 3, agency: 4 };
 // réussisse TOUJOURS, sans dépendre d'une re-migration manuelle.
 let _orgSchemaEnsured = false;
 async function ensureOrgSchema() {
+  // Une agence peut ouvrir des POINTS DE SERVICE (guichet, caisse, marché…) :
+  // la valeur est ajoutée aux bases déjà créées (idempotent). Exécutée seule,
+  // donc en dehors de toute transaction : PostgreSQL l'exige pour un type.
+  try { await q("ALTER TYPE unit_kind ADD VALUE IF NOT EXISTS 'point_service'"); }
+  catch (e) { /* valeur déjà présente */ }
   await q(`
     DO $do$ BEGIN
-      CREATE TYPE unit_kind AS ENUM ('direction','department','service','agency');
+      CREATE TYPE unit_kind AS ENUM ('direction','department','service','agency','point_service');
     EXCEPTION WHEN duplicate_object THEN NULL; END $do$;
 
     CREATE TABLE IF NOT EXISTS org_unit (
@@ -60,7 +65,8 @@ async function ensureOrgSchema() {
     BEGIN
       SELECT code_imf INTO v_imf FROM imf WHERE id = p_imf;
       v_prefix := CASE p_kind WHEN 'direction' THEN '-DIR-' WHEN 'department' THEN '-DEP-'
-                              WHEN 'service' THEN '-SRV-' WHEN 'agency' THEN '-AGC-' END;
+                              WHEN 'service' THEN '-SRV-' WHEN 'agency' THEN '-AGC-'
+                              WHEN 'point_service' THEN '-PDS-' END;
       SELECT COALESCE(MAX(NULLIF(regexp_replace(code_unit, '^.*' || v_prefix, ''), '')::int), 0)
         INTO v_seq FROM org_unit
        WHERE imf_id = p_imf AND kind = p_kind AND code_unit ~ (v_prefix || '[0-9]+$');
@@ -121,6 +127,9 @@ router.post('/units', requirePermission('org.manage'), async (req, res, next) =>
     const { kind, name, city, parent_id } = req.body || {};
     if (!KIND_ORDER[kind]) return res.status(422).json({ error: 'invalid_kind' });
     if (!name) return res.status(422).json({ error: 'missing_name' });
+    // Une unité sans parent ne peut être qu'une direction ; un point de service
+    // n'existe jamais seul, il est toujours rattaché à une agence.
+    if (!parent_id && kind !== 'direction') return res.status(422).json({ error: 'bad_hierarchy' });
     if (!_orgSchemaEnsured) { try { await ensureOrgSchema(); } catch (_) {} }
     const out = await tx(async (c) => {
       // Contrainte hiérarchique : department > direction, etc.
@@ -207,7 +216,8 @@ router.get('/users', async (req, res, next) => {
     const { rows } = await q(
       `SELECT u.id,u.code_user,u.full_name,u.email,u.phone,u.role,u.position,u.position_code,
               u.parent_id,u.dept_code,u.service_code,
-              u.org_unit_id,u.must_change_password,u.is_active,o.name AS unit_name
+              u.org_unit_id,u.must_change_password,u.is_active,o.name AS unit_name,
+              o.kind AS unit_kind, o.code_unit AS unit_code, o.city AS unit_city
          FROM app_user u LEFT JOIN org_unit o ON o.id=u.org_unit_id
         WHERE u.imf_id=$1 AND u.role <> 'teebo_admin' ORDER BY u.created_at`,
       [req.user.imf_id]);
@@ -532,6 +542,13 @@ router.patch('/users/:id', requirePermission('users.manage'), async (req, res, n
     // Cloisonnement : on ne modifie que dans sa propre IMF.
     if (u.imf_id !== req.user.imf_id) return res.status(403).json({ error: 'forbidden' });
 
+    // Cloisonnement de l'unité : impossible de rattacher un agent à l'agence
+    // d'une autre institution, même par un appel direct de l'API.
+    if (org_unit_id) {
+      const ou = (await q('SELECT id, imf_id FROM org_unit WHERE id=$1', [org_unit_id])).rows[0];
+      if (!ou || ou.imf_id !== req.user.imf_id) return res.status(403).json({ error: 'bad_unit' });
+    }
+
     // Un agent de collecte doit garder un responsable habilité (Chef d'agence
     // ou Agent de crédit) : on refuse un retrait ou un supérieur non habilité.
     const loserSel = positionInfo(u.position_code);
@@ -578,7 +595,7 @@ router.patch('/users/:id', requirePermission('users.manage'), async (req, res, n
                 email     = COALESCE($8, email),
                 org_unit_id = CASE WHEN $9::boolean THEN $10::uuid ELSE org_unit_id END
           WHERE id=$6 AND imf_id=$7
-          RETURNING id, code_user, full_name, role, parent_id, position, phone, email`,
+          RETURNING id, code_user, full_name, role, parent_id, position, phone, email, org_unit_id`,
         [parent_id !== undefined, parent_id ?? null, position ?? null, full_name ?? null, phone ?? null,
          req.params.id, req.user.imf_id, email ?? null,
          org_unit_id !== undefined, org_unit_id || null])).rows[0];
