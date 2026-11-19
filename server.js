@@ -7,6 +7,7 @@ import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
 import httpMod from 'http';
+import zlib from 'zlib';
 import { fileURLToPath } from 'url';
 
 import { q, tx, pool } from './db.js';
@@ -103,6 +104,32 @@ app.use((req, _res, next) => {
   next();
 });
 app.use(express.json({ limit: '12mb' }));
+// REPONSES JSON COMPRESSEES (gzip) : sur un reseau mobile, une liste de clients
+// ou un tableau de bord pesaient plusieurs centaines de Ko en clair. L'API n'a
+// pas de dependance de compression : on utilise le module natif de Node.
+app.use((req, res, next) => {
+  if (!/^\/api\//.test(req.path)) return next();
+  const ae = String(req.headers['accept-encoding'] || '');
+  if (!/\bgzip\b/.test(ae)) return next();
+  const jsonOriginal = res.json.bind(res);
+  res.json = function (body) {
+    try {
+      if (res.headersSent || res.getHeader('Content-Encoding')) return jsonOriginal(body);
+      const buf = Buffer.from(JSON.stringify(body === undefined ? null : body), 'utf8');
+      if (buf.length < 1024) return jsonOriginal(body);
+      zlib.gzip(buf, (err, out) => {
+        if (err) return jsonOriginal(body);
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Encoding', 'gzip');
+        res.setHeader('Vary', 'Accept-Encoding');
+        res.setHeader('Content-Length', String(out.length));
+        res.end(out);
+      });
+      return res;
+    } catch (e) { return jsonOriginal(body); }
+  };
+  next();
+});
 app.use(cookieParser());
 // CORRECTIF 18/11/2026 : identifie l'utilisateur pour TOUTE l'API, avant les
 // routeurs. Les routeurs qui oubliaient authenticate ne renvoient plus un
@@ -232,12 +259,14 @@ app.use('/api/v1/governance', governanceConformiteRoutes);
 // ligne : c'est ce qui manquait pour distinguer « session refusée » et
 // « ancien serveur encore actif ».
 // ---------------------------------------------------------------------------
-const API_BUILD = 'v59-gardes-globales-2026-11-19';
+const API_BUILD = 'v63-clients-agent-rapidite-2026-11-19';
 app.get('/api/v1/version', (_req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({
     ok: true, build: API_BUILD, attach_user: true,
     routes: { mon_tableau_bord: true, clients: true, clients_new: true },
+    corrections: { clients_agent_collecte: true, cache_saas_60s: true,
+      cache_modules_30s: true, gzip_json: true, creation_client_agent: true },
     now: new Date().toISOString()
   });
 });
