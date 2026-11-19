@@ -1,0 +1,32 @@
+=====================================================================
+ teebo — SERVEUR (Render) — correctif du 19/11/2026 (vague 66)
+ UNITÉS : agences, POINTS DE SERVICE rattachés, et affectation des agents
+=====================================================================
+
+CE QUI CHANGE DANS LE SERVEUR (ce zip)
+ 1. NOUVEAU TYPE D'UNITÉ : « Point de service » (guichet, caisse, marché,
+    point de collecte). Il se rattache TOUJOURS à une agence et reçoit un
+    code du type ...-PDS-001, distinct de celui de son agence (...-AGC-001).
+    Un point de service ne peut pas exister seul : l'API refuse toute
+    création sans agence parente.
+ 2. Script de base db/schema_v54.sql : ajoute la valeur « point_service »
+    au type unit_kind et met à jour la génération des codes. Idempotent,
+    joué automatiquement au démarrage.
+ 3. GET /api/v1/users renvoie en plus la nature de l'unité (unit_kind),
+    son code et sa ville : le personnel affiche « Agence · CODEC-Manga »
+    ou « Point de service · Guichet Marché ».
+ 4. PATCH /api/v1/users/:id contrôle désormais l'unité de rattachement :
+    impossible de rattacher un agent à l'unité d'une autre IMF
+    (403 BAD_UNIT). Cloisonnement garanti même par appel direct de l'API.
+
+RAPPEL DU CORRECTIF PRÉCÉDENT (toujours inclus)
+ • Hiérarchie contrôlée : direction › département › service › agence ›
+   point de service. Une unité sans parent ne peut être qu'une direction.
+
+À FAIRE CÔTÉ UTILISATEUR
+ • Redéployer ce zip serveur sur Render (il applique schema_v54).
+ • Redéployer aussi le zip site (Netlify) : nouveau bouton « + Point de
+   service » sur chaque agence, sélecteur groupé, bouton « Agence / Unité ».
+ • Rafraîchissement forcé (Ctrl+Maj+R) après déploiement.
+
+Aucune action manuelle en base : la migration est automatique.
