@@ -1,0 +1,49 @@
+=====================================================================
+ teebo — SERVEUR (Render) — livraison du 20/11/2026 (vague 69)
+ ORGANISATION : PARCOURS EN 5 ÉTAPES (DG → SERVICES → AGENCES →
+ POINTS DE SERVICE → UTILISATEURS)
+=====================================================================
+
+À QUOI SERT CE FICHIER
+ L'écran « Organisation » du site suit maintenant un parcours inspiré de la
+ structure réelle d'une institution de microfinance : la Direction Générale
+ en tête, ses services, le réseau d'agences, les points de service de chaque
+ agence, puis les utilisateurs. Pour que ce parcours fonctionne, le serveur
+ doit accepter des rattachements plus souples qu'avant :
+
+   • un SERVICE peut être créé directement sous la Direction Générale
+     (sans département intermédiaire) ;
+   • une AGENCE peut être rattachée à la Direction Générale, à un
+     département ou à un service ;
+   • un POINT DE SERVICE reste toujours rattaché à une agence (guichet,
+     caisse, collecte terrain, point de quartier, bureau mobile).
+
+ Un département reste possible, il n'est simplement plus obligatoire.
+
+CE QUE CONTIENT CETTE LIVRAISON
+ 1. Types d'unité complets : direction, département, service, agence et
+    point de service. Le code de chaque unité est généré automatiquement.
+ 2. Contrôles de cohérence : un point de service ne peut pas recevoir de
+    sous-unité ; une unité racine est forcément une direction.
+ 3. Fiche institutionnelle : raison sociale, forme juridique, n° d'agrément
+    BCEAO, ville du siège, téléphone et e-mail officiels se saisissent dès
+    la première étape du parcours, sans passer par un autre écran.
+ 4. Cloisonnement inchangé : chaque IMF ne voit que ses propres unités et
+    ses propres comptes.
+ 5. Aucun changement de schéma par rapport à la vague 68 : la mise à jour
+    est donc sans risque. Le numéro de build passe à v69 uniquement pour
+    que vous puissiez vérifier que le service en ligne a bien été
+    redéployé.
+
+VÉRIFICATION APRÈS DÉPLOIEMENT
+ Ouvrez https://teebo-api-p825.onrender.com/healthz : la réponse doit
+ contenir "build":"v69" (et non plus une réponse sans numéro de build).
+
+DANS QUEL ORDRE DÉPLOYER
+ 1. SERVEUR (ce fichier) — attendre la fin du déploiement ;
+ 2. SITE (teebo-site-netlify-v72.zip) ;
+ 3. Ouvrir l'application puis Ctrl + Maj + R.
+
+ Sans le serveur à jour, l'étape « Points de service » du parcours reste
+ volontairement inactive : le site ne propose jamais une action que le
+ serveur refuserait.
