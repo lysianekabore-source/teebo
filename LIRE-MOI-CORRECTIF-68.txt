@@ -1,0 +1,41 @@
+TEEBO — Mise à jour du 20 novembre 2026
+=======================================
+
+CE QUE VOUS VERREZ EN PLUS
+--------------------------
+Dans « Organisation », un parcours de mise en place guide l'administrateur en
+quatre étapes, dans l'ordre où une institution se construit :
+
+  1. Identité de l'IMF — raison sociale, n° d'agrément BCEAO, ville du siège,
+     téléphone et e-mail officiels. L'écran indique précisément ce qui manque,
+     et ces informations servent ensuite à vos documents et à l'envoi des
+     codes d'accès.
+  2. Direction Générale et services — création de la DG en un clic, puis des
+     services rattachés.
+  3. Agences et points de service — création des agences, puis des points de
+     service (guichet, caisse, marché) rattachés à chaque agence.
+  4. Utilisateurs — ouverture des comptes au niveau de la DG, des services,
+     des agences et des points de service, avec l'unité déjà choisie. Les
+     unités encore sans agent sont signalées.
+
+La progression est calculée à partir de vos données réelles : aucune case à
+cocher, aucun risque de cocher « fait » sans l'avoir fait.
+
+CE QUI DEVIENT PLUS SOUPLE
+--------------------------
+Un service peut désormais être créé directement sous la Direction Générale, et
+une agence peut être rattachée à la DG, à un département ou à un service. Vous
+n'êtes plus obligé de créer un département intermédiaire pour obtenir un
+organigramme correct.
+
+CE QUI RESTE INCHANGÉ
+---------------------
+Les codes d'unité et d'utilisateur sont toujours générés automatiquement, les
+habilitations par profil ne changent pas, et chaque écran continue de masquer
+ce que le profil n'a pas le droit de faire.
+
+APRÈS LA MISE À JOUR
+--------------------
+Ouvrez une fois l'application, puis rechargez la page en forçant le
+rafraîchissement (Ctrl + Maj + R). L'onglet « Organisation » affiche alors le
+parcours de mise en place.
