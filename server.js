@@ -142,7 +142,7 @@ app.use(cookieParser());
 
 // Version du binaire en ligne (une seule source pour /version, /healthz et
 // l'en-tete X-Teebo-Build).
-const API_BUILD = 'v68-parcours-organisation-2026-11-20';
+const API_BUILD = 'v69-parcours-organisation-5-etapes-2026-11-20';
 const API_KINDS = ['direction', 'department', 'service', 'agency', 'point_service'];
 // L'en-tete X-Teebo-Build permet de verifier en une seconde, dans l'onglet
 // « Reseau » du navigateur, quelle version du serveur a repondu.
@@ -177,7 +177,7 @@ app.get('/api/v1/version', (_req, res) => {
   });
 });
 app.get('/version', (_req, res) => { res.set('Cache-Control', 'no-store'); res.redirect(307, '/api/v1/version'); });
-app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v68', api_build: API_BUILD, point_service: true, org_setup: true, attache: true }));
+app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v69', api_build: API_BUILD, point_service: true, org_setup: true, attache: true }));
 
 // Diagnostic de session, public et sans donnee sensible : il dit seulement si
 // le cookie arrive et si la session existe encore.
