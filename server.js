@@ -76,9 +76,17 @@ app.use(helmet({
       baseUri: ["'self'"]
     }
   },
-  crossOriginOpenerPolicy: { policy: 'same-origin' }
+  crossOriginOpenerPolicy: { policy: 'same-origin' },
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
-app.use(cors({ origin: process.env.CORS_ORIGIN || true, credentials: true }));
+// CORS : la variable d'environnement CORS_ORIGIN peut valoir « true » ou « * »
+// (valeur recopiee telle quelle dans Render). Envoyee brute, elle produisait un
+// en-tete « access-control-allow-origin: true » que les navigateurs rejettent,
+// ce qui faisait echouer toute lecture directe de l'API depuis le site.
+const corsOriginBrut = String(process.env.CORS_ORIGIN || '').trim();
+const corsOrigin = (!corsOriginBrut || corsOriginBrut === 'true' || corsOriginBrut === '*')
+  ? true : corsOriginBrut;
+app.use(cors({ origin: corsOrigin, credentials: true }));
 // 12 Mo : les scans de pièces et les signatures tracées au stylet transitent
 // en data URL (base64) et dépassent largement 1 Mo ; une limite trop basse
 // renvoyait un 413 masqué en « Une erreur est survenue » lors de la
@@ -134,7 +142,7 @@ app.use(cookieParser());
 
 // Version du binaire en ligne (une seule source pour /version, /healthz et
 // l'en-tete X-Teebo-Build).
-const API_BUILD = 'v67-points-de-service-2026-11-20';
+const API_BUILD = 'v68-parcours-organisation-2026-11-20';
 const API_KINDS = ['direction', 'department', 'service', 'agency', 'point_service'];
 // L'en-tete X-Teebo-Build permet de verifier en une seconde, dans l'onglet
 // « Reseau » du navigateur, quelle version du serveur a repondu.
@@ -157,15 +165,19 @@ app.get('/api/v1/version', (_req, res) => {
   res.json({
     ok: true, build: API_BUILD, attach_user: true,
     kinds: API_KINDS,
+    // CAPACITÉS : le site adapte l'assistant de mise en place à ce que le
+    // serveur RÉELLEMENT en ligne sait faire (aucun refus incompréhensible).
+    caps: { org_setup: true, hierarchy_shortcuts: true, identity_update: true,
+      point_service: true },
     routes: { mon_tableau_bord: true, clients: true, clients_new: true },
     corrections: { clients_agent_collecte: true, cache_saas_60s: true,
       cache_modules_30s: true, gzip_json: true, creation_client_agent: true,
-      points_de_service: true },
+      points_de_service: true, parcours_organisation: true },
     now: new Date().toISOString()
   });
 });
 app.get('/version', (_req, res) => { res.set('Cache-Control', 'no-store'); res.redirect(307, '/api/v1/version'); });
-app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v67', api_build: API_BUILD, point_service: true, attache: true }));
+app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v68', api_build: API_BUILD, point_service: true, org_setup: true, attache: true }));
 
 // Diagnostic de session, public et sans donnee sensible : il dit seulement si
 // le cookie arrive et si la session existe encore.

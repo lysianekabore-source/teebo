@@ -53,6 +53,18 @@ router.get('/org-settings', habilit('settings.manage'), async (req, res, next) =
         country_code: b.imf.country_code, city: b.imf.city,
         phone_main: b.imf.phone_main, email: b.imf.email, whatsapp: b.imf.whatsapp
       },
+      // Ce qu'il reste à renseigner pour que la fiche institutionnelle soit
+      // complète (parcours de mise en place de l'onglet Organisation).
+      // Calculé ICI pour que le site n'ait pas à redéfinir les règles.
+      identity: (function () {
+        const missing = [];
+        if (!String(b.legal_name || b.imf.name || '').trim()) missing.push('legal_name');
+        if (!String(b.imf.city || '').trim()) missing.push('city');
+        if (!String(b.imf.phone_main || '').trim()) missing.push('phone_main');
+        if (!String(b.imf.email || '').trim()) missing.push('email');
+        if (!String(b.bceao_agreement_no || '').trim()) missing.push('bceao_agreement_no');
+        return { complete: missing.length === 0, missing };
+      })(),
       vat_rate_bp: await currentVatBp(req.user.imf_id),
       supplier: TEEBO_SUPPLIER,
       can_edit: canEdit(req.user.role)
@@ -79,6 +91,22 @@ router.post('/org-settings', habilit('settings.manage'), requireRole('admin_imf'
 
     const num = (v) => (v === undefined || v === null || v === '' ? null : Math.round(Number(v)));
     const cap = num(b.share_capital_cents);
+
+    // --- Fiche institutionnelle (vague 68) -------------------------------
+    // Nom, ville, téléphone, e-mail et WhatsApp officiels de l'IMF : ces
+    // informations alimentent l'en-tête des documents ET l'expéditeur des
+    // codes d'accès. Elles se saisissent désormais dès la première étape du
+    // parcours de mise en place, sans passer par la console teebo.
+    const fiche = (b.imf && typeof b.imf === 'object') ? b.imf : null;
+    const ficheMail = (fiche && fiche.email !== undefined) ? strOrNull(fiche.email) : null;
+    if (ficheMail && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(ficheMail)) {
+      return res.status(422).json({ error: 'invalid_email', message: 'Adresse e-mail invalide.' });
+    }
+    const ficheCC = (fiche && fiche.country_code !== undefined)
+      ? String(fiche.country_code || '').trim().toUpperCase().slice(0, 2) : null;
+    if (ficheCC && ficheCC.length !== 2) {
+      return res.status(422).json({ error: 'invalid_country', message: 'Pays invalide : indiquez le code à deux lettres (BF, CI, SN…).' });
+    }
 
     await tx(async (c) => {
       const existing = (await c.query('SELECT imf_id FROM imf_branding WHERE imf_id=$1', [req.user.imf_id])).rows.length;
@@ -158,6 +186,23 @@ router.post('/org-settings', habilit('settings.manage'), requireRole('admin_imf'
               updated_at = now()
             WHERE id=$1`,
           [req.user.imf_id, strOrNull(b.notify_whatsapp), strOrNull(b.notify_email)]);
+      }
+      // Fiche institutionnelle : seuls les champs FOURNIS sont modifiés.
+      if (fiche) {
+        await c.query(
+          `UPDATE imf SET
+              name         = COALESCE($2, name),
+              city         = COALESCE($3, city),
+              phone_main   = COALESCE($4, phone_main),
+              email        = COALESCE($5, email),
+              whatsapp     = COALESCE($6, whatsapp),
+              country_code = COALESCE($7::char(2), country_code),
+              bceao_agreement_no = COALESCE($8, bceao_agreement_no),
+              updated_at   = now()
+            WHERE id=$1`,
+          [req.user.imf_id, strOrNull(fiche.name), strOrNull(fiche.city),
+           strOrNull(fiche.phone_main), ficheMail, strOrNull(fiche.whatsapp),
+           ficheCC && ficheCC.length === 2 ? ficheCC : null, strOrNull(b.bceao_agreement_no)]);
       }
     });
 

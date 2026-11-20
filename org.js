@@ -30,6 +30,32 @@ router.use((req, res, next) => {
 const KIND_ORDER = { direction: 1, department: 2, service: 3, agency: 4, point_service: 5 };
 
 // ---------------------------------------------------------------------------
+// RATTACHEMENTS AUTORISÉS (vague 68).
+// La règle historique imposait « type du parent + 1 » : une agence ne pouvait
+// donc exister QUE sous un service. En pratique, une IMF rattache ses agences
+// à sa Direction Générale (réseau) ou à une direction/département, et un
+// service peut dépendre directement de la DG sans département intermédiaire.
+// On autorise donc ces raccourcis, tout en gardant la cohérence :
+//   département -> direction
+//   service     -> direction | département
+//   agence      -> direction | département | service
+//   point de service -> agence uniquement
+// Aucune donnée existante n'est invalidée : les anciennes chaînes restent
+// valides, on ajoute seulement des rattachements possibles.
+const PARENTS_OK = {
+  direction: [],
+  department: ['direction'],
+  service: ['direction', 'department'],
+  agency: ['direction', 'department', 'service'],
+  point_service: ['agency']
+};
+function hierarchyOk(kind, parentKind) {
+  if (!parentKind) return kind === 'direction';
+  const allowed = PARENTS_OK[kind] || [];
+  return allowed.indexOf(parentKind) >= 0;
+}
+
+// ---------------------------------------------------------------------------
 // AUTO-RÉPARATION : si la base d'une IMF ne contient pas (ou plus) la table
 // org_unit, le type unit_kind ou la fonction de génération de code (migration
 // incomplète, base réinitialisée, etc.), l'ouverture de l'onglet Organisation
@@ -132,11 +158,12 @@ router.post('/units', requirePermission('org.manage'), async (req, res, next) =>
     if (!parent_id && kind !== 'direction') return res.status(422).json({ error: 'bad_hierarchy' });
     if (!_orgSchemaEnsured) { try { await ensureOrgSchema(); } catch (_) {} }
     const out = await tx(async (c) => {
-      // Contrainte hiérarchique : department > direction, etc.
+      // Contrainte hiérarchique (voir PARENTS_OK) : direction > département >
+      // service > agence > point de service, avec les raccourcis autorisés.
       if (parent_id) {
         const p = (await c.query('SELECT kind, imf_id FROM org_unit WHERE id=$1', [parent_id])).rows[0];
         if (!p || p.imf_id !== req.user.imf_id) { const e=new Error('bad_parent'); e.status=403; throw e; }
-        if (KIND_ORDER[kind] !== KIND_ORDER[p.kind] + 1) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
+        if (!hierarchyOk(kind, p.kind)) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
       }
       const code = (await c.query('SELECT fn_gen_unit_code($1,$2) AS c', [req.user.imf_id, kind])).rows[0].c;
       const r = (await c.query(
@@ -151,7 +178,7 @@ router.post('/units', requirePermission('org.manage'), async (req, res, next) =>
     // passée) : on répond un message ACTIONNABLE au lieu d'une erreur 500.
     if (e && e.code === '22P02' && /point_service/.test(String(e.message || ''))) {
       return res.status(503).json({ error: 'server_outdated',
-        message: "Le serveur n'a pas encore activé les points de service. Redéployez le zip serveur (Render), attendez la fin du déploiement, puis réessayez." });
+        message: "Les points de service ne sont pas encore ouverts sur cet espace. Réessayez dans un moment ; si le message revient, signalez-le à votre administrateur." });
     }
     next(e);
   }
@@ -178,15 +205,15 @@ router.patch('/units/:id', requirePermission('org.manage'), async (req, res, nex
         // Cohérence avec le parent.
         if (u.parent_id) {
           const p = (await c.query('SELECT kind FROM org_unit WHERE id=$1', [u.parent_id])).rows[0];
-          if (!p || KIND_ORDER[kind] !== KIND_ORDER[p.kind] + 1) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
-        } else if (kind !== 'direction' && KIND_ORDER[kind] !== 1) {
+          if (!p || !hierarchyOk(kind, p.kind)) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
+        } else if (kind !== 'direction') {
           // Une unité racine sans parent ne peut être qu'une direction.
           const e=new Error('bad_hierarchy'); e.status=422; throw e;
         }
         // Cohérence avec les enfants existants.
         const kids = (await c.query('SELECT kind FROM org_unit WHERE parent_id=$1', [u.id])).rows;
         for (const k of kids) {
-          if (KIND_ORDER[k.kind] !== KIND_ORDER[kind] + 1) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
+          if (!hierarchyOk(k.kind, kind)) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
         }
         newKind = kind;
         newCode = (await c.query('SELECT fn_gen_unit_code($1,$2) AS c', [req.user.imf_id, kind])).rows[0].c;
@@ -208,7 +235,7 @@ router.patch('/units/:id', requirePermission('org.manage'), async (req, res, nex
     // passée) : on répond un message ACTIONNABLE au lieu d'une erreur 500.
     if (e && e.code === '22P02' && /point_service/.test(String(e.message || ''))) {
       return res.status(503).json({ error: 'server_outdated',
-        message: "Le serveur n'a pas encore activé les points de service. Redéployez le zip serveur (Render), attendez la fin du déploiement, puis réessayez." });
+        message: "Les points de service ne sont pas encore ouverts sur cet espace. Réessayez dans un moment ; si le message revient, signalez-le à votre administrateur." });
     }
     next(e);
   }
@@ -525,7 +552,7 @@ router.post('/notify-test', requireRole('admin_imf','direction'), async (req, re
     if (!to) return res.status(422).json({ ok: false, text: 'Aucune adresse de destination : renseignez votre e-mail dans « Mon accès ».' });
     if (!emailGatewayReady()) {
       return res.json({ ok: false, mode: 'not_configured',
-        text: 'La passerelle d’envoi n’est pas configurée sur le serveur. Les variables SMTP (serveur, port, identifiant, mot de passe) doivent être ajoutées sur Render, puis le service redéployé.' });
+        text: 'L’envoi automatique des messages n’est pas encore activé sur cet espace. Signalez-le à votre administrateur : les codes restent consultables dans la fiche de l’utilisateur.' });
     }
     const subject = `[Test] Envoi d’e-mails ${imfName} via teebo`;
     const body = [
