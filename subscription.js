@@ -1,83 +1,122 @@
-import { q } from './db.js';
+// =========================================================================
+// teebo — CONFIGURATION D'INSTITUTION & ACTIVATION DE MODULES (vague 36)
+// =========================================================================
+//  GET  /institution/config            ce que l'écran a le DROIT d'afficher
+//  POST /institution/modules/activate  activer / upgrader un module
+//
+// Deux règles:
+//   1. la configuration est recalculée à CHAQUE appel, sans aucun cache :
+//      Une restriction ou un upgrade se voit à l'écran immédiatement ;
+//   2. un module peut TOUJOURS être activé, même quand l'IMF est restreinte
+//      à la collecte (c'est ce qu'on appelle « upgrade »). Si ce module n'a
+//      jamais été testé, 30 jours d'essai sont accordés automatiquement ;
+//      sinon l'activation est payante (règle vague 35 : un seul essai).
+// =========================================================================
+import { Router } from 'express';
+import { authenticate, requireRole } from '../auth.js';
+import { buildInstitutionConfig, verifierModule, MODULE_KEYS, MODULES } from '../modules.js';
+import { reactiverModule, estRestreinteCollecteSeule } from '../saas_restriction.js';
 
-/**
- * Cycle de vie de l'abonnement IMF (essai 30 jours) :
- *  - Essai : J1 -> J30. À partir de J25, un bandeau compte les jours restants
- *    et invite l'IMF à contacter teebo.
- *  - J31 (essai échu, non activé) : l'application se désactive ; tous les
- *    utilisateurs ET l'admin IMF sont bloqués sur un écran informatif.
- *  - Une fois le mode choisi activé par teebo, l'accès est permanent.
- */
-export const TRIAL_DAYS = 30;
-export const BANNER_FROM_DAY = 25;
+const r = Router();
+const ADMIN = ['admin_imf', 'direction'];
 
-export async function getSubscription(imfId) {
-  const { rows } = await q('SELECT * FROM subscription WHERE imf_id = $1', [imfId]);
-  return rows[0] || null;
+/** Aucun cache : l'écran doit refléter une restriction immédiatement. */
+function sansCache(res) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
 }
 
-/** S'assure qu'une ligne d'abonnement existe (idempotent) à partir de l'IMF. */
-export async function ensureSubscription(imfId) {
-  const { rows } = await q('SELECT * FROM subscription WHERE imf_id = $1', [imfId]);
-  if (rows.length) return rows[0];
-  const imf = (await q('SELECT trial_started_at, trial_ends_at, status FROM imf WHERE id=$1', [imfId])).rows[0];
-  const status = imf && imf.status === 'active' ? 'active' : 'trial';
-  const ins = await q(
-    `INSERT INTO subscription(imf_id, status, trial_started_at, trial_ends_at)
-     VALUES ($1,$2,$3,$4) RETURNING *`,
-    [imfId, status, imf ? imf.trial_started_at : null, imf ? imf.trial_ends_at : null]
-  );
-  return ins.rows[0];
-}
-
-/** Calcule l'état d'accès (bloqué ou non) et le bandeau éventuel. */
-export function computeState(sub) {
-  const out = { locked: false, reason: null, banner: null, days_left: null,
-    status: sub ? sub.status : 'trial' };
-  if (!sub) return out;
-  if (sub.status === 'active') return out;
-  if (sub.status === 'disabled') { out.locked = true; out.reason = 'trial_expired'; return out; }
-
-  const ends = sub.trial_ends_at ? new Date(sub.trial_ends_at) : null;
-  if (!ends) return out;
-  const msLeft = ends.getTime() - Date.now();
-  const daysLeft = Math.max(0, Math.ceil(msLeft / 86400000));
-  out.days_left = daysLeft;
-
-  if (msLeft <= 0) {
-    // Essai échu : application désactivée (J31).
-    out.locked = true;
-    out.reason = 'trial_expired';
-    out.status = 'disabled';
-    return out;
-  }
-  const elapsed = TRIAL_DAYS - daysLeft; // jour courant de l'essai (1 -> 30)
-  if (elapsed >= BANNER_FROM_DAY) {
-    out.banner = {
-      days_left: daysLeft,
-      message: `Il vous reste ${daysLeft} jour${daysLeft > 1 ? 's' : ''} d’essai gratuit. ` +
-        `Contactez teebo pour activer les modules dont vous avez besoin et éviter la désactivation de l’application.`,
-      contact: { whatsapp: '+22650321432', email: 'hello@teebo.africa' }
-    };
-  }
-  return out;
-}
-
-/**
- * Middleware : applique le blocage J31 et attache l'état d'essai à req.trial.
- * À monter après `authenticate`, avant les routes métier IMF.
- */
-export async function enforceSubscription(req, res, next) {
+/* ------------------------------------------------------------------ */
+/*  CONFIGURATION VISIBLE POUR L'UTILISATEUR CONNECTÉ                  */
+/* ------------------------------------------------------------------ */
+r.get('/institution/config', authenticate, async (req, res, next) => {
   try {
-    if (!req.user || req.user.role === 'teebo_admin') { req.trial = { locked: false }; return next(); }
-    const sub = await ensureSubscription(req.user.imf_id);
-    const state = computeState(sub);
-    req.trial = state;
-    if (state.locked) {
-      return res.status(402).json({ error: 'trial_expired', locked: true,
-        message: 'Votre essai gratuit de 30 jours est terminé. L’application est désactivée. Contactez teebo pour activer vos modules.',
-        contact: { whatsapp: '+22650321432', email: 'hello@teebo.africa' } });
+    const imfId = req.dbImfId || (req.user && req.user.imf_id);
+    if (!imfId) {
+      return res.status(400).json({ error: 'institution_manquante',
+        message: 'Aucune institution rattachée à ce compte.' });
     }
-    next();
+    sansCache(res);
+    const config = await buildInstitutionConfig(imfId, req.user);
+    const restreinte = await estRestreinteCollecteSeule(imfId);
+    res.json({
+      ...config,
+      restreinte_collecte_seule: restreinte,
+      // Le client sait quoi proposer : il ne DOIT afficher que ces menus.
+      catalogue: Object.entries(MODULES).map(([key, d]) => ({
+        key, label: d.label, description: d.description,
+        actif: config.features[key] === true
+      })),
+      revision: new Date().toISOString()
+    });
   } catch (e) { next(e); }
-}
+});
+
+/* ------------------------------------------------------------------ */
+/*  ACTIVATION / UPGRADE D'UN MODULE                                   */
+/* ------------------------------------------------------------------ */
+r.post('/institution/modules/activate', authenticate, requireRole(...ADMIN, 'teebo_admin'),
+  async (req, res, next) => {
+    try {
+      const imfId = req.params.id || req.dbImfId || (req.user && req.user.imf_id);
+      const b = req.body || {};
+      const moduleKey = b.module_key || b.module || b.key;
+      if (!moduleKey || !MODULE_KEYS.includes(moduleKey)) {
+        return res.status(400).json({ error: 'module_inconnu',
+          message: 'Module inconnu. Valeurs possibles : ' + MODULE_KEYS.join(', '),
+          modules: MODULE_KEYS });
+      }
+
+      // Un admin d'IMF n'agit que sur SA structure ; teebo_admin sur toutes.
+      if (req.user.role !== 'teebo_admin' && b.institution_id
+          && b.institution_id !== imfId) {
+        return res.status(403).json({ error: 'hors_perimetre',
+          message: 'Vous ne pouvez activer un module que pour votre institution.' });
+      }
+
+      const out = await reactiverModule(imfId, moduleKey,
+        { demander_essai: b.demander_essai !== false }, req.user);
+
+      // La d\u00e9cision du middleware est relue APR\u00c8S l'\u00e9criture : l'\u00e9cran
+      // n'a pas \u00e0 deviner si le module est d\u00e9sormais accessible.
+      const verdict = await verifierModule(imfId, moduleKey);
+
+      sansCache(res);
+      res.json({
+        ok: true,
+        ...out,
+        // Upgrade après restriction : on renvoie tout de suite la nouvelle carte
+        // des droits pour que l'écran n'attende pas un rechargement.
+        desormais_accessible: verdict.utilisable === true,
+        motif_refus: verdict.motif || null,
+        restreinte_collecte_seule: await estRestreinteCollecteSeule(imfId),
+        configuration_ui: await buildInstitutionConfig(imfId, req.user),
+        invalider_configuration: true
+      });
+    } catch (e) {
+      if (e && e.expose) {
+        return res.status(e.status || 400).json({ error: e.code, message: e.message });
+      }
+      next(e);
+    }
+  });
+
+/* ------------------------------------------------------------------ */
+/*  LISTE DES MODULES RÉELLEMENT UTILISABLES (raccourci pour le front) */
+/* ------------------------------------------------------------------ */
+r.get('/institution/modules', authenticate, async (req, res, next) => {
+  try {
+    const imfId = req.dbImfId || (req.user && req.user.imf_id);
+    if (!imfId) return res.status(400).json({ error: 'institution_manquante' });
+    sansCache(res);
+    const { lireEtatModules, droitsUtilisables } = await import('../saas_restriction.js');
+    res.json({
+      modules: await lireEtatModules(imfId),
+      droits: await droitsUtilisables(imfId),
+      revision: new Date().toISOString()
+    });
+  } catch (e) { next(e); }
+});
+
+export default r;
