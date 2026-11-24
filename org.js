@@ -55,6 +55,41 @@ function hierarchyOk(kind, parentKind) {
   return allowed.indexOf(parentKind) >= 0;
 }
 
+// VAGUE 70 — Les libellés français (« agence », « point de service »,
+// « département ») sont acceptés comme les valeurs techniques : un formulaire
+// qui envoie le mot affiché à l'écran ne doit jamais échouer sur un nom de type.
+const KIND_ALIASES = {
+  direction: 'direction', directions: 'direction',
+  departement: 'department', department: 'department',
+  service: 'service', services: 'service',
+  agence: 'agency', agency: 'agency',
+  point_service: 'point_service', points_service: 'point_service'
+};
+function normKind(k) {
+  const t = String(k == null ? '' : k).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z]+/g, '_').replace(/^_+|_+$/g, '');
+  return KIND_ALIASES[t] || t;
+}
+const KIND_FR = { direction: 'la Direction Générale', department: 'un département',
+  service: 'un service', agency: 'une agence', point_service: 'un point de service' };
+const WHAT_FR = { direction: 'Une direction', department: 'Un département',
+  service: 'Un service', agency: 'Une agence', point_service: 'Un point de service' };
+// Accord du participe : « une agence ... rattachée », « un service ... rattaché ».
+const FEMININ = { direction: true, agency: true };
+function accord(kind) { return FEMININ[kind] ? 'e' : ''; }
+// Message ACTIONNABLE : il dit ce qui est possible, pas seulement que c'est
+// refusé. L'administrateur d'IMF comprend quoi choisir dans la liste.
+function hierarchyMessage(kind, parentKind) {
+  const allowed = PARENTS_OK[kind] || [];
+  const quoi = WHAT_FR[kind] || 'Cette unité';
+  const recu = parentKind ? (KIND_FR[parentKind] || parentKind) : 'cette unité';
+  if (!allowed.length) return quoi + ' ne peut pas avoir d’unité parente.';
+  const liste = allowed.map((k) => KIND_FR[k]).join(', ');
+  return quoi + ' ne peut pas être rattaché' + accord(kind) + ' à ' + recu +
+    '. Rattachement possible : ' + liste + '.';
+}
+
 // ---------------------------------------------------------------------------
 // AUTO-RÉPARATION : si la base d'une IMF ne contient pas (ou plus) la table
 // org_unit, le type unit_kind ou la fonction de génération de code (migration
@@ -69,6 +104,10 @@ async function ensureOrgSchema() {
   // donc en dehors de toute transaction : PostgreSQL l'exige pour un type.
   try { await q("ALTER TYPE unit_kind ADD VALUE IF NOT EXISTS 'point_service'"); }
   catch (e) { /* valeur déjà présente */ }
+  // Base où le type était un texte contraint : on retire la contrainte pour
+  // que les points de service puissent exister (aucune donnée modifiée).
+  try { await q('ALTER TABLE org_unit DROP CONSTRAINT IF EXISTS org_unit_kind_check'); }
+  catch (e) { /* table absente : créée juste après */ }
   await q(`
     DO $do$ BEGIN
       CREATE TYPE unit_kind AS ENUM ('direction','department','service','agency','point_service');
@@ -150,20 +189,24 @@ router.get('/units', async (req, res) => {
 
 router.post('/units', requirePermission('org.manage'), async (req, res, next) => {
   try {
-    const { kind, name, city, parent_id } = req.body || {};
+    const body = req.body || {};
+    const kind = normKind(body.kind);
+    const name = body.name, city = body.city, parent_id = body.parent_id;
     if (!KIND_ORDER[kind]) return res.status(422).json({ error: 'invalid_kind' });
     if (!name) return res.status(422).json({ error: 'missing_name' });
     // Une unité sans parent ne peut être qu'une direction ; un point de service
     // n'existe jamais seul, il est toujours rattaché à une agence.
     if (!parent_id && kind !== 'direction') return res.status(422).json({ error: 'bad_hierarchy' });
     if (!_orgSchemaEnsured) { try { await ensureOrgSchema(); } catch (_) {} }
-    const out = await tx(async (c) => {
+    const creer = () => tx(async (c) => {
       // Contrainte hiérarchique (voir PARENTS_OK) : direction > département >
       // service > agence > point de service, avec les raccourcis autorisés.
       if (parent_id) {
         const p = (await c.query('SELECT kind, imf_id FROM org_unit WHERE id=$1', [parent_id])).rows[0];
         if (!p || p.imf_id !== req.user.imf_id) { const e=new Error('bad_parent'); e.status=403; throw e; }
-        if (!hierarchyOk(kind, p.kind)) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
+        if (!hierarchyOk(kind, p.kind)) {
+          const e = new Error('bad_hierarchy'); e.status = 422; e.parentKind = p.kind; throw e;
+        }
       }
       const code = (await c.query('SELECT fn_gen_unit_code($1,$2) AS c', [req.user.imf_id, kind])).rows[0].c;
       const r = (await c.query(
@@ -172,10 +215,33 @@ router.post('/units', requirePermission('org.manage'), async (req, res, next) =>
         [req.user.imf_id, parent_id || null, kind, code, name, city || null])).rows[0];
       return r;
     });
+    let out;
+    try {
+      out = await creer();
+    } catch (e1) {
+      // Base HISTORIQUE : soit une contrainte CHECK limitait les valeurs de
+      // « kind » (elle bloquait les points de service), soit le type enum n'a
+      // pas encore sa valeur. On répare une fois, puis on réessaie : l'admin
+      // n'a jamais à voir une erreur de base de données.
+      let repare = false;
+      if (e1 && e1.code === '23514') {
+        try { await q('ALTER TABLE org_unit DROP CONSTRAINT IF EXISTS org_unit_kind_check'); repare = true; } catch (_) {}
+      } else if (e1 && e1.code === '22P02') {
+        try { await ensureOrgSchema(); repare = true; } catch (_) {}
+      }
+      if (!repare) throw e1;
+      out = await creer();
+    }
     res.json({ ok: true, unit: out });
   } catch (e) {
     // Base encore dépourvue du type « point de service » (migration non
     // passée) : on répond un message ACTIONNABLE au lieu d'une erreur 500.
+    if (e && e.status === 422 && e.message === 'bad_hierarchy') {
+      const k = normKind((req.body || {}).kind);
+      return res.status(422).json({ error: 'bad_hierarchy',
+        message: hierarchyMessage(k, e.parentKind || null),
+        parents_acceptes: PARENTS_OK[k] || [] });
+    }
     if (e && e.code === '22P02' && /point_service/.test(String(e.message || ''))) {
       return res.status(503).json({ error: 'server_outdated',
         message: "Les points de service ne sont pas encore ouverts sur cet espace. Réessayez dans un moment ; si le message revient, signalez-le à votre administrateur." });

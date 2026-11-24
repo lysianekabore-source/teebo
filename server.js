@@ -142,7 +142,7 @@ app.use(cookieParser());
 
 // Version du binaire en ligne (une seule source pour /version, /healthz et
 // l'en-tete X-Teebo-Build).
-const API_BUILD = 'v69-parcours-organisation-5-etapes-2026-11-20';
+const API_BUILD = 'v70-agences-et-points-de-service-2026-11-24';
 const API_KINDS = ['direction', 'department', 'service', 'agency', 'point_service'];
 // L'en-tete X-Teebo-Build permet de verifier en une seconde, dans l'onglet
 // « Reseau » du navigateur, quelle version du serveur a repondu.
@@ -177,7 +177,26 @@ app.get('/api/v1/version', (_req, res) => {
   });
 });
 app.get('/version', (_req, res) => { res.set('Cache-Control', 'no-store'); res.redirect(307, '/api/v1/version'); });
-app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v69', api_build: API_BUILD, point_service: true, org_setup: true, attache: true }));
+// CAPACITES D'ORGANISATION (public, sans donnee sensible) : le site lit ce que
+// le serveur EN LIGNE accepte reellement, et n'offre jamais un rattachement qui
+// sera refuse. Sert aussi de reperere de deploiement en une seule adresse.
+app.get('/api/v1/org/capabilities', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    ok: true, build: API_BUILD,
+    kinds: API_KINDS,
+    hierarchy_shortcuts: true,
+    point_service: true,
+    parents: {
+      direction: [],
+      department: ['direction'],
+      service: ['direction', 'department'],
+      agency: ['direction', 'department', 'service'],
+      point_service: ['agency']
+    }
+  });
+});
+app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v70', api_build: API_BUILD, point_service: true, org_setup: true, attache: true, hierarchy_shortcuts: true }));
 
 // Diagnostic de session, public et sans donnee sensible : il dit seulement si
 // le cookie arrive et si la session existe encore.
@@ -401,6 +420,11 @@ async function lancerMigration() {
       // que la création fonctionne dès le premier clic après le déploiement.
       try {
         await q("ALTER TYPE unit_kind ADD VALUE IF NOT EXISTS 'point_service'");
+        // Bases historiques ou la colonne « kind » etait un texte avec une
+        // contrainte limitant les valeurs : la contrainte empechait d'ecrire
+        // « point_service ». On la retire (idempotent, sans perte de donnee).
+        try { await q('ALTER TABLE org_unit DROP CONSTRAINT IF EXISTS org_unit_kind_check'); }
+        catch (eC) { console.warn('[units] contrainte kind :', eC && (eC.message || eC)); }
         etat.point_service = 'ok';
       } catch (e) {
         etat.point_service = 'indisponible';
