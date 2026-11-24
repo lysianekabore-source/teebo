@@ -2,26 +2,40 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { q, tx } from '../db.js';
-import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken, userHasPermission, effectivePermissionKeys, idleMinutes, effectiveRoleOf } from '../auth.js';
+import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken, userHasPermission, effectivePermissionKeys, idleMinutes, effectiveRoleOf, hasFullAccess, estProfilSurveillance, filtrerHabilitations, superficieExcluePour, cookieOptions, IDLE_MINUTES_DEFAUT } from '../auth.js';
 import { notifyEmail, notifyWhatsApp, loginUrlFor } from '../notify.js';
 import { isCashierPosition } from '../org_structure.js';
+import { accesUtilisateur } from '../saas_engine.js';   // VAGUE 47 : modules actifs + lecture seule
+import { appliquerEssaiCollecte } from '../essai_bascule.js';
 import { getStatus, is2faRequired, createChallenge, consumeChallenge, verifyForUser,
   verifyRecoveryCode, startEnrollment, confirmEnrollment, disable,
   createEnrollmentTicket, resolveEnrollmentTicket, consumeEnrollmentTicket } from '../twofa.js';
 
 const router = express.Router();
 
-const COOKIE = {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax',
-  path: '/',
-  maxAge: 60 * 60 * 1000  // cookie glissant aligné sur l'inactivité (60 min)
-};
+// Cookie de session : 30 jours glissants (voir cookieOptions dans auth.js).
+// Il est repoussé à chaque activité, donc plus d'expiration en pleine journée.
+const COOKIE = cookieOptions();
 
 // Politique de mot de passe : >= 10 car., maj/min/chiffre.
 function weakPassword(p) {
   return !p || p.length < 10 || !/[a-z]/.test(p) || !/[A-Z]/.test(p) || !/[0-9]/.test(p);
+}
+
+// --- VAGUE 44 : essai Collecte & tontines applique au prochain acces --------
+// Une IMF dont le statut est Essai n'a droit qu'au module Collecte & tontines.
+// La bascule est faite a l'instant ou elle se connecte (et non plus au moment
+// de la migration) : chacun bascule de lui-meme, une seule fois.
+// Ne jette jamais : une erreur ici ne doit pas empecher une connexion.
+async function basculerSiEssai(user, origine) {
+  try {
+    if (!user || !user.imf_id) return null;
+    const r = await appliquerEssaiCollecte(user.imf_id, { par: user.id || null, origine });
+    if (r && r.applique && !r.deja) {
+      return { basculee: true, essai_collecte: !!r.essai_collecte };
+    }
+  } catch (e) { /* jamais bloquant */ }
+  return null;
 }
 
 // --- Activation : première connexion avec le code d'accès + création du mdp ---
@@ -56,7 +70,8 @@ router.post('/activate', async (req, res, next) => {
     }
     const { token } = await createSession({ id: u.id, imf_id: u.imf_id });
     res.cookie('teebo_session', token, COOKIE);
-    res.json({ ok: true });
+    const essai = await basculerSiEssai(u, 'ACTIVATION');
+    res.json({ ok: true, ...(essai ? { essai_collecte: essai } : {}) });
   } catch (e) { next(e); }
 });
 
@@ -99,13 +114,75 @@ router.post('/login', async (req, res, next) => {
 
     const { token } = await createSession(u);
     res.cookie('teebo_session', token, COOKIE);
+    // VAGUE 44 : IMF en essai -> Collecte & tontines seulement, des cette
+    // connexion. Idempotent : les connexions suivantes ne changent rien.
+    const essai = await basculerSiEssai(u, 'LOGIN');
     const expired = isPasswordExpired(u.password_set_at) || u.must_change_password;
-    res.json({ ok: true, password_change_required: expired, max_days: MDP_MAX_DAYS });
+    res.json({ ok: true, password_change_required: expired, max_days: MDP_MAX_DAYS,
+      ...(essai ? { essai_collecte: essai, config_a_relire: true } : {}) });
   } catch (e) { next(e); }
 });
 
+// ---------------------------------------------------------------------------
+// VAGUE 48 — COMPATIBILITE DES ADRESSES HISTORIQUES
+// Le site (app.js, super-admin.js) et les anciens clients appellent
+// /api/v1/me, /api/v1/logout, /api/v1/keepalive, /api/v1/change-password,
+// /api/v1/2fa/* : ces adresses courtes n'existaient plus (tout etait sous
+// /auth/...) et repondaient 404 « ces adresses n'existent plus ».
+// On expose les MEMES traitements aux deux adresses : rien n'est duplique,
+// aucun comportement ne change.
+// ---------------------------------------------------------------------------
+const aliases = [
+  ['get', '/me'], ['post', '/logout'], ['post', '/keepalive'],
+  ['post', '/change-password'], ['post', '/2fa/verify'],
+  ['post', '/2fa/enroll/start'], ['post', '/2fa/enroll/confirm'],
+  ['get', '/2fa/status'], ['post', '/2fa/disable']
+];
+// VAGUE 48e — CAUSE RACINE ENFIN ISOLÉE
+// « router.route(path) » ne retrouve PAS une route déjà enregistrée : il en
+// crée une NOUVELLE, vide (methods {}, stack []). L'alias appelait donc
+// next() sans rien faire, et la requête continuait sa route vers un autre
+// routeur monté sur /api/v1 (console éditeur) qui répondait
+// 401 « not_authenticated » : l'enrôlement 2FA restait impossible.
+// Correctif : on mémorise les traitements réels dans une table, au moment où
+// on les déclare, puis l'alias les rejoue exactement (mêmes contrôles, même
+// corps de réponse). Aucune duplication de logique, aucun auto-appel.
+const traitements = new Map();
+const cle = (verb, path) => verb + ' ' + path;
+export function enregistrer(verb, path, ...handlers) {
+  const liste = handlers.flat().filter(Boolean);
+  traitements.set(cle(verb, path), liste);
+  // additif : la vraie route reste déclarée à l'identique plus bas
+  return router[verb](path, ...liste);
+}
+function alias(verb, path) {
+  return (req, res, next) => {
+    const chaine = traitements.get(cle(verb, path));
+    if (!chaine || !chaine.length) return next();
+    let i = 0;
+    const suivant = (err) => {
+      if (err) return next(err);
+      const h = chaine[i++];
+      if (!h) return next();
+      return h(req, res, suivant);
+    };
+    return suivant();
+  };
+}
+// ---------------------------------------------------------------------------
+// ADRESSES COURTES (/api/v1/2fa/*, /api/v1/me, /api/v1/logout, /keepalive,
+// /change-password) : elles renvoient vers les routes /auth/... ci-dessous.
+// Ce transfert est branché APRÈS la déclaration des routes, en fin de fichier,
+// pour qu'aucune ne soit déclarée avant d'exister. Rien n'est recopié.
+// ---------------------------------------------------------------------------
+export const court = express.Router();
+court.use((req, res, next) => {
+  const suite = router;                       // le routeur /auth complet
+  return suite(req, res, next);
+});
+
 // --- Validation du défi 2FA (code authenticator ou code de secours) --------
-router.post('/2fa/verify', async (req, res, next) => {
+enregistrer('post', '/2fa/verify', async (req, res, next) => {
   try {
     const { challenge, code, recovery_code } = req.body || {};
     if (!challenge) return res.status(422).json({ error: 'missing_challenge' });
@@ -131,9 +208,12 @@ router.post('/2fa/verify', async (req, res, next) => {
 
     const { token } = await createSession(user);
     res.cookie('teebo_session', token, COOKIE);
+    // VAGUE 44 : meme regle apres validation du code a 6 chiffres.
+    const essai = await basculerSiEssai(user, '2FA');
     const expired = isPasswordExpired(user.password_set_at) || user.must_change_password;
     res.json({ ok: true, twofa: 'passed', password_change_required: expired,
-      recovery_codes_left: verdict.remaining != null ? verdict.remaining : undefined });
+      recovery_codes_left: verdict.remaining != null ? verdict.remaining : undefined,
+      ...(essai ? { essai_collecte: essai, config_a_relire: true } : {}) });
   } catch (e) { next(e); }
 });
 
@@ -144,9 +224,13 @@ router.post('/2fa/verify', async (req, res, next) => {
 async function authOrEnroll(req, res, next) {
   // 1) Session normale si cookie présent et valide.
   if (req.cookies?.teebo_session) return authenticate(req, res, next);
-  // 2) Sinon, ticket d'enrôlement fourni dans le corps de la requête.
+  // 2) Sinon, ticket d'enrôlement fourni dans le corps OU dans l'en-tête
+  //    « Authorization: Bearer ... » (VAGUE 48 : le site envoie l'en-tête).
   try {
-    const { user, challengeId } = await resolveEnrollmentTicket((req.body || {}).enrollment_token);
+    const entete = String(req.get('authorization') || '');
+    const tk = (req.body || {}).enrollment_token
+      || (/^Bearer\s+\S+/i.test(entete) ? entete.replace(/^Bearer\s+/i, '') : null);
+    const { user, challengeId } = await resolveEnrollmentTicket(tk);
     req.user = user;
     req.enrollTicketId = challengeId;
     next();
@@ -155,7 +239,7 @@ async function authOrEnroll(req, res, next) {
   }
 }
 
-router.post('/2fa/enroll/start', authOrEnroll, async (req, res, next) => {
+enregistrer('post', '/2fa/enroll/start', authOrEnroll, async (req, res, next) => {
   try {
     const out = await startEnrollment({ id: req.user.id, imf_id: req.user.imf_id,
       email: req.user.email, code_user: req.user.code_user, full_name: req.user.full_name });
@@ -166,7 +250,7 @@ router.post('/2fa/enroll/start', authOrEnroll, async (req, res, next) => {
 });
 
 // --- Enrôlement 2FA : confirmer (active + renvoie les codes de secours) ----
-router.post('/2fa/enroll/confirm', authOrEnroll, async (req, res, next) => {
+enregistrer('post', '/2fa/enroll/confirm', authOrEnroll, async (req, res, next) => {
   try {
     const { code } = req.body || {};
     const out = await confirmEnrollment(req.user.id, code);
@@ -190,7 +274,7 @@ router.post('/2fa/enroll/confirm', authOrEnroll, async (req, res, next) => {
 });
 
 // --- État 2FA du compte courant --------------------------------------------
-router.get('/2fa/status', authenticate, async (req, res, next) => {
+enregistrer('get', '/2fa/status', authenticate, async (req, res, next) => {
   try {
     const st = await getStatus(req.user.id);
     res.json({ ...st, required: is2faRequired(req.user.role), role: req.user.role });
@@ -198,7 +282,7 @@ router.get('/2fa/status', authenticate, async (req, res, next) => {
 });
 
 // --- Désactiver la 2FA (mot de passe requis) -------------------------------
-router.post('/2fa/disable', authenticate, async (req, res, next) => {
+enregistrer('post', '/2fa/disable', authenticate, async (req, res, next) => {
   try {
     const { password } = req.body || {};
     const { rows } = await q('SELECT password_hash FROM app_user WHERE id=$1', [req.user.id]);
@@ -212,7 +296,7 @@ router.post('/2fa/disable', authenticate, async (req, res, next) => {
 });
 
 // --- Changement de mot de passe (expiration 60j ou forcé) ------------------
-router.post('/change-password', authenticate, async (req, res, next) => {
+enregistrer('post', '/change-password', authenticate, async (req, res, next) => {
   try {
     const { current, new_password } = req.body || {};
     if (weakPassword(new_password)) return res.status(422).json({ error: 'weak_password' });
@@ -337,7 +421,7 @@ router.post('/reset-password', async (req, res, next) => {
 });
 
 // --- Déconnexion ------------------------------------------------------------
-router.post('/logout', authenticate, async (req, res, next) => {
+enregistrer('post', '/logout', authenticate, async (req, res, next) => {
   try {
     await q('UPDATE session SET revoked = true WHERE id=$1', [req.sessionId]);
     res.clearCookie('teebo_session', { path: '/' });
@@ -349,13 +433,13 @@ router.post('/logout', authenticate, async (req, res, next) => {
 // Appelée toutes les 10 minutes par l'onglet ouvert ET AU RETOUR sur l'onglet :
 // un utilisateur qui travaille (ou qui revient sur son écran après une pause)
 // n'est jamais déconnecté. Coût minimal : une seule requête authentifiée.
-router.post('/keepalive', authenticate, (req, res) => {
+enregistrer('post', '/keepalive', authenticate, (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({ ok: true, idle_minutes: idleMinutes(), at: new Date().toISOString() });
 });
 
 // --- Profil courant (avec contexte IMF + essai) -----------------------------
-router.get('/me', authenticate, async (req, res, next) => {
+enregistrer('get', '/me', authenticate, async (req, res, next) => {
   try {
     const { rows } = await q(
       `SELECT code_imf, name AS imf_name, status AS imf_status, trial_ends_at
@@ -370,6 +454,9 @@ router.get('/me', authenticate, async (req, res, next) => {
     // Habilitation à l'écran de validation finale des crédits (pour l'affichage du menu).
     const canValidateCreditFinal = await userHasPermission(req.user, 'credit.validate_final');
     const permissionKeys = await effectivePermissionKeys(req.user);
+    // VAGUE 47 : bloc « mes acces » — le site masque les modules non souscrits
+    // et affiche la banniere de lecture seule. Ne jette jamais.
+    const acces = await accesUtilisateur(req.user).catch(() => null);
     res.json({
       user: {
         id: req.user.id, email: req.user.email, full_name: req.user.full_name,
@@ -390,9 +477,19 @@ router.get('/me', authenticate, async (req, res, next) => {
       password_change_required: req.user.must_change_password || req.passwordExpired,
       idle_minutes: idleMinutes(),
       can_validate_credit_final: canValidateCreditFinal,
-      permissions: permissionKeys
+      permissions: permissionKeys,
+      // VAGUE 47 : le site s'appuie sur ces deux indicateurs pour ne plus
+      // afficher à un PCA / à la direction les menus de gestion du personnel,
+      // de la structure et des habilitations (bug des droits identiques).
+      acces_complet: hasFullAccess(effectiveRoleOf(req.user) || req.user.role),
+      profil_surveillance: estProfilSurveillance(req.user),
+      // CORRECTIF 18/11/2026 : le plafond ne concerne plus seulement la
+      // direction et le PCA — il s'applique a TOUS les profils ordinaires.
+      habilitations_exclues: superficieExcluePour(req.user),
+      acces
     });
   } catch (e) { next(e); }
 });
+
 
 export default router;

@@ -105,43 +105,15 @@ r.get('/admin/institutions/:id/access-state', ...gardien, async (req, res, next)
 });
 
 /* ------------------------------------------------------------------ */
-/*  RESTREINDRE : collecte seule                                       */
+/*  RESTREINDRE / LEVER LA RESTRICTION                                 */
 /* ------------------------------------------------------------------ */
-r.post('/admin/institutions/:id/restrict-to-collecte', ...gardien,
-  async (req, res, next) => {
-    try {
-      const id = await resoudreImf(req.params.id);
-      if (!id) {
-        return res.status(404).json({ error: 'imf_introuvable',
-          message: 'Aucune institution ne porte ce code ou cet identifiant.' });
-      }
-      const b = req.body || {};
-      const out = await restreindreCollecteSeule(id,
-        { id: req.user.id, role: req.user.role }, b.reason || b.raison || null);
-      res.setHeader('Cache-Control', 'no-store');
-      res.json({ ...out, action: 'IMF_RESTRICTION_COLLECTE_ONLY',
-        invalider_configuration: true });
-    } catch (e) { if (echec(res, e)) return; next(e); }
-  });
-
-/* ------------------------------------------------------------------ */
-/*  LEVER LA RESTRICTION                                               */
-/* ------------------------------------------------------------------ */
-r.post('/admin/institutions/:id/lift-restriction', ...gardien,
-  async (req, res, next) => {
-    try {
-      const id = await resoudreImf(req.params.id);
-      if (!id) {
-        return res.status(404).json({ error: 'imf_introuvable',
-          message: 'Aucune institution ne porte ce code ou cet identifiant.' });
-      }
-      const b = req.body || {};
-      const out = await leverRestriction(id,
-        { id: req.user.id, role: req.user.role }, b.reason || b.raison || null);
-      res.setHeader('Cache-Control', 'no-store');
-      res.json({ ...out, action: 'IMF_RESTRICTION_LIFTED',
-        invalider_configuration: true });
-    } catch (e) { if (echec(res, e)) return; next(e); }
-  });
+// Ces deux opérations (POST) ne sont définies qu'UNE fois dans tout le
+// serveur : routes/saas_restriction_patch.js, derrière requireRole('teebo_admin').
+// Les copies qui existaient ici doublonnaient le même chemin et n'étaient pas
+// atteignables : le routeur monté en premier répondait. Conséquence fâcheuse,
+// elles laissaient croire à un contrôle d'accès alors que le POST pouvait être
+// atteint sans jeton. Aucune route n'est perdue, la logique métier est la même
+// (même service saas_restriction.js) et la lecture d'état juste au-dessus
+// continue d'afficher le résultat.
 
 export default r;

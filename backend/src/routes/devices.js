@@ -88,9 +88,19 @@ r.get('/security-alerts', requireRole('admin_imf', 'direction', 'department', 's
   res.json({ alerts: rows, unread });
 });
 
-r.post('/security-alerts/:id/read', requireRole('admin_imf', 'direction', 'department', 'service'), async (req, res) => {
-  await q(`UPDATE security_alert SET acknowledged=true WHERE id=$1 AND imf_id=$2`, [req.params.id, req.user.imf_id]);
-  res.json({ ok: true });
+r.post('/security-alerts/:id/read', requireRole('admin_imf', 'direction', 'department', 'service'), async (req, res, next) => {
+  try {
+    const { rows } = await q(
+      `UPDATE security_alert SET acknowledged=true WHERE id=$1 AND imf_id=$2 RETURNING id`,
+      [req.params.id, req.user.imf_id]);
+    // VAGUE 49 : alerte inconnue -> refus 404 (au lieu d'un « ok » trompeur
+    // et d'un identifiant illisible qui faisait echouer la requete en 500).
+    if (!rows.length) {
+      return res.status(404).json({ error: 'alerte_introuvable',
+        message: 'Cette alerte est introuvable.' });
+    }
+    res.json({ ok: true });
+  } catch (e) { next(e); }
 });
 
 /* ------------------------------------------------------------------ *

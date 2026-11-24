@@ -2,7 +2,10 @@ import express from 'express';
 import { q, tx } from '../db.js';
 import { notifyWhatsApp, notifyEmail, TEEBO_WHATSAPP, TEEBO_EMAIL, verifyDocToken } from '../notify.js';
 import { getBranding, renderInvoice, moneyFcfa, setDocumentCsp } from '../documents.js';
-import { computePricing, buildInvoiceLines, BILLING_CYCLES, LICENCE_CENTS, TRIAL_BILLING_NOTE } from '../pricing.js';
+import {
+  computePricing, buildInvoiceLines, normalizeModules, catalogModule,
+  BILLING_CYCLES, LICENCE_CENTS, TRIAL_BILLING_NOTE, MODULE_KEYS, MODULE_CATALOG
+} from '../pricing.js';
 
 const router = express.Router();
 
@@ -60,16 +63,95 @@ async function ensureRequestSchema() {
     ALTER TABLE access_request ADD COLUMN IF NOT EXISTS subscription_cents  BIGINT;
     ALTER TABLE access_request ADD COLUMN IF NOT EXISTS discount_cents      BIGINT DEFAULT 0;
     ALTER TABLE access_request ADD COLUMN IF NOT EXISTS decision            TEXT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS plan_code            TEXT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS proforma_no          TEXT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS proforma_amount_cents BIGINT;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS proforma_validated    BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS proforma_validated_at TIMESTAMPTZ;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS decided_by            UUID;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS decided_at            TIMESTAMPTZ;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS module_codes          TEXT[] NOT NULL DEFAULT '{}'::text[];
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS module_count          INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS full_pack             BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS pack_discount_cents   BIGINT NOT NULL DEFAULT 0;
+    ALTER TABLE access_request ADD COLUMN IF NOT EXISTS annual_discount_cents BIGINT NOT NULL DEFAULT 0;
   `);
   _requestSchemaEnsured = true;
 }
 
-router.get('/plans', async (_req, res, next) => {
+// ---------------------------------------------------------------------------
+// CATALOGUE DES MODULES (abonnement par module)
+// ---------------------------------------------------------------------------
+// Le prospect ne choisit plus une « formule » : il coche les MODULES dont il a
+// besoin. Cet appel renvoie le catalogue officiel + les règles de facturation
+// (licence unique, cycle mensuel/annuel, remise pack complet, essai par module).
+// La composition du prix est recalculée côté serveur au moment de la proforma :
+// un prix bricolé dans le navigateur n'a donc aucun effet.
+router.get('/plans', async (req, res, next) => {
   try {
-    const { rows } = await q('SELECT * FROM plan ORDER BY sort_order');
-    res.json({ plans: rows });
+    // CORRECTIF 52 : si la table des tarifs n'existe pas encore (migration
+    // partielle), on NE renvoie PLUS une erreur 500 : le catalogue du code
+    // (pricing.js) est la reference et suffit a afficher la grille.
+    let rows = [];
+    try {
+      ({ rows } = await q(
+        `SELECT p.module_key AS code, p.module_name AS label,
+                p.monthly_subscription_price::bigint AS price_cents,
+                p.is_available, p.position AS sort_order
+           FROM saas_modules_pricing p
+          ORDER BY p.position, p.module_key`));
+    } catch (e) {
+      console.error('[plans] table de tarifs indisponible, catalogue du code utilise :', e && (e.code || e.message));
+      rows = [];
+    }
+    if (!rows.length) {
+      // Catalogue de secours : libelles, prix et descriptions viennent du code.
+      rows = MODULE_CATALOG.map((m) => ({
+        code: m.key, label: m.label,
+        price_cents: m.monthlyCents, is_available: true,
+        sort_order: MODULE_CATALOG.indexOf(m) * 10 + 10
+      }));
+    }
+    const catalogue = rows.map((r) => ({
+      code: r.code,
+      label: r.label,
+      price_cents: Math.round(Number(r.price_cents) || 0),
+      monthly_cents: Math.round(Number(r.price_cents) || 0),
+      description: (catalogModule(r.code) || {}).description || null,
+      short: (catalogModule(r.code) || {}).short || null,
+      is_available: r.is_available !== false
+    }));
+    const availables = catalogue.filter((m) => m.is_available);
+    const fullPackCents = availables.reduce((s, m) => s + m.monthly_cents, 0);
+    res.json({
+      modules: catalogue,
+      plans: catalogue,                       // alias historique des écrans
+      billing_cycles: BILLING_CYCLES,
+      licence_cents: LICENCE_CENTS,
+      licence_once: true,
+      annual_discount_percent: 15,
+      full_pack_discount_percent: 5,
+      full_pack_monthly_cents: fullPackCents,
+      trial_days_per_module: 30,
+      pricing_model: 'par_module'
+    });
   } catch (e) { next(e); }
 });
+
+/** Liste de modules reçue du navigateur (codes ou objets). */
+function requestedModules(b) {
+  const raw = b && (b.module_codes || b.modules || b.module_keys || b.plan_codes);
+  if (!Array.isArray(raw)) return [];
+  const codes = raw.map((x) => (typeof x === 'string' ? x : (x && (x.code || x.key || x.module_key)))).filter(Boolean);
+  // On ne garde que les modules du catalogue officiel, sans doublon, dans
+  // l'ordre du catalogue (facture toujours présentée dans le même ordre).
+  const seen = new Set();
+  return MODULE_KEYS.filter((k) => codes.includes(k)).filter((k) => {
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
 
 function validEmail(e) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e || ''); }
 
@@ -77,7 +159,6 @@ function validEmail(e) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e || ''); }
 router.post('/', async (req, res, next) => {
   try {
     const b = req.body || {};
-    await ensureRequestSchema();
     const required = ['lastname','firstname','position','country_code','imf_type',
       'capital_cents','bceao_agreement_no','rccm','ifu','whatsapp','phone_main','city','email','admin_name','imf_name'];
     // On renvoie TOUS les champs manquants (et pas seulement le premier) : le
@@ -85,10 +166,24 @@ router.post('/', async (req, res, next) => {
     // à renvoyer autant de fois qu'il manque de champs.
     const missing = required.filter(f => b[f] === undefined || b[f] === null || b[f] === '');
     if (missing.length)
-      return res.status(422).json({ error: 'missing_field', field: missing[0], missing });
-    if (!UEMOA_CODES.includes(b.country_code)) return res.status(422).json({ error: 'country_not_uemoa' });
-    if (!['SA','SCOOP'].includes(b.imf_type)) return res.status(422).json({ error: 'invalid_imf_type' });
-    if (!validEmail(b.email)) return res.status(422).json({ error: 'invalid_email' });
+      return res.status(422).json({ error: 'missing_field', field: missing[0], missing,
+        message: 'Certaines informations obligatoires sont manquantes. Complétez-les puis renvoyez le formulaire.' });
+    if (!UEMOA_CODES.includes(b.country_code))
+      return res.status(422).json({ error: 'country_not_uemoa', field: 'country_code',
+        message: 'Le pays de l’institution doit appartenir à l’UEMOA.' });
+    if (!['SA','SCOOP'].includes(b.imf_type))
+      return res.status(422).json({ error: 'invalid_imf_type', field: 'imf_type',
+        message: 'Choisissez la forme juridique de l’institution (SA ou SCOOP).' });
+    if (!validEmail(b.email))
+      return res.status(422).json({ error: 'invalid_email', field: 'email',
+        message: 'L’adresse e-mail saisie n’est pas valide.' });
+
+    // Le schéma n'est réparé qu'APRÈS la validation : un formulaire incomplet ne
+    // doit jamais dépendre d'un accès à la base pour afficher son message. Si la
+    // réparation échoue, on continue : les colonnes existent déjà en production,
+    // et l'insertion signalera elle-même la cause exacte si ce n'est pas le cas.
+    try { await ensureRequestSchema(); }
+    catch (err) { console.error('[requests] ensureRequestSchema:', err && err.message); }
 
     // --- Anti-doublon : une seule demande d'accès par IMF -------------------
     // On refuse une 2e demande pour la même IMF, identifiée par son numéro
@@ -185,34 +280,76 @@ router.post('/', async (req, res, next) => {
 router.post('/:id/select-plan', async (req, res, next) => {
   try {
     const { plan_code, billing_cycle } = req.body || {};
+    const requested = requestedModules(req.body);
+    const codes = requested.length ? requested : requestedModules({ module_codes: plan_code ? [plan_code] : [] });
+    if (!codes.length) return res.status(422).json({ error: 'no_module_selected',
+      message: 'Choisissez au moins un module pour établir la proforma.' });
     const billing = BILLING_CYCLES.includes(billing_cycle) ? billing_cycle : 'mensuel';
-    const plan = (await q('SELECT * FROM plan WHERE code=$1', [plan_code])).rows[0];
-    if (!plan) return res.status(404).json({ error: 'plan_not_found' });
-    const pr = computePricing(plan.price_cents, billing);
+    // Tarifs lus en BASE (source de vérité), jamais envoyés par le navigateur.
+    let modRows = [];
+    try {
+      ({ rows: modRows } = await q(
+        `SELECT module_key AS code, module_name AS label,
+                monthly_subscription_price::bigint AS price_cents
+           FROM saas_modules_pricing WHERE module_key = ANY($1)`, [codes]));
+    } catch (e) {
+      // Table absente (migration partielle) : on continue avec le catalogue
+      // du code, sinon la proforma etait impossible a generer.
+      console.error('[select-plan] table de tarifs indisponible :', e && (e.code || e.message));
+      modRows = [];
+    }
+    if (!modRows.length) {
+      // Les modules demandes sont connus du catalogue : on les facture au
+      // tarif officiel du code plutot que d'echouer.
+      const connus = codes.filter((c) => catalogModule(c));
+      if (!connus.length) return res.status(404).json({ error: 'module_not_found',
+        message: 'Ces modules ne sont pas reconnus. Choisissez-les dans la liste affichee.' });
+      modRows = connus.map((c) => {
+        const m = catalogModule(c);
+        return { code: c, label: m.label, price_cents: m.monthlyCents };
+      });
+    }
+    const modules = normalizeModules(modRows.map((m) => ({
+      key: m.code, label: m.label, monthlyCents: Number(m.price_cents) })));
+    const pr = computePricing(modules, billing, { fullPack: true });
+    const fullPack = pr.fullPack === true;
+    const planLabel = modules.map((m) => m.label).join(' + ');
     const proformaNo = 'PRO-' + new Date().getFullYear() + '-' +
       Math.floor(100000 + Math.random() * 900000);
+    const subCents = pr.modulesGrossCents;
     const { rows } = await q(
       `UPDATE access_request SET plan_code=$1, billing_cycle=$2, licence_cents=$3,
           subscription_cents=$4, discount_cents=$5, proforma_no=$6,
-          proforma_amount_cents=$7, proforma_validated=false
+          proforma_amount_cents=$7, proforma_validated=false,
+          module_codes=$9::text[], module_count=cardinality($9::text[]),
+          full_pack=$10, pack_discount_cents=$11, annual_discount_cents=$12
        WHERE id=$8 RETURNING *`,
-      [plan.code, pr.billing, pr.licenceCents, pr.subscriptionCents, pr.discountCents,
-       proformaNo, pr.totalCents, req.params.id]
+      [fullPack ? 'PACK_COMPLET' : modules.map((m) => m.key).join('+'),
+       pr.billing, pr.licenceCents, subCents, pr.discountCents,
+       proformaNo, pr.totalCents, req.params.id,
+       modules.map((m) => m.key), fullPack, pr.packDiscountCents, pr.annualDiscountCents]
     );
     if (!rows.length) return res.status(404).json({ error: 'request_not_found' });
     const r = rows[0];
     const imf = (await q('SELECT * FROM imf WHERE id=$1', [r.imf_id])).rows[0];
     res.json({ ok: true, proforma: {
-      no: proformaNo, plan: plan.label, plan_code: plan.code,
+      no: proformaNo,
+      modules: modules.map((m) => ({ code: m.key, label: m.label, monthly_cents: m.monthlyCents })),
+      module_codes: modules.map((m) => m.key),
+      module_count: modules.length,
+      full_pack: fullPack,
+      label: planLabel,
       billing_cycle: pr.billing, period_label: pr.periodLabel,
       licence_cents: pr.licenceCents,
-      subscription_cents: pr.subscriptionCents,
-      gross_subscription_cents: pr.grossSubscriptionCents,
-      savings_cents: pr.savingsCents,
+      subscription_cents: subCents,
+      gross_subscription_cents: pr.modulesGrossCents,
+      annual_discount_cents: pr.annualDiscountCents,
+      pack_discount_cents: pr.packDiscountCents,
+      savings_cents: pr.discountCents,
       discount_cents: pr.discountCents,
       subtotal_cents: pr.subtotalCents,
       amount_cents: pr.totalCents,
-      monthly_cents: plan.price_cents,
+      monthly_cents: pr.monthlyEquivalentCents,
       trial_days: 30,
       imf_name: imf ? imf.name : null,
       date: new Date().toISOString(),
@@ -223,33 +360,50 @@ router.post('/:id/select-plan', async (req, res, next) => {
 
 // --- Facture PROFORMA imprimable (PDF via HTML) ----------------------------
 // Numéro de proforma : PRO-AAAA-XXXXXX. Visible par le prospect au moment du
-// choix de la formule, puis validée pour transmission à teebo.
+// choix des modules, puis validée pour transmission à teebo.
 router.get('/:id/proforma.pdf', async (req, res, next) => {
   try {
     const r = (await q('SELECT * FROM access_request WHERE id=$1', [req.params.id])).rows[0];
     if (!r || !r.proforma_no) return res.status(404).json({ error: 'proforma_not_found' });
     const imf = (await q('SELECT * FROM imf WHERE id=$1', [r.imf_id])).rows[0];
     const header = await getBranding(r.imf_id);
-    const plan = (await q('SELECT * FROM plan WHERE code=$1', [r.plan_code])).rows[0];
-    // Reconstitution du détail : licence + abonnement (+ remise si cycle annuel).
+    // Reconstitution du détail : licence + UNE LIGNE PAR MODULE souscrit
+    // (+ remises réellement consenties). Une ancienne demande sans liste de
+    // modules (plan_code historique) est présentée comme un module unique.
     // Coercition NUMÉRIQUE : node-postgres renvoie les BIGINT en CHAÎNES, une
     // addition sans Number() concaténerait les montants.
     const licenceCents = Math.round(Number(r.licence_cents != null ? r.licence_cents : LICENCE_CENTS)) || 0;
-    const subscriptionCents = Math.round(Number(r.subscription_cents != null
-      ? r.subscription_cents : (plan ? plan.price_cents : 0))) || 0;
+    const subscriptionCents = Math.round(Number(r.subscription_cents || 0)) || 0;
     const discountCents = Math.round(Number(r.discount_cents || 0)) || 0;
     const subtotalCents = licenceCents + subscriptionCents;
     const totalCents = r.proforma_amount_cents != null
       ? Math.round(Number(r.proforma_amount_cents)) : (subtotalCents - discountCents);
-    const lines = buildInvoiceLines({
-      planLabel: plan ? plan.label : (r.plan_code || ''),
-      billing: r.billing_cycle, licenceCents, subscriptionCents });
+    const codes = (Array.isArray(r.module_codes) && r.module_codes.length)
+      ? r.module_codes : (r.plan_code ? [r.plan_code] : []);
+    let modules = [];
+    if (codes.length) {
+      const { rows: modRows } = await q(
+        `SELECT module_key AS code, module_name AS label,
+                monthly_subscription_price::bigint AS price_cents
+           FROM saas_modules_pricing WHERE module_key = ANY($1)`, [codes]);
+      modules = normalizeModules(modRows.map((m) => ({
+        key: m.code, label: m.label, monthlyCents: Number(m.price_cents) })));
+    }
+    const billing = r.billing_cycle === 'annuel' ? 'annuel' : 'mensuel';
+    // Le montant stocké fait foi ; la reconstruction ne sert qu'à détailler les
+    // lignes. Si la liste des modules est inconnue (très ancienne demande) on
+    // retombe sur une ligne d'abonnement globale, jamais une pièce vide.
+    const lines = modules.length
+      ? buildInvoiceLines({ modules, billing, licenceCents, modulesGrossCents: subscriptionCents })
+      : [{ label: 'Abonnement modules teeBo — ' + (billing === 'annuel' ? '12 mois (annuel)' : '1 mois (mensuel)'),
+          amountCents: subscriptionCents }];
+    if (!modules.length) lines.unshift({ label: 'Licence teeBo — activation (frais unique)', amountCents: licenceCents });
     const html = renderInvoice({
       header,
       kind: 'proforma',
       invoiceNo: r.proforma_no,
       issuedAt: r.created_at || new Date(),
-      periodLabel: r.billing_cycle === 'annuel' ? '12 mois (annuel)' : '1 mois (mensuel)',
+      periodLabel: billing === 'annuel' ? '12 mois (annuel)' : '1 mois (mensuel)',
       lines,
       subtotalCents,
       discountCents,
@@ -278,13 +432,28 @@ router.get('/invoices/:id.pdf', async (req, res, next) => {
     const header = await getBranding(inv.imf_id);
     const imf = (await q('SELECT name, email FROM imf WHERE id=$1', [inv.imf_id])).rows[0] || {};
     const ar = inv.request_id
-      ? (await q('SELECT billing_cycle, licence_cents, subscription_cents FROM access_request WHERE id=$1', [inv.request_id])).rows[0]
+      ? (await q('SELECT billing_cycle, licence_cents, subscription_cents, module_codes FROM access_request WHERE id=$1', [inv.request_id])).rows[0]
       : null;
-    const planLabel = (inv.plan_label || inv.plan_code || '').replace(/^Abonnement teeBo — /, '');
-    const lines = (ar && (ar.licence_cents != null || ar.subscription_cents != null))
-      ? buildInvoiceLines({ planLabel, billing: ar.billing_cycle,
-          licenceCents: ar.licence_cents, subscriptionCents: ar.subscription_cents })
-      : null;
+    let lines = null;
+    if (ar && (ar.licence_cents != null || ar.subscription_cents != null || (ar.module_codes || []).length)) {
+      const billing = ar.billing_cycle === 'annuel' ? 'annuel' : 'mensuel';
+      const licenceCents = Math.round(Number(ar.licence_cents || 0)) || 0;
+      const subscriptionCents = Math.round(Number(ar.subscription_cents || 0)) || 0;
+      let modules = [];
+      if ((ar.module_codes || []).length) {
+        const { rows: modRows } = await q(
+          `SELECT module_key AS code, module_name AS label,
+                  monthly_subscription_price::bigint AS price_cents
+             FROM saas_modules_pricing WHERE module_key = ANY($1)`, [ar.module_codes]);
+        modules = normalizeModules(modRows.map((m) => ({
+          key: m.code, label: m.label, monthlyCents: Number(m.price_cents) })));
+      }
+      lines = modules.length
+        ? buildInvoiceLines({ modules, billing, licenceCents, modulesGrossCents: subscriptionCents })
+        : [{ label: 'Licence teeBo — activation (frais unique)', amountCents: licenceCents },
+           { label: 'Abonnement modules teeBo — ' + (billing === 'annuel' ? '12 mois (annuel)' : '1 mois (mensuel)'),
+             amountCents: subscriptionCents }];
+    }
     const html = renderInvoice({
       header, kind: 'definitive', invoiceNo: inv.invoice_no,
       issuedAt: inv.issued_at, dueAt: inv.due_at,

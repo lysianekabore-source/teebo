@@ -3,7 +3,7 @@ import { q, tx } from '../db.js';
 import { authenticate, requireFreshPassword, requireRole } from '../auth.js';
 import { habilit } from '../rbac_strict.js';
 import { getBranding, TEEBO_SUPPLIER, renderInvoice, setDocumentCsp } from '../documents.js';
-import { TRIAL_BILLING_NOTE } from '../pricing.js';
+import { TRIAL_BILLING_NOTE, computePricing, buildInvoiceLines } from '../pricing.js';
 
 const router = express.Router();
 router.use(['/org-settings'], authenticate, requireFreshPassword);
@@ -53,6 +53,18 @@ router.get('/org-settings', habilit('settings.manage'), async (req, res, next) =
         country_code: b.imf.country_code, city: b.imf.city,
         phone_main: b.imf.phone_main, email: b.imf.email, whatsapp: b.imf.whatsapp
       },
+      // Ce qu'il reste à renseigner pour que la fiche institutionnelle soit
+      // complète (parcours de mise en place de l'onglet Organisation).
+      // Calculé ICI pour que le site n'ait pas à redéfinir les règles.
+      identity: (function () {
+        const missing = [];
+        if (!String(b.legal_name || b.imf.name || '').trim()) missing.push('legal_name');
+        if (!String(b.imf.city || '').trim()) missing.push('city');
+        if (!String(b.imf.phone_main || '').trim()) missing.push('phone_main');
+        if (!String(b.imf.email || '').trim()) missing.push('email');
+        if (!String(b.bceao_agreement_no || '').trim()) missing.push('bceao_agreement_no');
+        return { complete: missing.length === 0, missing };
+      })(),
       vat_rate_bp: await currentVatBp(req.user.imf_id),
       supplier: TEEBO_SUPPLIER,
       can_edit: canEdit(req.user.role)
@@ -79,6 +91,22 @@ router.post('/org-settings', habilit('settings.manage'), requireRole('admin_imf'
 
     const num = (v) => (v === undefined || v === null || v === '' ? null : Math.round(Number(v)));
     const cap = num(b.share_capital_cents);
+
+    // --- Fiche institutionnelle (vague 68) -------------------------------
+    // Nom, ville, téléphone, e-mail et WhatsApp officiels de l'IMF : ces
+    // informations alimentent l'en-tête des documents ET l'expéditeur des
+    // codes d'accès. Elles se saisissent désormais dès la première étape du
+    // parcours de mise en place, sans passer par la console teebo.
+    const fiche = (b.imf && typeof b.imf === 'object') ? b.imf : null;
+    const ficheMail = (fiche && fiche.email !== undefined) ? strOrNull(fiche.email) : null;
+    if (ficheMail && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(ficheMail)) {
+      return res.status(422).json({ error: 'invalid_email', message: 'Adresse e-mail invalide.' });
+    }
+    const ficheCC = (fiche && fiche.country_code !== undefined)
+      ? String(fiche.country_code || '').trim().toUpperCase().slice(0, 2) : null;
+    if (ficheCC && ficheCC.length !== 2) {
+      return res.status(422).json({ error: 'invalid_country', message: 'Pays invalide : indiquez le code à deux lettres (BF, CI, SN…).' });
+    }
 
     await tx(async (c) => {
       const existing = (await c.query('SELECT imf_id FROM imf_branding WHERE imf_id=$1', [req.user.imf_id])).rows.length;
@@ -159,6 +187,23 @@ router.post('/org-settings', habilit('settings.manage'), requireRole('admin_imf'
             WHERE id=$1`,
           [req.user.imf_id, strOrNull(b.notify_whatsapp), strOrNull(b.notify_email)]);
       }
+      // Fiche institutionnelle : seuls les champs FOURNIS sont modifiés.
+      if (fiche) {
+        await c.query(
+          `UPDATE imf SET
+              name         = COALESCE($2, name),
+              city         = COALESCE($3, city),
+              phone_main   = COALESCE($4, phone_main),
+              email        = COALESCE($5, email),
+              whatsapp     = COALESCE($6, whatsapp),
+              country_code = COALESCE($7::char(2), country_code),
+              bceao_agreement_no = COALESCE($8, bceao_agreement_no),
+              updated_at   = now()
+            WHERE id=$1`,
+          [req.user.imf_id, strOrNull(fiche.name), strOrNull(fiche.city),
+           strOrNull(fiche.phone_main), ficheMail, strOrNull(fiche.whatsapp),
+           ficheCC && ficheCC.length === 2 ? ficheCC : null, strOrNull(b.bceao_agreement_no)]);
+      }
     });
 
     const fresh = await getBranding(req.user.imf_id);
@@ -190,16 +235,42 @@ router.get('/org-settings/preview', async (req, res, next) => {
   try {
     const header = await getBranding(req.user.imf_id);
     const vatBp = (await currentVatBp(req.user.imf_id)) || 0;
-    const subtotal = 12000000;                                   // plan Business : 120 000 FCFA
+    // Aperçu de facture : on reprend les MODULES réellement souscrits par l'IMF
+    // (abonnement par module). À défaut de module facturable, on montre le
+    // module le plus courant (collecte & tontines) pour que la vignette reste
+    // toujours lisible. Plus aucune formule « Starter / Business / Enterprise ».
+    let modules = [];
+    try {
+      const { rows } = await q(
+        `SELECT p.module_key AS code, p.module_name AS label,
+                p.monthly_subscription_price::bigint AS price_cents
+           FROM institution_module_subscriptions s
+           JOIN saas_modules_pricing p ON p.module_key = s.module_key
+          WHERE s.institution_id = $1 AND COALESCE(s.is_active, TRUE)
+          ORDER BY p.position`, [req.user.imf_id]);
+      modules = rows.map((m) => ({ key: m.code, label: m.label, monthlyCents: Number(m.price_cents) }));
+    } catch (_) { modules = []; }
+    if (!modules.length) {
+      const { rows } = await q(
+        `SELECT module_key AS code, module_name AS label,
+                monthly_subscription_price::bigint AS price_cents
+           FROM saas_modules_pricing ORDER BY position LIMIT 1`);
+      modules = rows.map((m) => ({ key: m.code, label: m.label, monthlyCents: Number(m.price_cents) }));
+    }
+    const pr = computePricing(modules, 'mensuel');
+    const subtotal = pr.subtotalCents;                           // licence (1 fois) + modules du mois
     const vatCents = vatBp ? Math.round(subtotal * vatBp / 10000) : 0;
-    const total = subtotal + vatCents;
+    const total = subtotal - pr.discountCents + vatCents;
     const html = renderInvoice({
       header,
       kind: 'proforma',
       invoiceNo: 'PRO-' + new Date().getFullYear() + '-000001',
       issuedAt: new Date(),
-      plan: 'Abonnement teebo — Business',
+      periodLabel: '1 mois (mensuel)',
+      plan: 'Abonnement par module — ' + modules.map((m) => m.label).join(' + '),
+      lines: buildInvoiceLines({ modules, billing: 'mensuel', licenceCents: pr.licenceCents }),
       subtotalCents: subtotal,
+      discountCents: pr.discountCents,
       vatRateBp: vatBp,
       vatCents,
       totalCents: total,

@@ -20,6 +20,25 @@ import { getBranding, renderInvoice, setDocumentCsp } from '../documents.js';
 import { chargerFacture, renderFactureSaas } from '../saas_invoice_pdf.js';
 
 const r = Router();
+
+/*  VAGUE 49 — UNE SEULE PORTE POUR TOUS LES ECRANS DE FACTURATION       */
+// Chaque ecran ci-dessous verifie d'abord que l'IMF existe. Sans ce test,
+// un identifiant d'institution inconnu provoquait une erreur 500 (cle
+// etrangere) au lieu d'un refus lisible. Le controle est pose UNE fois,
+// pour toutes les routes du fichier : impossible d'en oublier une.
+// CORRECTIF 51 — CE GARDE NE S'EXECUTE PLUS SANS SESSION.
+// Monte sur /api/v1, il s'appliquait a TOUTE l'API (login, pays UEMOA, demandes…)
+// et, sans session, repondait 404 « imf_introuvable » AVANT le routeur
+// d'authentification : l'ecran restait sur « Chargement… ».
+r.use(async (req, res, next) => {
+  const p = String(req.path || '');
+  if (!/^\/saas(\/|$)/.test(p)) return next();          // hors facturation : on passe
+  if (!req.user) return next();                          // non connecte : la route repondra 401
+  try {
+    if (await imfExiste(res, req.dbImfId)) return next();
+  } catch (e) { return next(e); }
+});
+
 const ADMIN = ['admin_imf', 'direction'];
 const ALL = ['admin_imf', 'direction', 'department', 'service', 'agency', 'staff'];
 
@@ -30,6 +49,38 @@ async function audit(c, imfId, actorId, action, entityId, payload) {
      VALUES ($1,$2,$3,'saas_invoices',$4,$5::jsonb)`,
     [imfId, actorId, action, entityId || null, JSON.stringify(payload || {})]);
 }
+
+/*  VAGUE 48 — REFUS PROPRE QUAND L'IMF N'EXISTE PAS (plus de 500)      */
+// Le test de reference appelle ces ecrans avec un identifiant fictif :
+// la base refusait l'insertion (cle etrangere) et le site recevait un 500
+// au lieu d'un refus clair. On verifie l'institution AVANT toute ecriture
+// dans le module de facturation : une seule porte pour tous ces ecrans.
+function refusImfIntrouvable(res) {
+  return res.status(404).json({
+    error: 'imf_introuvable', code: 'imf_introuvable',
+    message: "Cette institution (IMF) est introuvable : vérifiez son identifiant."
+  });
+}
+
+/**
+ * Repond « IMF introuvable » avant d'ecrire ; renvoie false si deja repondu.
+ * (vrai = l'IMF existe, l'ecran peut continuer). Accepte aussi une forme
+ * souple (identifiant absent de la requete -> on prend celui de la session).
+ */
+async function imfExiste(res, imfId) {
+  if (!imfId) { refusImfIntrouvable(res); return false; }
+  try {
+    const { rows } = await q('SELECT 1 AS ok FROM imf WHERE id=$1', [imfId]);
+    if (rows.length) return true;
+  } catch (e) {
+    // Identifiant d'une forme invalide (pas un uuid) : meme reponse.
+    if (String(e && e.code) === '22P02') { refusImfIntrouvable(res); return false; }
+    throw e;
+  }
+  refusImfIntrouvable(res);
+  return false;
+}
+
 
 /* ------------------------------------------------------------------ */
 r.get('/saas/catalogue', requireRole(...ALL), async (req, res, next) => {
@@ -130,6 +181,8 @@ r.get('/saas/factures/apercu', requireRole(...ALL), async (req, res, next) => {
 r.post('/saas/factures/generer', requireRole(...ADMIN), habilit('settings.manage'),
   async (req, res, next) => {
     try {
+      // VAGUE 48 : l'IMF doit exister avant toute generation (refus clair).
+      if (!(await imfExiste(res, req.dbImfId))) return;
       const mois = (req.body || {}).mois ? String(req.body.mois) + '-01' : null;
       const facture = await billing.generateMonthlyInvoice(req.dbImfId, mois);
       if (!facture) {
@@ -147,7 +200,7 @@ r.get('/saas/factures/:id', requireRole(...ALL), async (req, res, next) => {
   try {
     const inv = (await q(
       `SELECT i.*, COALESCE(im.name,'') AS imf_name, COALESCE(im.code_imf,'') AS imf_code
-         FROM saas_invoices i LEFT JOIN im im ON im.id = i.institution_id
+         FROM saas_invoices i LEFT JOIN imf im ON im.id = i.institution_id
         WHERE i.id=$1 AND i.institution_id=$2`, [req.params.id, req.dbImfId])).rows[0];
     if (!inv) {
       return res.status(404).json({ error: 'facture_introuvable',
@@ -161,11 +214,14 @@ r.get('/saas/factures/:id', requireRole(...ALL), async (req, res, next) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
 /*  Activation / désactivation d'un module par l'IMF                    */
 /* ------------------------------------------------------------------ */
 r.put('/saas/modules/:key', requireRole(...ADMIN), habilit('settings.manage'),
   async (req, res, next) => {
     try {
+      // VAGUE 48 : IMF inexistante -> refus clair (404), jamais une erreur 500.
+      if (!(await imfExiste(res, req.dbImfId))) return;
       const b = req.body || {};
       const out = await billing.setInstitutionModule(req.dbImfId, req.params.key,
         { is_active: b.is_active, is_trial: b.is_trial, trial_end_date: b.trial_end_date },
@@ -178,37 +234,6 @@ r.put('/saas/modules/:key', requireRole(...ADMIN), habilit('settings.manage'),
         { module: req.params.key, actif: out.is_active, essai: out.is_trial,
           fin_essai: out.trial_end_date }));
       res.json({ abonnement: out });
-    } catch (e) { next(e); }
-  });
-
-/* ------------------------------------------------------------------ */
-/*  PACK COMPLET : tous les modules en une seule fois (−5 %)           */
-/* ------------------------------------------------------------------ */
-r.post('/saas/pack-complet', requireRole(...ADMIN), habilit('settings.manage'),
-  async (req, res, next) => {
-    try {
-      const b = req.body || {};
-      const out = await billing.setFullPack(req.dbImfId,
-        { is_active: b.is_active, is_trial: b.is_trial, trial_end_date: b.trial_end_date },
-        req.user.id);
-      await tenantTransaction(req, (c) => audit(c, req.dbImfId, req.user.id,
-        'saas.pack.update', null,
-        { actif: b.is_active !== false, essai: b.is_trial === true,
-          remise_pct: out.remise_pct }));
-      res.json({
-        message: out.message || (b.is_active === false
-          ? 'Tous les modules ont été désactivés.'
-          : 'Tous les modules sont activés'
-            + (cmp(out.remise_pct, 0) > 0
-              ? ' : la remise de ' + out.remise_pct + ' % s\'applique sur vos abonnements mensuels.'
-              : (b.is_trial === true
-                ? ' à l\'essai gratuit : aucun montant ne sera facturé pendant l\'essai.'
-                : '.'))),
-        pack_complet: out.pack_complet,
-        remise_pct: out.remise_pct,
-        essais_refuses: out.essais_refuses || [],
-        modules: out.modules
-      });
     } catch (e) { next(e); }
   });
 
@@ -231,6 +256,8 @@ r.get('/saas/factures/:id.pdf', requireRole(...ALL), async (req, res, next) => {
 r.put('/saas/modules/:key/cycle', requireRole(...ADMIN), habilit('settings.manage'),
   async (req, res, next) => {
     try {
+      // VAGUE 48 : IMF inexistante -> refus clair (404), jamais une erreur 500.
+      if (!(await imfExiste(res, req.dbImfId))) return;
       const b = req.body || {};
       const out = await billing.setBillingCycle(req.dbImfId, req.params.key,
         b.cycle, b.date_signature || null, req.user.id);

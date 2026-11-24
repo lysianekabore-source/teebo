@@ -72,12 +72,17 @@ async function lever(req, res, next) {
   } catch (e) { echec(e, res, next); }
 }
 
-r.post('/admin/institutions/:id/restrict-to-collecte', requireRole('teebo_admin'), restreindre);
+// DÉFINITION UNIQUE des deux opérations d'écriture. La console d'administration
+// (routes/admin_console.js) ne redéclare plus ces chemins : un seul routeur les
+// porte, protégés par requireRole('teebo_admin'), qui refuse déjà l'appel sans
+// jeton (401). Un appel non authentifié reçoit donc 401, jamais un 404 trompeur.
+const garde = [requireRole('teebo_admin')];
+r.post('/admin/institutions/:id/restrict-to-collecte', ...garde, restreindre);
 r.post('/institution/:id/restrict-to-collecte', requireRole('teebo_admin', ...ADMIN), restreindre);
-r.post('/admin/institutions/:id/lift-restriction', requireRole('teebo_admin'), lever);
+r.post('/admin/institutions/:id/lift-restriction', ...garde, lever);
 
 /** \u00c9tat d'acc\u00e8s : ce que la console affiche avant d'agir. */
-r.get('/admin/institutions/:id/access-state', requireRole('teebo_admin'), async (req, res, next) => {
+r.get('/admin/institutions/:id/access-state', ...garde, async (req, res, next) => {
   try {
     const imfId = req.params.id;
     if (!estUuid(imfId)) {
