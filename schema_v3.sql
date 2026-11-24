@@ -594,6 +594,19 @@ CREATE TABLE IF NOT EXISTS login_challenge (
     expires_at      TIMESTAMPTZ NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- AUTO-RÉPARATION (correctif) : sur une base DÉJÀ déployée, login_challenge
+-- pouvait exister dans une structure ANTÉRIEURE (sans la colonne token_hash).
+-- « CREATE TABLE IF NOT EXISTS » n'ajoute PAS les colonnes manquantes : la
+-- création de l'index sur token_hash échouait alors avec « column "token_hash"
+-- does not exist » (PostgreSQL 42703). On ajoute donc chaque colonne SI absente
+-- AVANT de créer l'index, pour rejouer ce fichier sans erreur sur toute base.
+ALTER TABLE login_challenge ADD COLUMN IF NOT EXISTS user_id    UUID;
+ALTER TABLE login_challenge ADD COLUMN IF NOT EXISTS imf_id     UUID;
+ALTER TABLE login_challenge ADD COLUMN IF NOT EXISTS token_hash TEXT;
+ALTER TABLE login_challenge ADD COLUMN IF NOT EXISTS consumed   BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE login_challenge ADD COLUMN IF NOT EXISTS attempts   INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE login_challenge ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+ALTER TABLE login_challenge ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_login_challenge_hash ON login_challenge(token_hash);
 
 -- 26.7 Rôle « caissière » (versement à la caisse de l'IMF).
