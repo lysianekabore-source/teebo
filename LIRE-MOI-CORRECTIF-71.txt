@@ -1,0 +1,53 @@
+=====================================================================
+ teebo — SERVEUR (Render) — livraison du 24/11/2026 (vague 71)
+ POINTS DE SERVICE + CRÉATION D'UN UTILISATEUR (POSTE PCA)
+=====================================================================
+
+CE PAQUET CONTIENT (à la racine, sans sous-dossier)
+ Dockerfile, start.sh, package.json, package-lock.json, src/, db/, public/
+ → il se dépose tel quel dans Render (Add files via upload / drag & drop),
+   sans avoir à ouvrir un dossier intermédiaire.
+
+1) POINTS DE SERVICE — POURQUOI ÇA NE MARCHAIT PAS
+ Le serveur actuellement EN LIGNE est une version ancienne : il applique
+ encore l'ancienne règle (une agence uniquement sous un service) et ignore
+ les points de service. Le site, lui, est à jour : il masque donc la
+ création des points et affiche « prochainement ».
+ Cette version autorise : agence sous Direction Générale, département ou
+ service ; point de service sous une agence. Les libellés français
+ (« agence », « point de service ») sont acceptés.
+
+2) CRÉATION D'UN UTILISATEUR — BUG RÉEL CORRIGÉ
+ Reproduit : créer un compte avec le poste « Président du Conseil
+ d'Administration (PCA) » échouait avec « Le format d'une valeur saisie
+ est invalide (nombre ou date) ».
+ Cause : ce poste reçoit le rôle de surveillance « pca_admin », rôle
+ présent partout dans le code mais ABSENT du type de rôle de la base.
+ Correction : le rôle est ajouté à la base au démarrage et avant chaque
+ création de compte (idempotent). Le compte PCA se crée maintenant
+ normalement, avec ses droits limités de surveillance.
+
+3) AUTRES GARANTIES
+ • Base ancienne bridant les points de service : le serveur répare la
+   contrainte une fois, puis enregistre. Aucune donnée touchée.
+ • Refus expliqué : « Une agence ne peut pas être rattachée à …
+   Rattachement possible : … ».
+
+COMMENT VÉRIFIER QUE LE DÉPLOIEMENT A BIEN REMPLACÉ L'ANCIEN SERVEUR
+ Ouvrez :  https://teebo-api-p825.onrender.com/healthz
+   • ANCIEN serveur (aujourd'hui) : {"ok":true}
+   • NOUVEAU serveur : {"ok":true,"build":"v71", …}
+ Si vous voyez encore {"ok":true} seul, le déploiement n'a pas pris :
+ relancez « Clear build cache & deploy » et regardez le journal jusqu'au
+ message « teebo API en écoute ».
+
+APRÈS LE SERVEUR
+ Déployez le site, puis Ctrl + Maj + R dans l'application.
+
+VÉRIFICATIONS FAITES ICI (base PostgreSQL réelle, serveur réel)
+   agence sous Direction Générale ................................. OK
+   point de service sous une agence ............................... OK
+   point de service sous la Direction Générale : refusé, expliqué .. OK
+   création d'un compte PCA ...................................... OK
+   création d'un compte Chef d'agence ............................. OK
+   parcours complet depuis l'écran (agence, point, utilisateur) ... OK

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>teebo — Console administrateur (restriction collecte)</title>
+<style>
+  :root{
+    --encre:#0f2b3d; --encre2:#274b63; --gris:#5d7385; --ligne:#dbe5ec;
+    --fond:#f4f7fa; --carte:#ffffff; --vert:#0f7a55; --vert-clair:#e6f5ef;
+    --ambre:#a86a00; --ambre-clair:#fdf3e2; --rouge:#a72b2b; --rouge-clair:#fbeaea;
+    --bleu:#0b5fa5; --bleu-clair:#e8f1fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--fond);color:var(--encre);
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       font-size:14px;line-height:1.5}
+  .bandeau{background:var(--encre);color:#fff;padding:13px 20px;display:flex;
+           flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+  .bandeau h1{font-size:16px;margin:0;font-weight:650}
+  .logo{width:24px;height:24px;border-radius:6px;background:#39b58a;display:inline-block;
+        vertical-align:-6px;margin-right:8px}
+  .pastille{font-size:11.5px;background:#20465e;border:1px solid #34617d;padding:3px 9px;
+           border-radius:20px;color:#cfe3f0}
+  .page{max-width:1000px;margin:0 auto;padding:20px 16px 60px}
+  .carte-blanc{background:var(--carte);border:1px solid var(--ligne);border-radius:10px;
+               padding:16px 18px;margin-bottom:16px}
+  h2{font-size:15px;margin:0 0 4px}
+  p.sous{color:var(--gris);font-size:12.5px;margin:0 0 14px}
+  label{display:block;font-size:12px;font-weight:650;color:var(--encre2);margin:10px 0 4px}
+  input[type=text],select{width:100%;max-width:520px;padding:9px 11px;border:1px solid var(--ligne);
+        border-radius:8px;font-size:13.5px;font-family:inherit;background:#fff}
+  button{font-family:inherit;font-size:13px;padding:9px 16px;border-radius:8px;border:1px solid var(--bleu);
+         background:var(--bleu);color:#fff;cursor:pointer;font-weight:600;margin:8px 6px 0 0}
+  button.secondaire{background:#fff;color:var(--bleu)}
+  button.danger{background:var(--rouge);border-color:var(--rouge)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  th,td{text-align:left;padding:8px 9px;border-bottom:1px solid var(--ligne);vertical-align:top}
+  th{background:#f0f5f9;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--gris)}
+  .etq{display:inline-block;font-size:11px;font-weight:650;padding:2px 8px;border-radius:20px}
+  .e-vert{background:var(--vert-clair);color:var(--vert)}
+  .e-rouge{background:var(--rouge-clair);color:var(--rouge)}
+  .e-gris{background:#eef2f5;color:var(--gris)}
+  .e-bleu{background:var(--bleu-clair);color:var(--bleu)}
+  .alerte{border-left:3px solid var(--ambre);background:var(--ambre-clair);border-radius:0 7px 7px 0;
+          padding:10px 13px;font-size:12.5px;margin:12px 0;color:#6b4600;white-space:pre-wrap}
+  .alerte.rouge{border-color:var(--rouge);background:var(--rouge-clair);color:#7d1f1f}
+  .alerte.vert{border-color:var(--vert);background:var(--vert-clair);color:#0b5c40}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+  .cache{display:none}
+</style>
+</head>
+<body>
+
+<div class="bandeau">
+  <div><span class="logo"></span><strong>teebo — Console administrateur</strong></div>
+  <div><span class="pastille">Restriction collecte seule</span>
+       <span class="pastille" id="etat-session">non connecté</span></div>
+</div>
+
+<div class="page">
+
+  <!-- 1. Connexion -->
+  <div class="carte-blanc">
+    <h2>1. Connexion administrateur</h2>
+    <p class="sous">Cette page pilote les routes d'administration du serveur teebo. Seul un compte
+      administrateur (teebo ou administrateur d'IMF) peut agir.</p>
+    <label for="email">Adresse e-mail</label>
+    <input type="text" id="email" autocomplete="username" placeholder="vous@exemple.com">
+    <label for="mdp">Mot de passe</label>
+    <input type="text" id="mdp" autocomplete="current-password" placeholder="••••••••"
+           style="-webkit-text-security:disc">
+    <label for="api">Adresse du serveur</label>
+    <input type="text" id="api" value="" placeholder="https://votre-api.onrender.com">
+    <div>
+      <button id="bt-connexion">Se connecter</button>
+      <button id="bt-deconnexion" class="secondaire cache">Se déconnecter</button>
+    </div>
+    <div id="msg-session" class="alerte cache"></div>
+  </div>
+
+  <!-- 2. Restriction -->
+  <div class="carte-blanc" id="zone-action">
+    <h2>2. Restriction immédiate à la collecte</h2>
+    <p class="sous">Coupe tous les modules de l'IMF sauf la Collecte &amp; tontines, qui reste disponible
+      en essai. L'effet est immédiat : les autres modules renvoient 403 « Feature Disabled ».</p>
+
+    <label for="imf">Identifiant de l'institution (IMF)</label>
+    <input type="text" id="imf" placeholder="00000000-0000-0000-0000-000000000000">
+
+    <label for="raison">Motif (facultatif, conservé dans le journal)</label>
+    <input type="text" id="raison" placeholder="Ex. : essai à encadrer">
+
+    <div>
+      <button id="bt-etat" class="secondaire">Lire l'état</button>
+      <button id="bt-restreindre" class="danger">Restreindre à la collecte</button>
+      <button id="bt-lever" class="secondaire">Lever la restriction</button>
+    </div>
+
+    <div id="msg-action" class="alerte cache"></div>
+
+    <table id="tab-etat" class="cache">
+      <thead><tr><th>Module</th><th>État</th><th>Motif</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- 3. Journal local -->
+  <div class="carte-blanc">
+    <h2>3. Historique de la session</h2>
+    <p class="sous">Ce que cette page a fait, dans l'ordre. Le journal définitif est en base (onglet Audit).</p>
+    <ul id="journal" style="margin:0;padding-left:18px;font-size:12.5px;color:var(--encre2)"></ul>
+  </div>
+
+</div>
+
+<script src="/console-admin.js"></script>
+</body>
+</html>
