@@ -339,7 +339,7 @@ export async function reactiverModule(imfId, moduleKey, p = {}, actor = {}) {
       essai_accorde: !essaiDejaUtilise,
       message: !essaiDejaUtilise
         ? 'Module réactivé avec 30 jours d’essai gratuit (premier essai de ce module).'
-        : 'Module réactivé en formule payante : son essai gratuit a déjà été utilisé.'
+        : 'Module réactivé en abonnement payant : son essai gratuit a déjà été utilisé.'
     };
   });
 }

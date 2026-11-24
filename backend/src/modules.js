@@ -125,9 +125,17 @@ export function checkModuleActivation(req, res, next) {
  * Décision d'accès à un module, relue à chaque requête (aucun cache).
  * @returns {Promise<{utilisable:boolean, motif:string|null}>}
  */
+// CACHE COURT (30 s) : cette verification etait faite en base a CHAQUE requete,
+// en plus de la garde SaaS, ce qui multipliait les aller-retours SQL et rendait
+// les ecrans lents. Une restriction reste appliquee en moins de 30 secondes.
+const _cacheModule = new Map();
 export async function verifierModule(imfId, moduleKey) {
   const def = MODULES[moduleKey];
   if (!def) return { utilisable: false, motif: 'MODULE_INCONNU' };
+
+  const cleCache = String(imfId) + '|' + moduleKey;
+  const hit = _cacheModule.get(cleCache);
+  if (hit && Date.now() - hit.at < 30000) return hit.val;
 
   try {
     const { rows } = await q(
@@ -147,7 +155,10 @@ export async function verifierModule(imfId, moduleKey) {
         const auj = new Date().toISOString().slice(0, 10);
         if (fin < auj) return { utilisable: false, motif: 'ESSAI_EXPIRE' };
       }
-      return { utilisable: true, motif: null };
+      const val = { utilisable: true, motif: null };
+      if (_cacheModule.size > 500) _cacheModule.clear();
+      _cacheModule.set(cleCache, { at: Date.now(), val });
+      return val;
     }
   } catch (e) {
     // Table absente (base pas encore migrée) : on retombe sur institution_features.
@@ -168,7 +179,7 @@ export function REQUIRED_MODULE_FOR_PATH(pathname) {
   const path = String(pathname || '').toLowerCase();
   if (!path.startsWith('/')) return null;
   const FREE = ['/auth', '/institution', '/settings', '/me', '/devices', '/saas',
-                '/notifications', '/requests', '/teebo', '/health', '/ready'];
+                '/notifications', '/requests', '/teebo', '/super-admin', '/health', '/ready'];
   // /saas : abonnement et factures — doivent rester accessibles même si un
   // module est coupé, sinon l'IMF ne pourrait plus le réactiver.
   if (FREE.some((f) => path === f || path.startsWith(f + '/'))) return null;

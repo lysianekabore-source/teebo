@@ -1,19 +1,51 @@
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { q, tx } from './db.js';
+import { defaultPermissionKeysForRole } from './permissions.js';
 
 export const MDP_MAX_DAYS = 60;      // expiration mot de passe
-// Inactivité -> déconnexion : 60 minutes par défaut, réglable sans toucher
-// au code via la variable d'environnement IDLE_MINUTES (Render > Environment).
+// Inactivité -> déconnexion. CORRECTIF 18/11/2026 : une journée de travail
+// entière (8 h) par défaut. Un utilisateur qui travaille n'est plus jamais
+// renvoyé à l'écran de connexion au bout de quelques minutes.
+// La variable IDLE_MINUTES ne peut plus descendre sous 60 minutes : une valeur
+// trop basse laissée dans Render (10, 15…) déconnectait les équipes en pleine
+// saisie. Elle est donc ignorée en dessous de 60.
+export const IDLE_MINUTES_DEFAUT = 480;
+export const IDLE_MINUTES_MIN = 60;
 export function idleMinutes() {
   const v = parseInt(process.env.IDLE_MINUTES, 10);
-  return Number.isFinite(v) && v >= 5 && v <= 720 ? v : 60;
+  if (!Number.isFinite(v)) return IDLE_MINUTES_DEFAUT;
+  if (v < IDLE_MINUTES_MIN) return IDLE_MINUTES_DEFAUT;
+  return Math.min(v, 1440);
 }
-const IDLE_MINUTES = 60;
+// Cookie de session : 30 jours, et NON plus 60 minutes figées. Avant, le
+// cookie expirait une heure après la connexion même si la personne travaillait
+// encore : c'était la deuxième cause des déconnexions surprises.
+export const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export function cookieOptions() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: COOKIE_MAX_AGE_MS
+  };
+}
 export const SESSION_TOKEN_TTL = '60d';
+
+// Matrice des habilitations par ROLE (source unique : permissions.js).
+const defautsRole = (role) => defaultPermissionKeysForRole(role);
 
 function b64url(buf) {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Jeton eventuel transmis en en-tete (secours pour les clients mobiles). */
+function bearerOf(req) {
+  const h = String((req.headers && (req.headers.authorization || req.headers['x-teebo-session'])) || '');
+  const m = /^Bearer\s+(.+)$/i.exec(h);
+  if (m) return m[1].trim();
+  return req.headers['x-teebo-session'] ? h.trim() : null;
 }
 
 export function hashToken(token) {
@@ -49,6 +81,15 @@ export async function createSession(user) {
  */
 export async function authenticate(req, res, next) {
   try {
+    // CORRECTIF 18/11/2026 (3) : « Non connecté » alors que la session est
+    // valide sur /auth/me. Certains routeurs (banque, clients, caisse) posent
+    // un garde de chemin qui rappelait authenticate : si la requete arrivait
+    // sans le cookie mais AVEC un utilisateur deja identifie par le filtre
+    // global attachUser, on repondait 401 « not_authenticated » et l'ecran se
+    // bloquait (liste des clients, fiche client, caissier...).
+    // Un utilisateur deja attache est authentifie : on ne rejoue pas la
+    // verification, on poursuit.
+    if (req.user) return next();
     const token = req.cookies?.teebo_session;
     if (!token) return res.status(401).json({ error: 'not_authenticated' });
     const tokenHash = hashToken(token);
@@ -71,7 +112,8 @@ export async function authenticate(req, res, next) {
     }
     // Inactivité : 60 min par défaut (IDLE_MINUTES). Le compteur repart à
     // chaque requête authentifiée (voir le marquage d'activité plus bas).
-    const idleMs = Date.now() - new Date(row.last_seen_at).getTime();
+    const lastSeen = row.last_seen_at ? new Date(row.last_seen_at).getTime() : Date.now();
+    const idleMs = Date.now() - lastSeen;
     if (idleMs > idleMinutes() * 60 * 1000) {
       await q('UPDATE session SET revoked = true WHERE id = $1', [row.session_id]);
       return res.status(401).json({ error: 'idle_timeout' });
@@ -83,9 +125,15 @@ export async function authenticate(req, res, next) {
     // sont écrits qu'une fois par minute maximum, pour ne pas surcharger la
     // base quand plusieurs onglets sont ouverts.
     const isKeepAlive = req.headers['x-teebo-keepalive'] === '1';
-    const sinceLastSeen = Date.now() - new Date(row.last_seen_at).getTime();
-    if (!isKeepAlive || sinceLastSeen > 60 * 1000) {
+    if (!isKeepAlive || idleMs > 60 * 1000) {
       await q('UPDATE session SET last_seen_at = now() WHERE id = $1', [row.session_id]);
+    }
+    // COOKIE GLISSANT : on repousse l'échéance du cookie à chaque activité
+    // (au plus une fois toutes les 10 minutes pour ne pas alourdir la réponse).
+    // Sans cela, le navigateur supprimait le cookie au bout de sa durée de vie
+    // alors que la session serveur était encore valide.
+    if (idleMs > 10 * 60 * 1000) {
+      try { res.cookie('teebo_session', token, cookieOptions()); } catch (e) {}
     }
 
     req.user = {
@@ -101,6 +149,79 @@ export async function authenticate(req, res, next) {
   } catch (e) {
     next(e);
   }
+}
+
+/**
+ * CORRECTIF 18/11/2026 — « chaque clic sur Clients éjecte l'utilisateur ».
+ * Cause racine : plusieurs routeurs métier (clients, caisse, crédit, collecte,
+ * terminaux, visibilité…) n'appelaient pas authenticate. Leurs gardes
+ * (requireRole, habilit) recevaient donc req.user vide et répondaient
+ * 401 « not_authenticated » : l'écran croyait la session morte et renvoyait
+ * à la page de connexion.
+ *
+ * attachUser est un filet de sécurité GLOBAL, monté avant tous les routeurs :
+ *  - si un cookie de session valide existe, il renseigne req.user ;
+ *  - sinon il laisse passer SANS répondre (les routes publiques continuent de
+ *    fonctionner, et les routes protégées refusent elles-mêmes).
+ * Il ne renvoie jamais d'erreur : aucune panne de base ne peut déconnecter.
+ */
+export async function attachUser(req, res, next) {
+  if (req.user) return next();
+  try {
+    const token = req.cookies?.teebo_session || bearerOf(req);
+    if (!token) return next();
+    const { rows } = await q(
+      `SELECT s.id AS session_id, s.last_seen_at, s.expires_at, s.revoked,
+              u.id, u.imf_id, u.role, u.email, u.full_name, u.code_user,
+              u.position_code, u.password_set_at, u.must_change_password, u.is_active
+         FROM session s JOIN app_user u ON u.id = s.user_id
+        WHERE s.token_hash = $1`, [hashToken(token)]
+    );
+    if (!rows.length) return next();
+    const row = rows[0];
+    if (row.revoked || !row.is_active) return next();
+    if (!row.expires_at || new Date(row.expires_at) < new Date()) return next();
+    const lastSeen = row.last_seen_at ? new Date(row.last_seen_at).getTime() : Date.now();
+    const idleMs = Date.now() - lastSeen;
+    if (idleMs > idleMinutes() * 60 * 1000) return next();
+    if (idleMs > 60 * 1000) {
+      await q('UPDATE session SET last_seen_at = now() WHERE id = $1', [row.session_id]);
+    }
+    if (idleMs > 10 * 60 * 1000) {
+      try { res.cookie('teebo_session', token, cookieOptions()); } catch (e) {}
+    }
+    req.user = {
+      id: row.id, imf_id: row.imf_id, role: row.role, email: row.email,
+      full_name: row.full_name, code_user: row.code_user,
+      position_code: row.position_code || null,
+      password_set_at: row.password_set_at,
+      must_change_password: row.must_change_password
+    };
+    req.sessionId = row.session_id;
+    req.passwordExpired = isPasswordExpired(row.password_set_at);
+    return next();
+  } catch (e) {
+    return next();   // jamais de déconnexion à cause d'une erreur technique
+  }
+}
+
+/**
+ * VAGUE 59 — « les administrateurs IMF sont déconnectés au clic de certains menus ».
+ * Cause racine : chaque garde (requireRole, habilit, requirePermission) refusait
+ * avec un 401 « not_authenticated » dès que req.user était vide, sans jamais
+ * retenter d'identifier la session. Or plusieurs routeurs sont montés sans
+ * authenticate : la moindre requête passant par eux ressemblait à une session
+ * morte, et le site renvoyait l'utilisateur à la connexion.
+ * Correctif GLOBAL : toute garde qui ne trouve pas d'utilisateur retente une
+ * identification à partir du cookie, puis seulement refuse.
+ */
+const _fauxRes = { cookie() {}, clearCookie() {}, status() { return this; }, json() { return this; } };
+export async function ensureUser(req) {
+  if (req.user) return req.user;
+  await new Promise((resolve) => {
+    try { attachUser(req, _fauxRes, () => resolve()); } catch (e) { resolve(); }
+  });
+  return req.user || null;
 }
 
 /** Bloque l'accès aux routes métier si le mot de passe doit être changé/expiré. */
@@ -123,9 +244,13 @@ export function requireFreshPassword(req, res, next) {
 const ROLE_ALIASES = Object.freeze({
   // Direction générale de l'IMF : administration complète.
   superadmin:           ['admin_imf', 'direction'],
-  // Président du Conseil d'Administration : administration de l'institution
-  // (structure, gouvernance, comptes) mais AUCUN droit d'opération financière.
-  pca_admin:            ['admin_imf', 'direction'],
+  // Président du Conseil d'Administration (VAGUE 47 — correction du bug des
+  // droits identiques) : supervision et gouvernance de l'institution
+  // (consultation, validations) mais AUCUNE gestion du personnel ni de la
+  // matrice des habilitations, et aucun droit d'opération financière.
+  // -> plus d'alias vers 'admin_imf' : le PCA ne partage plus 100 % des
+  //    habilitations de l'administrateur de l'IMF.
+  pca_admin:            ['direction'],
   // Directions de département : encadrement (lecture + validations).
   operations_director:  ['department', 'service', 'agency'],
   credit_director:      ['department', 'service'],
@@ -152,7 +277,8 @@ const ROLE_ALIASES = Object.freeze({
  * enregistré avec le rôle socle 'office_staff' (aucun droit d'opération).
  * Pour que le PCA administre réellement son institution (structure,
  * gouvernance, comptes) sans lui ouvrir la caisse, on lui attribue le rôle
- * technique 'pca_admin' — strictement identique à superadmin côté droits.
+ * technique 'pca_admin' — profil de surveillance (VAGUE 47 : il ne dispose
+ * plus de l'accès complet de l'administrateur, voir SUPERFICIE_EXCLUE).
  * Règle : position_code = POS_PCA ET rôle encore 'office_staff' (ou 'superadmin').
  */
 export function effectiveRoleOf(user) {
@@ -166,6 +292,67 @@ export function effectiveRoleOf(user) {
 /** Profils effectifs d'un rôle : le rôle lui-même + ses alias socle. */
 export function rolesOf(role) {
   return [role, ...(ROLE_ALIASES[role] || [])];
+}
+
+// ---------------------------------------------------------------------------
+// VAGUE 47 — BUG « TOUS LES UTILISATEURS ONT LES MÊMES DROITS »
+// ---------------------------------------------------------------------------
+// Cause racine : l'accès complet était accordé dès qu'un rôle figurait dans
+// rolesOf() avec 'admin_imf' ou 'direction'. Or plusieurs postes (PCA,
+// directeur général, etc.) sont aliasés sur ces profils : TOUS ces comptes
+// recevaient donc l'intégralité du catalogue d'habilitations, exactement comme
+// l'administrateur de l'IMF.
+//
+// Correction : seuls l'éditeur et l'administrateur de l'IMF disposent d'un
+// accès complet implicite. La direction et le PCA sont traités comme des
+// profils ORDINAIRES : leurs habilitations viennent du POSTE, de la surcharge
+// utilisateur et de la matrice de rôle — jamais d'un « tout ouvert ».
+// ---------------------------------------------------------------------------
+
+/** Rôles à accès COMPLET implicite sur le catalogue d'habilitations. */
+const FULL_ACCESS_ROLES = Object.freeze(['teebo_admin', 'admin_imf']);
+
+/** Vrai si le rôle effectif dispose de l'accès complet implicite. */
+export function hasFullAccess(role) {
+  return FULL_ACCESS_ROLES.includes(String(role || ''));
+}
+
+/**
+ * Habilitations qu'un profil ORDINAIRE ne peut jamais exercer, même si la
+ * base ou la matrice les propose : gestion du personnel, de la structure, des
+ * paramètres de l'IMF et de la matrice des droits. Seuls le compte de
+ * l'administrateur de l'IMF et celui de l'éditeur y échappent.
+ * CORRECTIF 18/11/2026 : ce plafond ne visait que la direction et le PCA.
+ * Un chef d'agence (ou tout autre poste) pouvait donc recevoir, par surcharge,
+ * les droits de l'administrateur et retrouver ses menus. Le plafond s'applique
+ * désormais à TOUS les profils, sans exception : c'est la règle « un seul
+ * administrateur par IMF ».
+ */
+const SUPERFICIE_EXCLUE = Object.freeze([
+  'users.manage', 'access.manage', 'org.manage', 'settings.manage'
+]);
+
+/** Habilitations jamais exercees par ce profil (vide pour l'administrateur). */
+export function superficieExcluePour(user) {
+  const role = user ? (effectiveRoleOf(user) || user.role) : null;
+  if (hasFullAccess(role)) return [];
+  return SUPERFICIE_EXCLUE.slice();
+}
+
+/** Vrai si c'est un profil de surveillance soumis au plafond de superficie. */
+export function estProfilSurveillance(user) {
+  if (!user) return false;
+  const role = effectiveRoleOf(user) || user.role;
+  return role === 'pca_admin' || role === 'direction';
+}
+
+/** Filtre une liste de clés selon le profil effectif de l'utilisateur. */
+export function filtrerHabilitations(user, keys) {
+  const list = Array.isArray(keys) ? keys : [];
+  const role = user ? (effectiveRoleOf(user) || user.role) : null;
+  if (hasFullAccess(role)) return list.slice();
+  // Plafond commun à tous les profils ordinaires (voir SUPERFICIE_EXCLUE).
+  return list.filter((k) => !SUPERFICIE_EXCLUE.includes(k));
 }
 
 /**
@@ -184,7 +371,9 @@ export function canViewTeamData(role) {
 
 /** RBAC : liste de profils autorisés (tolérant aux rôles-postes via alias). */
 export function requireRole(...roles) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
+    // VAGUE 59 : on retente l'identification (cookie) AVANT de refuser.
+    if (!req.user) await ensureUser(req);
     // Garde : un routeur peut être traversé sans authentification préalable
     // (chemin non couvert). Sans cette ligne, on levait
     // « Cannot read properties of undefined (reading 'role') » -> 500 opaque.
@@ -206,12 +395,14 @@ export function requireRole(...roles) {
  */
 export async function userHasPermission(user, permissionKey) {
   if (!user) return false;
-  // Court-circuit : administration complète de l'IMF. On s'appuie sur rolesOf()
-  // afin que les RÔLES-POSTES alias d'admin_imf/direction (ex. 'superadmin' =
-  // Directeur Général / DGA) bénéficient AUSSI de l'accès complet, et ne soient
-  // plus bloqués sur les modules protégés par requirePermission (cause racine).
-  if (user.role === 'teebo_admin') return true;
-  if (rolesOf(user.role).some((p) => p === 'admin_imf' || p === 'direction')) return true;
+  const role = effectiveRoleOf(user) || user.role;
+  // VAGUE 47 : accès complet réservé à l'éditeur et à l'administrateur de
+  // l'IMF. La direction et le PCA passent par le calcul réel (poste +
+  // surcharge + matrice de rôle), avec un plafond de superficie.
+  if (hasFullAccess(role)) return true;
+  // Aucun profil ordinaire n'exerce les droits de l'administrateur, même si
+  // une ligne user_permission les lui accordait par erreur.
+  if (SUPERFICIE_EXCLUE.includes(permissionKey)) return false;
   // 1) Surcharge explicite par utilisateur (prioritaire si présente).
   const direct = await q(
     `SELECT allowed FROM user_permission
@@ -225,6 +416,10 @@ export async function userHasPermission(user, permissionKey) {
       [user.imf_id, user.position_code, permissionKey]);
     if (pos.rows.length) return true;
   }
+  // 3) Matrice de rôle (permissions.js) : un profil de supervision conserve
+  //    ainsi ses droits de lecture et de validation, sans hériter du « tout
+  //    ouvert » de l'administrateur de l'IMF.
+  if (defautsRole(role).includes(permissionKey)) return true;
   return false;
 }
 
@@ -235,14 +430,17 @@ export async function userHasPermission(user, permissionKey) {
  */
 export async function effectivePermissionKeys(user) {
   if (!user) return [];
-  if (user.role === 'teebo_admin' ||
-      rolesOf(user.role).some((p) => p === 'admin_imf' || p === 'direction')) {
+  const role = effectiveRoleOf(user) || user.role;
+  if (hasFullAccess(role)) {
     const all = await q(
       `SELECT permission_key FROM permission_catalog
         WHERE imf_id IS NULL OR imf_id=$1`, [user.imf_id]);
     return all.rows.map((r) => r.permission_key);
   }
   const set = new Set();
+  // Base : les habilitations du RÔLE (matrice permissions.js). Sans cette
+  // ligne, un profil dont le poste n'est pas renseigné n'avait aucun droit.
+  defautsRole(role).forEach((k) => set.add(k));
   if (user.position_code) {
     const pos = await q('SELECT permission_key FROM fn_position_default_perms($1,$2)',
       [user.imf_id, user.position_code]);
@@ -252,7 +450,8 @@ export async function effectivePermissionKeys(user) {
     `SELECT permission_key, allowed FROM user_permission WHERE user_id=$1 AND imf_id=$2`,
     [user.id, user.imf_id]);
   over.rows.forEach((r) => { if (r.allowed) set.add(r.permission_key); else set.delete(r.permission_key); });
-  return Array.from(set);
+  // VAGUE 47 : plafond de superficie appliqué à la direction et au PCA.
+  return filtrerHabilitations(user, Array.from(set));
 }
 
 /**
@@ -262,6 +461,8 @@ export async function effectivePermissionKeys(user) {
 export function requirePermission(permissionKey) {
   return async (req, res, next) => {
     try {
+      if (!req.user) await ensureUser(req);
+      if (!req.user) return res.status(401).json({ error: 'not_authenticated' });
       if (await userHasPermission(req.user, permissionKey)) return next();
       return res.status(403).json({ error: 'permission_denied', permission: permissionKey });
     } catch (e) { next(e); }
