@@ -142,7 +142,7 @@ app.use(cookieParser());
 
 // Version du binaire en ligne (une seule source pour /version, /healthz et
 // l'en-tete X-Teebo-Build).
-const API_BUILD = 'v70-agences-et-points-de-service-2026-11-24';
+const API_BUILD = 'v71-creation-utilisateur-pca-2026-11-24';
 const API_KINDS = ['direction', 'department', 'service', 'agency', 'point_service'];
 // L'en-tete X-Teebo-Build permet de verifier en une seconde, dans l'onglet
 // « Reseau » du navigateur, quelle version du serveur a repondu.
@@ -196,7 +196,7 @@ app.get('/api/v1/org/capabilities', (_req, res) => {
     }
   });
 });
-app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v70', api_build: API_BUILD, point_service: true, org_setup: true, attache: true, hierarchy_shortcuts: true }));
+app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v71', api_build: API_BUILD, point_service: true, org_setup: true, attache: true, hierarchy_shortcuts: true, pca_role: true }));
 
 // Diagnostic de session, public et sans donnee sensible : il dit seulement si
 // le cookie arrive et si la session existe encore.
@@ -426,6 +426,12 @@ async function lancerMigration() {
         try { await q('ALTER TABLE org_unit DROP CONSTRAINT IF EXISTS org_unit_kind_check'); }
         catch (eC) { console.warn('[units] contrainte kind :', eC && (eC.message || eC)); }
         etat.point_service = 'ok';
+        // VAGUE 71 — Le poste « Président du Conseil d'Administration » reçoit
+        // le rôle de surveillance « pca_admin ». Ce rôle existe dans tout le
+        // code mais manquait dans la base : la création du compte échouait avec
+        // « Le format d'une valeur saisie est invalide ». On complète le type.
+        try { await q("ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'pca_admin'"); }
+        catch (eR) { console.warn('[users] role pca_admin :', eR && (eR.message || eR)); }
       } catch (e) {
         etat.point_service = 'indisponible';
         console.warn('[units] type point_service :', e && (e.message || e));

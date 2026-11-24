@@ -352,6 +352,11 @@ async function maySuperviseCollectors(c, positionCode, imfId) {
 router.post('/users', requirePermission('users.manage'), async (req, res, next) => {
   try {
     const bodyIn = req.body || {};
+    // VAGUE 71 — BASE HISTORIQUE : le role de surveillance « pca_admin »
+    // (poste Président du Conseil d'Administration) manquait dans le type
+    // user_role. Sans cette valeur, l'enregistrement du compte échouait en
+    // « format de valeur invalide ». Idempotent, exécuté hors transaction.
+    try { await q("ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'pca_admin'"); } catch (_) {}
     const full_name = typeof bodyIn.full_name === 'string' ? bodyIn.full_name.trim() : bodyIn.full_name;
     const email = typeof bodyIn.email === 'string' ? bodyIn.email.trim().toLowerCase() : bodyIn.email;
     const phone = typeof bodyIn.phone === 'string' ? bodyIn.phone.trim() : bodyIn.phone;
