@@ -1,276 +1,219 @@
-import { Router } from 'express';
-import { habilit } from '../rbac_strict.js';
-import { q, tx } from '../db.js';
-import { requireRole, canViewTeamData } from '../auth.js';
-import { getSettings, readSettings, saveSettings, collectriceCashBalance,
-  clientCollectedToday, CHANNELS_FR } from '../collecte.js';
+import crypto from 'crypto';
+import { q, tx } from './db.js';
+import { notifyWhatsApp } from './notify.js';
 
 /**
- * VAGUE 5 — Collecte : plafonds, versements (caisse / Mobile Money),
- * reçus simples et journaux SMS.
+ * Plafonds de collecte, versements, reçus simples et SMS clients.
  *
- * Rôles :
- *  - admin_imf / direction : paramètrent les plafonds et le numéro SMS ;
- *  - caissier / admin_imf : valident ou rejettent les versements déclarés ;
- *  - collectrice (agency/staff/service/department) : consultent leur solde de
- *    caisse et déclarent un versement.
+ * Règles métier :
+ *  - L'admin de l'IMF fixe un PLAFOND DE CAISSE journalier (solde de caisse max
+ *    que la collectrice peut détenir dans la journée).
+ *  - L'admin fixe aussi un PLAFOND PAR CLIENT sur la journée (montant maximum à
+ *    collecter auprès d'un même client dans la journée).
+ *  - Si la collectrice atteint le plafond de caisse, elle doit VERSER :
+ *      • à la caisse auprès de la caissière, ou
+ *      • par transfert Mobile Money sur le compte de l'IMF (avec références).
+ *  - À chaque dépôt client validé, un REÇU simple est généré automatiquement et
+ *    s'affiche 60 s (ou jusqu'à fermeture par la collectrice).
+ *  - Si l'admin a paramétré un numéro SMS, un SMS automatique part au client.
  */
-const r = Router();
-const READ_ROLES = ['admin_imf','direction','department','service','agency','staff','caissier'];
-const WRITE_ROLES = ['admin_imf','direction'];
-const DECLARE_ROLES = ['agency','staff','service','department','admin_imf','direction'];
-const VALIDATE_ROLES = ['caissier','admin_imf','direction'];
-// Postes pouvant superviser des collectrices (rapports de caisse remontés).
-const SUP_REPORT_ROLES = ['admin_imf','direction','department','service','agency'];
 
-/* ------------------------------ Paramètres ------------------------------- */
+export const DEFAULT_RECEIPT_SECONDS = 60;
 
-/** Lire les paramètres de collecte (plafonds, SMS, compte MoMo de l’IMF). */
-r.get('/collecte/settings', requireRole(...READ_ROLES), async (req, res, next) => {
-  try {
-    const s = await readSettings(req.user.imf_id);
-    res.json({ settings: s, channels: CHANNELS_FR });
-  } catch (e) { next(e); }
-});
+/** Paramètres de collecte de l'IMF (créés à la volée si absents). */
+export async function getSettings(imfId) {
+  const { rows } = await q('SELECT * FROM imf_collection_settings WHERE imf_id=$1', [imfId]);
+  if (rows.length) return rows[0];
+  const ins = await q(
+    `INSERT INTO imf_collection_settings(imf_id) VALUES ($1)
+     ON CONFLICT (imf_id) DO UPDATE SET updated_at=now() RETURNING *`, [imfId]);
+  return ins.rows[0];
+}
 
-/** Enregistrer les paramètres de collecte (admin IMF / direction). */
-r.post('/collecte/settings', requireRole(...WRITE_ROLES), habilit('round.manage','collecte.assign'), async (req, res, next) => {
-  try {
-    const b = req.body || {};
-    // Validation douce des montants (en centimes).
-    for (const k of ['max_cash_cents', 'max_client_daily_cents']) {
-      if (b[k] != null && b[k] !== '' && (Number(b[k]) < 0 || !Number.isFinite(Number(b[k]))))
-        return res.status(422).json({ error: 'invalid_amount', field: k });
-    }
-    if (b.momo_provider && !['orange_money','moov_money','wave','autre'].includes(b.momo_provider))
-      return res.status(422).json({ error: 'invalid_momo_provider' });
-    const s = await saveSettings(req.user.imf_id, req.user.id, b);
-    res.json({ ok: true, settings: s });
-  } catch (e) { next(e); }
-});
+/** Lecture sans création (pour l'API admin, réponse légère). */
+export async function readSettings(imfId) {
+  const { rows } = await q('SELECT * FROM imf_collection_settings WHERE imf_id=$1', [imfId]);
+  return rows[0] || { imf_id: imfId, max_cash_cents: null, max_client_daily_cents: null,
+    sms_enabled: false, sms_sender_number: null, momo_deposit_number: null, momo_provider: null };
+}
 
-/* ------------------------------- Caisse ---------------------------------- */
-
-/**
- * Solde de caisse de la collectrice + état des plafonds.
- * ?user_id=… permet à l’admin de consulter la caisse d’une collectrice.
- */
-r.get('/collecte/cash', requireRole(...READ_ROLES), async (req, res, next) => {
-  try {
-    const s = await getSettings(req.user.imf_id);
-    const targetId = (req.query.user_id && [...WRITE_ROLES, 'caissier'].includes(req.user.role))
-      ? req.query.user_id : req.user.id;
-    const bal = await collectriceCashBalance(req.user.imf_id, targetId);
-    const cap = s.max_cash_cents == null ? null : Number(s.max_cash_cents);
-    const transferRequired = cap != null && cap > 0 && bal.balance_cents >= cap;
-    let collectrice = null;
-    if (targetId !== req.user.id) {
-      const u = (await q('SELECT full_name, email, code_user FROM app_user WHERE id=$1 AND imf_id=$2',
-        [targetId, req.user.imf_id])).rows[0];
-      collectrice = u ? { id: targetId, full_name: u.full_name, email: u.email, code_user: u.code_user } : null;
-    }
-    res.json({
-      user_id: targetId,
-      collectrice,
-      balance_cents: bal.balance_cents,
-      deposits_cents: bal.deposits_cents,
-      transfers_cents: bal.transfers_cents,
-      max_cash_cents: cap,
-      remaining_cents: cap == null ? null : Math.max(0, cap - bal.balance_cents),
-      over_cents: cap == null ? 0 : Math.max(0, bal.balance_cents - cap),
-      transfer_required: transferRequired,
-      momo_deposit_number: s.momo_deposit_number,
-      momo_provider: s.momo_provider,
-      sms_enabled: !!s.sms_enabled,
-      sms_sender_number: s.sms_sender_number
-    });
-  } catch (e) { next(e); }
-});
-
-/**
- * Déclarer un versement :
- *  - channel = 'caisse_caissiere' : remise des espèces à la caissière ;
- *  - channel = 'mobile_money'      : transfert sur le compte MoMo de l’IMF
- *    (les RÉFÉRENCES de transfert sont OBLIGATOIRES).
- */
-r.post('/collecte/cash-deposits', requireRole(...DECLARE_ROLES), habilit('cash.declare'), async (req, res, next) => {
-  try {
-    const b = req.body || {};
-    const amount = Number(b.amount_cents || 0);
-    const channel = b.channel || 'caisse_caissiere';
-    if (!(amount > 0)) return res.status(400).json({ error: 'invalid_amount', message: 'Montant invalide.' });
-    if (!['caisse_caissiere','mobile_money'].includes(channel))
-      return res.status(422).json({ error: 'invalid_channel', channels: CHANNELS_FR });
-
-    const s = await getSettings(req.user.imf_id);
-    const bal = await collectriceCashBalance(req.user.imf_id, req.user.id);
-    if (amount > bal.balance_cents)
-      return res.status(409).json({ error: 'amount_exceeds_cash',
-        message: 'Le montant dépasse votre solde de caisse (' + (bal.balance_cents / 100).toLocaleString('fr-FR') + ' FCFA).',
-        detail: { balance_cents: bal.balance_cents } });
-
-    let momoProvider = null, momoNumber = null, transferRef = null, transferDate = null, proofNote = null;
-    if (channel === 'mobile_money') {
-      transferRef = (b.transfer_ref || '').trim();
-      if (!transferRef) return res.status(400).json({ error: 'transfer_ref_required',
-        message: 'Saisissez la référence du transfert Mobile Money.' });
-      momoProvider = b.momo_provider || s.momo_provider || null;
-      momoNumber = b.momo_number || s.momo_deposit_number || null;
-      transferDate = b.transfer_date && /^\d{4}-\d{2}-\d{2}$/.test(b.transfer_date) ? b.transfer_date : new Date().toISOString().slice(0, 10);
-      proofNote = b.proof_note || null;
-    } else {
-      proofNote = b.proof_note || null;
-    }
-
-    const out = await tx(async (c) => {
-      const dep = (await c.query(
-        `INSERT INTO cash_deposit(imf_id,collectrice_user_id,channel,amount_cents,status,
-                momo_provider,momo_number,transfer_ref,transfer_date,proof_note)
-         VALUES ($1,$2,$3,$4,'declare',$5,$6,$7,$8,$9) RETURNING *`,
-        [req.user.imf_id, req.user.id, channel, amount, momoProvider, momoNumber,
-         transferRef, transferDate, proofNote])).rows[0];
-      return dep;
-    });
-    res.status(201).json({ ok: true, cash_deposit: out, channel_label: CHANNELS_FR[channel],
-      message: channel === 'mobile_money'
-        ? 'Versement Mobile Money déclaré. En attente de validation par la caissière.'
-        : 'Versement à la caisse déclaré. Remettez les espèces à la caissière.' });
-  } catch (e) { next(e); }
-});
-
-/** Lister les versements (la collectrice voit les siens, la caissière/admin voit tout). */
-r.get('/collecte/cash-deposits', requireRole(...READ_ROLES), async (req, res, next) => {
-  const scope = canViewTeamData(req.user.role)
-    ? [req.user.imf_id, null] : [req.user.imf_id, req.user.id];
-  const status = req.query.status || null;
+/** Enregistre les paramètres (admin IMF uniquement côté route). */
+export async function saveSettings(imfId, actorId, b = {}) {
+  const num = (v) => (v == null || v === '' ? null : Math.max(0, Math.round(Number(v))));
+  await getSettings(imfId);
   const { rows } = await q(
-    `SELECT cd.*, u.full_name AS collectrice_name, v.full_name AS validated_by_name
-       FROM cash_deposit cd
-       LEFT JOIN app_user u ON u.id = cd.collectrice_user_id
-       LEFT JOIN app_user v ON v.id = cd.validated_by
-      WHERE cd.imf_id=$1 AND ($2::uuid IS NULL OR cd.collectrice_user_id=$2)
-        AND ($3::text IS NULL OR cd.status=$3)
-      ORDER BY cd.created_at DESC LIMIT 200`,
-    [scope[0], scope[1], status]);
-  res.json({ cash_deposits: rows, channels: CHANNELS_FR });
-});
+    `UPDATE imf_collection_settings SET
+        max_cash_cents = $2,
+        max_client_daily_cents = $3,
+        sms_enabled = $4,
+        sms_sender_number = $5,
+        momo_deposit_number = $6,
+        momo_provider = $7,
+        updated_by = $8,
+        updated_at = now()
+      WHERE imf_id = $1 RETURNING *`,
+    [imfId, num(b.max_cash_cents), num(b.max_client_daily_cents),
+     !!b.sms_enabled, b.sms_sender_number || null,
+     b.momo_deposit_number || null, b.momo_provider || null, actorId]);
+  return rows[0];
+}
 
 /**
- * RAPPORTS DE CAISSE REMONTÉS AU SUPERVISEUR.
- * Une Collectrice mobile pousse ses rapports de caisse vers son superviseur :
- * ce dernier voit ici les versements déclarés par les collectrices qu'il
- * supervise. Le lien de supervision est déduit de la chaîne de collecte
- * (client.superviseur_user_id = req.user.id -> collectrices rattachées),
- * en respectant strictement le cloisonnement imf_id.
+ * Solde de caisse courant de la collectrice = somme des dépôts clients validés
+ * qui impactent la caisse, MOINS les versements (caisse/Mobile Money) déjà
+ * déclarés ou validés.
  */
-r.get('/collecte/supervisor-reports', requireRole(...SUP_REPORT_ROLES), async (req, res, next) => {
-  try {
-    const status = req.query.status || null;
-    const { rows } = await q(
-      `SELECT cd.*, u.full_name AS collectrice_name, v.full_name AS validated_by_name
-         FROM cash_deposit cd
-         JOIN app_user u ON u.id = cd.collectrice_user_id
-         LEFT JOIN app_user v ON v.id = cd.validated_by
-        WHERE cd.imf_id=$1
-          AND cd.collectrice_user_id IN (
-                SELECT DISTINCT cl.collectrice_user_id
-                  FROM client cl
-                 WHERE cl.imf_id=$1 AND cl.superviseur_user_id=$2
-                   AND cl.collectrice_user_id IS NOT NULL)
-          AND ($3::text IS NULL OR cd.status=$3)
-        ORDER BY cd.created_at DESC LIMIT 300`,
-      [req.user.imf_id, req.user.id, status]);
-    res.json({ cash_deposits: rows, channels: CHANNELS_FR });
-  } catch (e) { next(e); }
-});
+export async function collectriceCashBalance(imfId, userId, atDate = null) {
+  const day = atDate || null;
+  const deposits = await q(
+    `SELECT COALESCE(SUM(amount_cents),0) AS s FROM operation
+      WHERE imf_id=$1 AND user_id=$2 AND kind='depot' AND status='valide'
+        AND impacts_agent_cash=true
+        AND ($3::date IS NULL OR created_at::date = $3::date)`,
+    [imfId, userId, day]);
+  const outflows = await q(
+    `SELECT COALESCE(SUM(amount_cents),0) AS s FROM cash_deposit
+      WHERE imf_id=$1 AND collectrice_user_id=$2 AND status IN ('declare','valide')
+        AND ($3::date IS NULL OR created_at::date = $3::date)`,
+    [imfId, userId, day]);
+  const inc = Number(deposits.rows[0].s || 0);
+  const out = Number(outflows.rows[0].s || 0);
+  return { deposits_cents: inc, transfers_cents: out, balance_cents: inc - out };
+}
 
-/** Valider ou rejeter un versement (caissière / admin IMF). */
-r.post('/collecte/cash-deposits/:id/validate', requireRole(...VALIDATE_ROLES), habilit('cash.validate','cash.approve'), async (req, res, next) => {
-  try {
-    const decision = (req.body && req.body.decision) || 'valide';
-    if (!['valide','rejete'].includes(decision))
-      return res.status(422).json({ error: 'invalid_decision', allowed: ['valide','rejete'] });
-    const out = await tx(async (c) => {
-      const dep = (await c.query('SELECT * FROM cash_deposit WHERE id=$1 AND imf_id=$2 FOR UPDATE',
-        [req.params.id, req.user.imf_id])).rows[0];
-      if (!dep) { const e = new Error('Versement introuvable.'); e.status = 404; throw e; }
-      if (dep.status !== 'declare') { const e = new Error('Ce versement a déjà été traité.'); e.status = 409; e.code='already_handled'; throw e; }
-      // SÉPARATION DES TÂCHES (anti-fraude) : celui qui a DÉCLARÉ le versement ne
-      // peut pas le valider lui-même. Empêche l'auto-approbation d'un encaissement.
-      const declarant = dep.collectrice_user_id || null;
-      const isAdmin = ['admin_imf'].includes(req.user.role);
-      if (declarant && String(declarant) === String(req.user.id) && !isAdmin) {
-        const e = new Error('Vous ne pouvez pas valider un versement que vous avez vous-même déclaré (séparation des tâches).');
-        e.status = 403; e.code = 'sod_self_validation'; throw e;
-      }
-      const upd = (await c.query(
-        `UPDATE cash_deposit SET status=$2, validated_by=$3, validated_at=now(),
-                rejected_reason=$4 WHERE id=$1 RETURNING *`,
-        [dep.id, decision, req.user.id, decision === 'rejete' ? ((req.body && req.body.reason) || null) : null])).rows[0];
-      return upd;
-    });
-    res.json({ ok: true, cash_deposit: out,
-      message: decision === 'valide' ? 'Versement validé.' : 'Versement rejeté.' });
-  } catch (e) { if (e.status) return res.status(e.status).json({ error: e.code || 'error', message: e.message }); next(e); }
-});
-
-/* -------------------------------- Reçus ---------------------------------- */
-
-/** Détail d’un reçu (par id ou par numéro de reçu). */
-r.get('/collecte/receipts/:id', requireRole(...READ_ROLES), async (req, res, next) => {
-  try {
-    const byCode = /^RC-/.test(req.params.id);
-    const { rows } = await q(
-      `SELECT r.*, c.full_name AS client_name, c.code_client,
-              a.code_account, u.full_name AS collectrice_name
-         FROM receipt r
-         LEFT JOIN client c ON c.id = r.client_id
-         LEFT JOIN account a ON a.id = r.account_id
-         LEFT JOIN app_user u ON u.id = r.collectrice_user_id
-        WHERE r.imf_id=$1 AND ${byCode ? 'r.code_receipt=$2' : 'r.id=$2'}`,
-      [req.user.imf_id, req.params.id]);
-    if (!rows.length) return res.status(404).json({ error: 'Receipt introuvable' });
-    res.json({ receipt: rows[0] });
-  } catch (e) { next(e); }
-});
-
-/** Derniers reçus de la collectrice (pratique pour retrouver un reçu). */
-r.get('/collecte/receipts', requireRole(...READ_ROLES), async (req, res) => {
-  const scope = canViewTeamData(req.user.role)
-    ? [req.user.imf_id, null] : [req.user.imf_id, req.user.id];
+/** Montant déjà collecté auprès d'UN MÊME client dans la journée. */
+export async function clientCollectedToday(imfId, clientId, atDate = null) {
   const { rows } = await q(
-    `SELECT r.*, c.full_name AS client_name, c.code_client
-       FROM receipt r LEFT JOIN client c ON c.id = r.client_id
-      WHERE r.imf_id=$1 AND ($2::uuid IS NULL OR r.collectrice_user_id=$2)
-      ORDER BY r.created_at DESC LIMIT 100`, [scope[0], scope[1]]);
-  res.json({ receipts: rows });
-});
-
-/* ------------------------- Journal SMS clients --------------------------- */
-
-/** Journal des SMS envoyés aux clients (admin IMF / direction). */
-r.get('/collecte/sms-log', requireRole('admin_imf','direction','department','service'), async (req, res) => {
-  const { rows } = await q(
-    `SELECT s.*, c.full_name AS client_name, c.code_client
-       FROM client_sms_log s LEFT JOIN client c ON c.id = s.client_id
-      WHERE s.imf_id=$1 ORDER BY s.created_at DESC LIMIT 200`, [req.user.imf_id]);
-  res.json({ sms_log: rows });
-});
+    `SELECT COALESCE(SUM(o.amount_cents),0) AS s
+       FROM operation o JOIN account a ON a.id = o.account_id
+      WHERE o.imf_id=$1 AND a.client_id=$2 AND o.kind='depot' AND o.status='valide'
+        AND ($3::date IS NULL OR o.created_at::date = $3::date)`,
+    [imfId, clientId, atDate]);
+  return Number(rows[0].s || 0);
+}
 
 /**
- * Contexte client pour le terrain : solde de caisse, plafonds, montant déjà
- * collecté aujourd’hui auprès de ce client (utile avant de saisir un dépôt).
+ * Contrôle des plafonds AVANT d'enregistrer un dépôt.
+ * Renvoie { ok:true } ou { ok:false, code, message, detail }.
  */
-r.get('/collecte/client-context/:clientId', requireRole(...READ_ROLES), async (req, res, next) => {
-  try {
-    const s = await getSettings(req.user.imf_id);
-    const collected = await clientCollectedToday(req.user.imf_id, req.params.clientId);
-    const capC = s.max_client_daily_cents == null ? null : Number(s.max_client_daily_cents);
-    res.json({ client_id: req.params.clientId, collected_today_cents: collected,
-      max_client_daily_cents: capC,
-      remaining_cents: capC == null ? null : Math.max(0, capC - collected),
-      client_limit_reached: capC != null && capC > 0 && collected >= capC });
-  } catch (e) { next(e); }
-});
+export async function checkLimits({ imfId, userId, clientId, amountCents, settings }) {
+  const s = settings || (await getSettings(imfId));
+  const results = { cash: null, client: null };
 
-export default r;
+  if (s.max_client_daily_cents != null && Number(s.max_client_daily_cents) > 0) {
+    const already = await clientCollectedToday(imfId, clientId);
+    const cap = Number(s.max_client_daily_cents);
+    if (already + amountCents > cap) {
+      results.client = { already_cents: already, cap_cents: cap, remaining_cents: Math.max(0, cap - already) };
+    }
+  }
+  if (s.max_cash_cents != null && Number(s.max_cash_cents) > 0) {
+    const bal = await collectriceCashBalance(imfId, userId);
+    const cap = Number(s.max_cash_cents);
+    if (bal.balance_cents + amountCents > cap) {
+      results.cash = { balance_cents: bal.balance_cents, cap_cents: cap,
+        remaining_cents: Math.max(0, cap - bal.balance_cents), over_cents: (bal.balance_cents + amountCents) - cap };
+    }
+  }
+
+  if (results.client) {
+    return { ok: false, code: 'client_daily_limit_reached',
+      message: 'Plafond atteint pour ce client aujourd’hui : ' +
+        (results.client.already_cents / 100).toLocaleString('fr-FR') + ' FCFA déjà collectés sur un maximum de ' +
+        (results.client.cap_cents / 100).toLocaleString('fr-FR') + ' FCFA.',
+      detail: { limit: 'client_daily', ...results.client } };
+  }
+  if (results.cash) {
+    return { ok: false, code: 'cash_limit_reached',
+      message: 'Plafond de caisse atteint : solde de caisse ' +
+        (results.cash.balance_cents / 100).toLocaleString('fr-FR') + ' FCFA pour un maximum de ' +
+        (results.cash.cap_cents / 100).toLocaleString('fr-FR') +
+        ' FCFA. Faites un versement (caisse ou Mobile Money) avant de collecter davantage.',
+      detail: { limit: 'cash_daily', ...results.cash,
+        transfer_required: true, momo_number: s.momo_deposit_number, momo_provider: s.momo_provider } };
+  }
+  return { ok: true };
+}
+
+/** Génère un numéro de reçu simple, unique et lisible (ex. RC-8F3K2A-0421). */
+export function makeReceiptCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let core = '';
+  const buf = crypto.randomBytes(6);
+  for (const b of buf) core += alphabet[b % alphabet.length];
+  const seq = String(crypto.randomInt(0, 10000)).padStart(4, '0');
+  return 'RC-' + core.slice(0, 6) + '-' + seq;
+}
+
+/**
+ * Émet le reçu simple d'un dépôt et déclenche le SMS client si paramétré.
+ * À appeler dans la transaction du dépôt (client c) pour rester atomique.
+ */
+export async function issueReceipt(c, { imfId, operationId, clientId, accountId, userId,
+  amountCents, balanceAfterCents, clientName, clientPhone, settings }) {
+  const s = settings || (await getSettings(imfId));
+  let code = makeReceiptCode();
+  for (let i = 0; i < 5; i++) {
+    const exists = await c.query('SELECT 1 FROM receipt WHERE code_receipt=$1', [code]);
+    if (!exists.rows.length) break;
+    code = makeReceiptCode();
+  }
+  const smsNumber = clientPhone || null;
+  const willSms = !!(s.sms_enabled && s.sms_sender_number && smsNumber);
+
+  const rec = (await c.query(
+    `INSERT INTO receipt(imf_id,operation_id,client_id,account_id,collectrice_user_id,
+            code_receipt,amount_cents,balance_after_cents,display_seconds,sms_number)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [imfId, operationId, clientId, accountId, userId, code,
+     amountCents, balanceAfterCents == null ? null : balanceAfterCents,
+     DEFAULT_RECEIPT_SECONDS, smsNumber])).rows[0];
+
+  return { receipt: rec, willSms, smsNumber, sender: s.sms_sender_number || null,
+    smsEnabled: !!s.sms_enabled, smsBody: buildSmsBody({ code, amountCents, balanceAfterCents, clientName }) };
+}
+
+/** Corps du SMS envoyé au client après chaque dépôt. */
+export function buildSmsBody({ code, amountCents, balanceAfterCents, clientName, imfName }) {
+  const amt = (Number(amountCents || 0) / 100).toLocaleString('fr-FR');
+  const lines = [
+    (imfName ? imfName + ' : ' : '') + 'Dépôt reçu : ' + amt + ' FCFA.',
+    'Reçu n° ' + code + '.',
+    balanceAfterCents != null ? 'Nouveau solde : ' + (Number(balanceAfterCents) / 100).toLocaleString('fr-FR') + ' FCFA.' : null,
+    'Merci de votre confiance.'
+  ].filter(Boolean);
+  return lines.join(' ');
+}
+
+/**
+ * Envoi du SMS automatique au client (hors transaction : on journalise toujours).
+ * Renvoie { sent, status }.
+ */
+export async function sendClientSms({ imfId, clientId, receiptId, operationId, phone, sender, body, enabled }) {
+  if (!enabled || !sender || !phone) {
+    await q(`INSERT INTO client_sms_log(imf_id,client_id,receipt_id,operation_id,phone,sender_number,body,status)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [imfId, clientId || null, receiptId || null, operationId || null, phone || null, sender || null, body || null, 'desactive']);
+    return { sent: false, status: 'desactive' };
+  }
+  let status = 'envoye';
+  try {
+    // Passerelle SMS : si un fournisseur est configuré, on l'utilise ; sinon
+    // on réutilise la passerelle de notification (mode dégradé journalisé).
+    const r = await notifyWhatsApp(phone, body);
+    if (r && r.ok === false) status = 'echec';
+  } catch (e) { status = 'echec'; }
+  await q(`INSERT INTO client_sms_log(imf_id,client_id,receipt_id,operation_id,phone,sender_number,body,status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [imfId, clientId || null, receiptId || null, operationId || null, phone, sender, body, status]);
+  if (status === 'envoye' && receiptId) {
+    await q('UPDATE receipt SET sms_sent=true, sms_status=$2 WHERE id=$1', [receiptId, status]);
+  } else if (receiptId) {
+    await q('UPDATE receipt SET sms_sent=false, sms_status=$2 WHERE id=$1', [receiptId, status]);
+  }
+  return { sent: status === 'envoye', status };
+}
+
+/** Libellés FR des canaux de versement. */
+export const CHANNELS_FR = { caisse_caissiere: 'Versement à la caisse (caissière)',
+  mobile_money: 'Transfert Mobile Money (compte IMF)' };

@@ -142,7 +142,10 @@ app.use(cookieParser());
 
 // Version du binaire en ligne (une seule source pour /version, /healthz et
 // l'en-tete X-Teebo-Build).
-const API_BUILD = 'v71-creation-utilisateur-pca-2026-11-24';
+const API_BUILD = 'v72-version-visible-2026-11-25';
+// Numéro de version affiché sur la page d'accueil de l'API : il permet de
+// vérifier en UN clic, depuis un simple navigateur, quelle version est en ligne.
+const BUILD_SHORT = API_BUILD.split('-')[0];
 const API_KINDS = ['direction', 'department', 'service', 'agency', 'point_service'];
 // L'en-tete X-Teebo-Build permet de verifier en une seconde, dans l'onglet
 // « Reseau » du navigateur, quelle version du serveur a repondu.
@@ -196,7 +199,7 @@ app.get('/api/v1/org/capabilities', (_req, res) => {
     }
   });
 });
-app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v71', api_build: API_BUILD, point_service: true, org_setup: true, attache: true, hierarchy_shortcuts: true, pca_role: true }));
+app.get('/healthz', (_req, res) => res.json({ ok: true, build: 'v72', api_build: API_BUILD, point_service: true, org_setup: true, attache: true, hierarchy_shortcuts: true, pca_role: true }));
 
 // Diagnostic de session, public et sans donnee sensible : il dit seulement si
 // le cookie arrive et si la session existe encore.
@@ -494,7 +497,28 @@ function page(file) {
     res.sendFile(path.join(pub, file), (e) => { if (e && !res.headersSent) res.redirect(302, SITE); });
   };
 }
-app.get(['/', '/index.html'], page('index.html'));
+// Page d'accueil de l'API : elle AFFICHE la version réellement en service.
+// Un simple clic sur l'adresse du serveur suffit donc à savoir si le
+// déploiement a bien remplacé l'ancienne version (avant, elle renvoyait
+// silencieusement vers le site, sans aucune information).
+app.get(['/', '/index.html'], (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.type('html').send('<!doctype html><html lang="fr"><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<title>teebo — API</title><style>body{font-family:system-ui,Arial,sans-serif;'
+    + 'background:#eef0f6;color:#0b0c26;display:flex;align-items:center;justify-content:center;'
+    + 'min-height:100vh;margin:0}.c{background:#fff;border-radius:14px;padding:30px 34px;'
+    + 'max-width:520px;box-shadow:0 14px 44px rgba(11,12,38,.12)}h1{font-size:18px;margin:0 0 10px}'
+    + 'p{font-size:13.5px;line-height:1.7;color:#3c3f57;margin:0 0 12px}'
+    + 'a{display:inline-block;background:#0b0c26;color:#fff;text-decoration:none;font-weight:700;'
+    + 'font-size:13px;padding:11px 18px;border-radius:9px}</style></head><body><div class="c">'
+    + '<h1>Serveur API teebo — version ' + BUILD_SHORT + '</h1>'
+    + '<p>Version en service : <b>' + BUILD_SHORT + '</b> — agences sous la Direction Générale, '
+    + 'points de service, création des comptes.</p>'
+    + '<p>Si cette page n\'affiche aucun numéro de version, c\'est que l\'ancien serveur '
+    + 'est encore en ligne : le déploiement n\'a pas pris.</p>'
+    + '<p><a href="' + SITE + '">Ouvrir l\'application teebo</a></p></div></body></html>');
+});
 app.get('/login', page('login.html'));
 app.get('/app', page('app.html'));
 app.get('/teebo', page('teebo.html'));
@@ -556,9 +580,11 @@ app.use((req, res, next) => {
     + 'p{font-size:13.5px;line-height:1.7;color:#3c3f57;margin:0 0 12px}'
     + 'a{display:inline-block;background:#0b0c26;color:#fff;text-decoration:none;font-weight:700;'
     + 'font-size:13px;padding:11px 18px;border-radius:9px}</style></head><body><div class="c">'
-    + '<h1>Serveur API teebo — en fonctionnement</h1>'
+    + '<h1>Serveur API teebo — version ' + BUILD_SHORT + '</h1>'
     + '<p>Cette adresse sert uniquement l’interface de programmation (API). '
     + 'L’application et les pages publiques sont sur le site teebo.</p>'
+    + '<p style="font-size:12.5px;color:#6b7080">Version en service : <b>' + BUILD_SHORT + '</b> — '
+    + 'agences sous la Direction Générale, points de service, création des comptes.</p>'
     + '<p><a href="' + SITE + '">Ouvrir l’application teebo</a></p></div></body></html>');
 });
 
