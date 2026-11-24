@@ -1,28 +1,25 @@
-# teebo — image de l'API (production, Render)
+# ============================================================================
+# teeBo — image de l'API (Render, runtime Docker)
+# ----------------------------------------------------------------------------
+# CORRECTIF VAGUE 52 — CAUSE RACINE DE « Exited with status 2 »
+#   Journal Render : « sh: 0: cannot open ./start.sh: No such file »
 #
-# CORRECTIF 13/11/2026-B — « Application exited early » après un démarrage réussi
-# ---------------------------------------------------------------------------
-# Diagnostic : le code précédent lançait la migration en ARRIÈRE-PLAN avec
-# « (node src/migrate.js || true) & exec node src/server.js ». Le serveur
-# démarrait (log « teebo API en écoute sur 0.0.0.0:3000 ») puis tombait en
-# faute de processus principal : l'image se terminait. Render affichait donc
-# « Application exited early », et la migration — tuée avec le conteneur —
-# ne finissait jamais (d'où « Dossier db/ illisible » et « Schéma absent »).
+#   Le Dockerfile terminait par  CMD ["sh", "./start.sh"]  alors qu'AUCUNE
+#   instruction COPY ne copiait start.sh dans l'image : le conteneur démarrait
+#   donc sans le fichier qu'il devait exécuter, et sortait immédiatement.
+#   Les correctifs précédents décrivaient ce COPY dans les commentaires… sans
+#   jamais l'écrire. C'est exactement pour cela que l'erreur revenait.
 #
-# Nouvelle logique : UN SEUL processus, au premier plan, qui ne sort jamais.
-#   1. la migration tourne au premier plan (sans risque de blocage : le script
-#      s'arrête seul au plus tard après 120 s) ;
-#   2. le serveur prend ensuite la main (exec, PID 1).
+#   DOUBLE SÉCURITÉ appliquée ici, pour que cela ne puisse PLUS revenir :
+#     1. start.sh EST copié dans l'image (COPY + chmod) ;
+#     2. la commande de démarrage n'en dépend plus : CMD lance node directement.
+#        Même si start.sh disparaissait, le service démarrerait quand même.
+#     3. une vérification de build (RUN test -f src/server.js) fait ÉCHOUER la
+#        construction avec un message clair si l'image est incomplète, au lieu
+#        d'échouer silencieusement au démarrage.
 #
-# Le contexte de build est LE DOSSIER backend/ : aucun fichier du site n'est
-# recopié (c'est Netlify qui sert les pages).
-# CORRECTIF 13/11/2026-C — « ENOENT stat '/frontend/index.html' » et
-# « ReferenceError: req is not defined » : le serveur cherchait un dossier
-# /frontend inexistant et sa gestion d'erreurs plantait. Corrigé dans
-# src/server.js (détection du dossier + redirection vers le site Netlify).
-#
-# On force node:20-bookworm-slim (Debian) : l'image alpine est très lente à
-# démarrer sous Render et a provoqué des sorties prématurées.
+# Contexte de build attendu = ce dossier (celui qui contient ce Dockerfile).
+# ============================================================================
 FROM node:20-bookworm-slim
 
 WORKDIR /app
@@ -30,32 +27,38 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# --- Dépendances ---
+# --- Dépendances (le lockfile garantit des versions identiques à chaque build) ---
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
 # --- Code applicatif ---
 COPY src ./src
 
-# --- Pages servies par l'API (console administrateur, vague 36) ---
+# --- Pages servies par l'API (console administrateur) ---
 COPY public ./public
 
-# --- Migrations SQL (fournies à la racine du contexte de build) ---
+# --- Migrations SQL ---
 COPY db* ./db/
+
+# --- Script de démarrage : copié ET rendu exécutable (il ne l'était pas) ---
+COPY start.sh ./start.sh
+RUN chmod +x ./start.sh
+
+# --- Garde-fou de build : image incomplète = échec IMMÉDIAT et lisible ---
+RUN test -f /app/src/server.js || (echo "ERREUR BUILD : src/server.js absent de l'image" && exit 1)
 
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOST=0.0.0.0
 ENV APP_DIR=/app
 ENV TEEBO_DB_DIR=/app/db
-ENV MIGRATION_MAX_MS=120000
+ENV MIGRATION_MAX_MS=600000
 
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=5 \
   CMD curl -fsS http://127.0.0.1:3000/healthz || exit 1
 
-# Le serveur démarre en PREMIER (port ouvert tout de suite), puis la migration
-# tourne en tâche de fond : une base endormie ne retarde plus la mise en ligne
-# et ne peut plus provoquer « Application exited early ».
-CMD ["sh", "./start.sh"]
+# Démarrage DIRECT par node : aucune dépendance à un script externe.
+# (Le port s'ouvre immédiatement ; la migration tourne ensuite en tâche de fond.)
+CMD ["node", "src/server.js"]
