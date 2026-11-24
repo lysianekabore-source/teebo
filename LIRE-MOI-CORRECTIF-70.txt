@@ -1,0 +1,54 @@
+=====================================================================
+ teebo — SERVEUR (Render) — livraison du 24/11/2026 (vague 70)
+ AGENCES ET POINTS DE SERVICE : LA CRÉATION FONCTIONNE
+=====================================================================
+
+LE PROBLÈME SIGNALÉ
+ Un administrateur d'IMF ne pouvait créer ni une agence, ni un point de
+ service. Le message affiché était : « Ce rattachement hiérarchique n'est
+ pas autorisé. »
+
+ POURQUOI
+ Le site était à jour, mais le serveur en ligne ne l'était pas : sa version
+ appliquait encore l'ancienne règle (une agence uniquement sous un service)
+ et ne connaissait pas les points de service. Le site proposait donc un
+ rattachement que le serveur refusait.
+
+CE QUI CHANGE DANS CETTE VERSION
+ • Une agence peut être rattachée à la Direction Générale, à un département
+   ou à un service ; un point de service se rattache à une agence.
+ • Les libellés français sont acceptés comme les types techniques :
+   « agence », « point de service », « département » ne sont plus refusés.
+ • Un refus reste possible, mais il est EXPLIQUÉ : « Une agence ne peut pas
+   être rattachée à … Rattachement possible : … ».
+ • Bases anciennes : si la contrainte ou le type de la base empêchait encore
+   d'écrire un point de service, le serveur répare tout seul, une fois, puis
+   enregistre. Aucune donnée n'est modifiée ni supprimée.
+ • Deux adresses de contrôle, publiques et sans donnée sensible :
+     /healthz                    → indique la version réellement en ligne
+     /api/v1/org/capabilities    → indique les rattachements acceptés
+   Elles permettent de vérifier en une seconde que le déploiement a bien
+   remplacé l'ancienne version.
+
+CE QUI NE CHANGE PAS
+ • Aucune donnée existante n'est touchée : ni les unités, ni les comptes,
+   ni les agences déjà créées.
+ • Les migrations continuent de tourner au démarrage, sans bloquer le
+   service si la base est endormie.
+
+APRÈS LA MISE À JOUR
+ 1. Déployez ce serveur (premier, toujours).
+ 2. Ouvrez /healthz : la réponse doit contenir « build »: « v70 ».
+ 3. Déployez ensuite le site, puis ouvrez l'application et forcez le
+    rafraîchissement (Ctrl + Maj + R).
+
+VÉRIFICATIONS FAITES AVANT LIVRAISON
+ Serveur réellement démarré sur une base PostgreSQL vierge, migrations
+ passées, puis appels réels :
+   - agence créée sous la Direction Générale ....................... OK
+   - point de service créé sous une agence ......................... OK
+   - type envoyé en français (« agence ») .......................... OK
+   - point de service sous la Direction Générale : refusé avec un
+     message explicite............................................ OK
+   - base bridée par une contrainte interdisant les points de
+     service : réparation automatique puis création réussie ....... OK
