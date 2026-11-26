@@ -264,6 +264,23 @@ export function estEcriture(req) {
  *   3. ecriture pendant une suspension     -> 403 LECTURE_SEULE
  * L'editeur (teebo_admin) n'est jamais soumis a ces controles.
  */
+// CACHE COURT (60 s) — l'etat du contrat et la liste des modules etaient relus
+// en base a CHAQUE requete (plusieurs requetes SQL par appel d'ecran, sur un
+// serveur d'entree de gamme) : les ecrans paraissaient tres lents. Un cache
+// memoire de 60 secondes par IMF supprime ces aller-retours sans retarder une
+// decision de l'editeur (une modification reste visible en moins d'une minute).
+const _cacheSaas = new Map();
+function etatEtModules(imfId) {
+  const now = Date.now();
+  const hit = _cacheSaas.get(imfId);
+  if (hit && now - hit.at < 60000) return Promise.resolve(hit.val);
+  return Promise.all([etatTenant(imfId), modulesDuTenant(imfId)]).then((val) => {
+    if (_cacheSaas.size > 500) _cacheSaas.clear();
+    _cacheSaas.set(imfId, { at: Date.now(), val });
+    return val;
+  });
+}
+
 export function gardeSaas(req, res, next) {
   const u = req.user;
   if (!u) return next();                 // route publique : elle repondra d'elle-meme
@@ -273,7 +290,7 @@ export function gardeSaas(req, res, next) {
 
   const chemin = String(req.path || req.originalUrl || '').split('?')[0];
 
-  Promise.all([etatTenant(imfId), modulesDuTenant(imfId)])
+  etatEtModules(imfId)
     .then(([etat, modules]) => {
       // 1. Statut du compte.
       if (etat && etat.autorise === false && estEcriture(req)) {

@@ -2,6 +2,7 @@ import express from 'express';
 import { q, tx } from '../db.js';
 import { authenticate, requireFreshPassword, requirePermission } from '../auth.js';
 import { auditEvent } from '../audit.js';
+import { CONTEXT_SCHEMA, validAccountingDate } from '../workspace_context.js';
 import { isCashierPosition } from '../org_structure.js';
 import { validateTypology } from '../client_typology.js';
 import { validateParticulierDocs } from '../client_documents.js';
@@ -474,7 +475,13 @@ router.post('/accounting/entries', requirePermission('accounts.manage'), async (
     if (!(amount > 0)) return res.status(422).json({ error: 'montant_invalide' });
     const category = ['charge', 'taxe', 'produit', 'od'].includes(b.category) ? b.category : 'charge';
     const journal = (b.journal || 'OD').toString().slice(0, 12);
-    const period = /^[0-9]{4}-[0-9]{2}$/.test(b.period || '') ? b.period : null;
+    await q(CONTEXT_SCHEMA);
+    const context=(await q('SELECT accounting_date::text AS date FROM imf_accounting_context WHERE imf_id=$1',[req.user.imf_id])).rows[0];
+    const entryDate=b.entry_date || context?.date || null;
+    if(!entryDate)return res.status(422).json({error:'accounting_date_required',message:'Choisissez la date de l’écriture ou définissez la date comptable de votre IMF.'});
+    if(!validAccountingDate(entryDate))return res.status(422).json({error:'invalid_accounting_date'});
+    const period = entryDate ? entryDate.slice(0,7) : (/^[0-9]{4}-[0-9]{2}$/.test(b.period || '') ? b.period : null);
+    if(entryDate&&b.period&&b.period!==period)return res.status(422).json({error:'date_period_mismatch',message:'La période doit correspondre à la date de l’écriture.'});
     if (period) {
       const locked = (await q('SELECT 1 FROM accounting_period_close WHERE imf_id=$1 AND period=$2',
         [req.user.imf_id, period])).rows.length > 0;
@@ -482,8 +489,8 @@ router.post('/accounting/entries', requirePermission('accounts.manage'), async (
     }
     const row = (await q(
       `INSERT INTO accounting_entry(imf_id, entry_date, journal, category, label, debit_account, credit_account, amount_cents, period, created_by)
-       VALUES ($1, COALESCE($2,CURRENT_DATE), $3, $4, $5, $6, $7, $8, COALESCE($9, to_char(CURRENT_DATE,'YYYY-MM')), $10) RETURNING *`,
-      [req.user.imf_id, b.entry_date || null, journal, category, label,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [req.user.imf_id, entryDate, journal, category, label,
        b.debit_account || null, b.credit_account || null, amount, period, req.user.id])).rows[0];
     await auditEvent(req.user, { action: 'accounting.entry', entity: 'accounting_entry', entityId: row.id,
       payload: { category, amount_cents: amount } });

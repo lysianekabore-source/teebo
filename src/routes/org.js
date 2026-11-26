@@ -27,7 +27,68 @@ router.use((req, res, next) => {
 // CLOISONNEMENT : toute requête est filtrée par imf_id de l'utilisateur.
 // Aucune donnée d'une autre IMF n'est accessible, sauf teebo_admin.
 // ---------------------------------------------------------------------------
-const KIND_ORDER = { direction: 1, department: 2, service: 3, agency: 4 };
+const KIND_ORDER = { direction: 1, department: 2, service: 3, agency: 4, point_service: 5 };
+
+// ---------------------------------------------------------------------------
+// RATTACHEMENTS AUTORISÉS (vague 68).
+// La règle historique imposait « type du parent + 1 » : une agence ne pouvait
+// donc exister QUE sous un service. En pratique, une IMF rattache ses agences
+// à sa Direction Générale (réseau) ou à une direction/département, et un
+// service peut dépendre directement de la DG sans département intermédiaire.
+// On autorise donc ces raccourcis, tout en gardant la cohérence :
+//   département -> direction
+//   service     -> direction | département
+//   agence      -> direction | département | service
+//   point de service -> agence uniquement
+// Aucune donnée existante n'est invalidée : les anciennes chaînes restent
+// valides, on ajoute seulement des rattachements possibles.
+const PARENTS_OK = {
+  direction: [],
+  department: ['direction'],
+  service: ['direction', 'department'],
+  agency: ['direction', 'department', 'service'],
+  point_service: ['agency']
+};
+function hierarchyOk(kind, parentKind) {
+  if (!parentKind) return kind === 'direction';
+  const allowed = PARENTS_OK[kind] || [];
+  return allowed.indexOf(parentKind) >= 0;
+}
+
+// VAGUE 70 — Les libellés français (« agence », « point de service »,
+// « département ») sont acceptés comme les valeurs techniques : un formulaire
+// qui envoie le mot affiché à l'écran ne doit jamais échouer sur un nom de type.
+const KIND_ALIASES = {
+  direction: 'direction', directions: 'direction',
+  departement: 'department', department: 'department',
+  service: 'service', services: 'service',
+  agence: 'agency', agency: 'agency',
+  point_service: 'point_service', points_service: 'point_service'
+};
+function normKind(k) {
+  const t = String(k == null ? '' : k).toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z]+/g, '_').replace(/^_+|_+$/g, '');
+  return KIND_ALIASES[t] || t;
+}
+const KIND_FR = { direction: 'la Direction Générale', department: 'un département',
+  service: 'un service', agency: 'une agence', point_service: 'un point de service' };
+const WHAT_FR = { direction: 'Une direction', department: 'Un département',
+  service: 'Un service', agency: 'Une agence', point_service: 'Un point de service' };
+// Accord du participe : « une agence ... rattachée », « un service ... rattaché ».
+const FEMININ = { direction: true, agency: true };
+function accord(kind) { return FEMININ[kind] ? 'e' : ''; }
+// Message ACTIONNABLE : il dit ce qui est possible, pas seulement que c'est
+// refusé. L'administrateur d'IMF comprend quoi choisir dans la liste.
+function hierarchyMessage(kind, parentKind) {
+  const allowed = PARENTS_OK[kind] || [];
+  const quoi = WHAT_FR[kind] || 'Cette unité';
+  const recu = parentKind ? (KIND_FR[parentKind] || parentKind) : 'cette unité';
+  if (!allowed.length) return quoi + ' ne peut pas avoir d’unité parente.';
+  const liste = allowed.map((k) => KIND_FR[k]).join(', ');
+  return quoi + ' ne peut pas être rattaché' + accord(kind) + ' à ' + recu +
+    '. Rattachement possible : ' + liste + '.';
+}
 
 // ---------------------------------------------------------------------------
 // AUTO-RÉPARATION : si la base d'une IMF ne contient pas (ou plus) la table
@@ -38,9 +99,18 @@ const KIND_ORDER = { direction: 1, department: 2, service: 3, agency: 4 };
 // réussisse TOUJOURS, sans dépendre d'une re-migration manuelle.
 let _orgSchemaEnsured = false;
 async function ensureOrgSchema() {
+  // Une agence peut ouvrir des POINTS DE SERVICE (guichet, caisse, marché…) :
+  // la valeur est ajoutée aux bases déjà créées (idempotent). Exécutée seule,
+  // donc en dehors de toute transaction : PostgreSQL l'exige pour un type.
+  try { await q("ALTER TYPE unit_kind ADD VALUE IF NOT EXISTS 'point_service'"); }
+  catch (e) { /* valeur déjà présente */ }
+  // Base où le type était un texte contraint : on retire la contrainte pour
+  // que les points de service puissent exister (aucune donnée modifiée).
+  try { await q('ALTER TABLE org_unit DROP CONSTRAINT IF EXISTS org_unit_kind_check'); }
+  catch (e) { /* table absente : créée juste après */ }
   await q(`
     DO $do$ BEGIN
-      CREATE TYPE unit_kind AS ENUM ('direction','department','service','agency');
+      CREATE TYPE unit_kind AS ENUM ('direction','department','service','agency','point_service');
     EXCEPTION WHEN duplicate_object THEN NULL; END $do$;
 
     CREATE TABLE IF NOT EXISTS org_unit (
@@ -60,7 +130,8 @@ async function ensureOrgSchema() {
     BEGIN
       SELECT code_imf INTO v_imf FROM imf WHERE id = p_imf;
       v_prefix := CASE p_kind WHEN 'direction' THEN '-DIR-' WHEN 'department' THEN '-DEP-'
-                              WHEN 'service' THEN '-SRV-' WHEN 'agency' THEN '-AGC-' END;
+                              WHEN 'service' THEN '-SRV-' WHEN 'agency' THEN '-AGC-'
+                              WHEN 'point_service' THEN '-PDS-' END;
       SELECT COALESCE(MAX(NULLIF(regexp_replace(code_unit, '^.*' || v_prefix, ''), '')::int), 0)
         INTO v_seq FROM org_unit
        WHERE imf_id = p_imf AND kind = p_kind AND code_unit ~ (v_prefix || '[0-9]+$');
@@ -118,16 +189,24 @@ router.get('/units', async (req, res) => {
 
 router.post('/units', requirePermission('org.manage'), async (req, res, next) => {
   try {
-    const { kind, name, city, parent_id } = req.body || {};
+    const body = req.body || {};
+    const kind = normKind(body.kind);
+    const name = body.name, city = body.city, parent_id = body.parent_id;
     if (!KIND_ORDER[kind]) return res.status(422).json({ error: 'invalid_kind' });
     if (!name) return res.status(422).json({ error: 'missing_name' });
+    // Une unité sans parent ne peut être qu'une direction ; un point de service
+    // n'existe jamais seul, il est toujours rattaché à une agence.
+    if (!parent_id && kind !== 'direction') return res.status(422).json({ error: 'bad_hierarchy' });
     if (!_orgSchemaEnsured) { try { await ensureOrgSchema(); } catch (_) {} }
-    const out = await tx(async (c) => {
-      // Contrainte hiérarchique : department > direction, etc.
+    const creer = () => tx(async (c) => {
+      // Contrainte hiérarchique (voir PARENTS_OK) : direction > département >
+      // service > agence > point de service, avec les raccourcis autorisés.
       if (parent_id) {
         const p = (await c.query('SELECT kind, imf_id FROM org_unit WHERE id=$1', [parent_id])).rows[0];
         if (!p || p.imf_id !== req.user.imf_id) { const e=new Error('bad_parent'); e.status=403; throw e; }
-        if (KIND_ORDER[kind] !== KIND_ORDER[p.kind] + 1) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
+        if (!hierarchyOk(kind, p.kind)) {
+          const e = new Error('bad_hierarchy'); e.status = 422; e.parentKind = p.kind; throw e;
+        }
       }
       const code = (await c.query('SELECT fn_gen_unit_code($1,$2) AS c', [req.user.imf_id, kind])).rows[0].c;
       const r = (await c.query(
@@ -136,8 +215,39 @@ router.post('/units', requirePermission('org.manage'), async (req, res, next) =>
         [req.user.imf_id, parent_id || null, kind, code, name, city || null])).rows[0];
       return r;
     });
+    let out;
+    try {
+      out = await creer();
+    } catch (e1) {
+      // Base HISTORIQUE : soit une contrainte CHECK limitait les valeurs de
+      // « kind » (elle bloquait les points de service), soit le type enum n'a
+      // pas encore sa valeur. On répare une fois, puis on réessaie : l'admin
+      // n'a jamais à voir une erreur de base de données.
+      let repare = false;
+      if (e1 && e1.code === '23514') {
+        try { await q('ALTER TABLE org_unit DROP CONSTRAINT IF EXISTS org_unit_kind_check'); repare = true; } catch (_) {}
+      } else if (e1 && e1.code === '22P02') {
+        try { await ensureOrgSchema(); repare = true; } catch (_) {}
+      }
+      if (!repare) throw e1;
+      out = await creer();
+    }
     res.json({ ok: true, unit: out });
-  } catch (e) { next(e); }
+  } catch (e) {
+    // Base encore dépourvue du type « point de service » (migration non
+    // passée) : on répond un message ACTIONNABLE au lieu d'une erreur 500.
+    if (e && e.status === 422 && e.message === 'bad_hierarchy') {
+      const k = normKind((req.body || {}).kind);
+      return res.status(422).json({ error: 'bad_hierarchy',
+        message: hierarchyMessage(k, e.parentKind || null),
+        parents_acceptes: PARENTS_OK[k] || [] });
+    }
+    if (e && e.code === '22P02' && /point_service/.test(String(e.message || ''))) {
+      return res.status(503).json({ error: 'server_outdated',
+        message: "Les points de service ne sont pas encore ouverts sur cet espace. Réessayez dans un moment ; si le message revient, signalez-le à votre administrateur." });
+    }
+    next(e);
+  }
 });
 
 // --- Modification d'une unité (type / nom / ville) --------------------------
@@ -161,15 +271,15 @@ router.patch('/units/:id', requirePermission('org.manage'), async (req, res, nex
         // Cohérence avec le parent.
         if (u.parent_id) {
           const p = (await c.query('SELECT kind FROM org_unit WHERE id=$1', [u.parent_id])).rows[0];
-          if (!p || KIND_ORDER[kind] !== KIND_ORDER[p.kind] + 1) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
-        } else if (kind !== 'direction' && KIND_ORDER[kind] !== 1) {
+          if (!p || !hierarchyOk(kind, p.kind)) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
+        } else if (kind !== 'direction') {
           // Une unité racine sans parent ne peut être qu'une direction.
           const e=new Error('bad_hierarchy'); e.status=422; throw e;
         }
         // Cohérence avec les enfants existants.
         const kids = (await c.query('SELECT kind FROM org_unit WHERE parent_id=$1', [u.id])).rows;
         for (const k of kids) {
-          if (KIND_ORDER[k.kind] !== KIND_ORDER[kind] + 1) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
+          if (!hierarchyOk(k.kind, kind)) { const e=new Error('bad_hierarchy'); e.status=422; throw e; }
         }
         newKind = kind;
         newCode = (await c.query('SELECT fn_gen_unit_code($1,$2) AS c', [req.user.imf_id, kind])).rows[0].c;
@@ -186,7 +296,15 @@ router.patch('/units/:id', requirePermission('org.manage'), async (req, res, nex
       return r;
     });
     res.json({ ok: true, unit: out });
-  } catch (e) { next(e); }
+  } catch (e) {
+    // Base encore dépourvue du type « point de service » (migration non
+    // passée) : on répond un message ACTIONNABLE au lieu d'une erreur 500.
+    if (e && e.code === '22P02' && /point_service/.test(String(e.message || ''))) {
+      return res.status(503).json({ error: 'server_outdated',
+        message: "Les points de service ne sont pas encore ouverts sur cet espace. Réessayez dans un moment ; si le message revient, signalez-le à votre administrateur." });
+    }
+    next(e);
+  }
 });
 
 // --- Suppression d'une unité (cascade sur les sous-unités) ------------------
@@ -207,7 +325,8 @@ router.get('/users', async (req, res, next) => {
     const { rows } = await q(
       `SELECT u.id,u.code_user,u.full_name,u.email,u.phone,u.role,u.position,u.position_code,
               u.parent_id,u.dept_code,u.service_code,
-              u.org_unit_id,u.must_change_password,u.is_active,o.name AS unit_name
+              u.org_unit_id,u.must_change_password,u.is_active,o.name AS unit_name,
+              o.kind AS unit_kind, o.code_unit AS unit_code, o.city AS unit_city
          FROM app_user u LEFT JOIN org_unit o ON o.id=u.org_unit_id
         WHERE u.imf_id=$1 AND u.role <> 'teebo_admin' ORDER BY u.created_at`,
       [req.user.imf_id]);
@@ -233,6 +352,11 @@ async function maySuperviseCollectors(c, positionCode, imfId) {
 router.post('/users', requirePermission('users.manage'), async (req, res, next) => {
   try {
     const bodyIn = req.body || {};
+    // VAGUE 71 — BASE HISTORIQUE : le role de surveillance « pca_admin »
+    // (poste Président du Conseil d'Administration) manquait dans le type
+    // user_role. Sans cette valeur, l'enregistrement du compte échouait en
+    // « format de valeur invalide ». Idempotent, exécuté hors transaction.
+    try { await q("ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'pca_admin'"); } catch (_) {}
     const full_name = typeof bodyIn.full_name === 'string' ? bodyIn.full_name.trim() : bodyIn.full_name;
     const email = typeof bodyIn.email === 'string' ? bodyIn.email.trim().toLowerCase() : bodyIn.email;
     const phone = typeof bodyIn.phone === 'string' ? bodyIn.phone.trim() : bodyIn.phone;
@@ -499,7 +623,7 @@ router.post('/notify-test', requireRole('admin_imf','direction'), async (req, re
     if (!to) return res.status(422).json({ ok: false, text: 'Aucune adresse de destination : renseignez votre e-mail dans « Mon accès ».' });
     if (!emailGatewayReady()) {
       return res.json({ ok: false, mode: 'not_configured',
-        text: 'La passerelle d’envoi n’est pas configurée sur le serveur. Les variables SMTP (serveur, port, identifiant, mot de passe) doivent être ajoutées sur Render, puis le service redéployé.' });
+        text: 'L’envoi automatique des messages n’est pas encore activé sur cet espace. Signalez-le à votre administrateur : les codes restent consultables dans la fiche de l’utilisateur.' });
     }
     const subject = `[Test] Envoi d’e-mails ${imfName} via teebo`;
     const body = [
@@ -531,6 +655,13 @@ router.patch('/users/:id', requirePermission('users.manage'), async (req, res, n
     if (!u) return res.status(404).json({ error: 'not_found' });
     // Cloisonnement : on ne modifie que dans sa propre IMF.
     if (u.imf_id !== req.user.imf_id) return res.status(403).json({ error: 'forbidden' });
+
+    // Cloisonnement de l'unité : impossible de rattacher un agent à l'agence
+    // d'une autre institution, même par un appel direct de l'API.
+    if (org_unit_id) {
+      const ou = (await q('SELECT id, imf_id FROM org_unit WHERE id=$1', [org_unit_id])).rows[0];
+      if (!ou || ou.imf_id !== req.user.imf_id) return res.status(403).json({ error: 'bad_unit' });
+    }
 
     // Un agent de collecte doit garder un responsable habilité (Chef d'agence
     // ou Agent de crédit) : on refuse un retrait ou un supérieur non habilité.
@@ -578,7 +709,7 @@ router.patch('/users/:id', requirePermission('users.manage'), async (req, res, n
                 email     = COALESCE($8, email),
                 org_unit_id = CASE WHEN $9::boolean THEN $10::uuid ELSE org_unit_id END
           WHERE id=$6 AND imf_id=$7
-          RETURNING id, code_user, full_name, role, parent_id, position, phone, email`,
+          RETURNING id, code_user, full_name, role, parent_id, position, phone, email, org_unit_id`,
         [parent_id !== undefined, parent_id ?? null, position ?? null, full_name ?? null, phone ?? null,
          req.params.id, req.user.imf_id, email ?? null,
          org_unit_id !== undefined, org_unit_id || null])).rows[0];

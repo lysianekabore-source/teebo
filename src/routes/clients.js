@@ -79,14 +79,18 @@ r.post('/clients/:id/open-account', requireRole('admin_imf','direction','departm
 });
 
 /** Liste des clients de l'IMF. */
-r.get('/clients', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res) => {
+r.get('/clients', requireRole('admin_imf','direction','department','service','agency','staff','collectrice'), async (req, res) => {
+  // Même règle que la route de la chaîne de collecte : un agent de collecte ne
+  // voit que ses clients, et ne reçoit plus un 403 qui vidait la liste.
+  const estAgent = req.user.role === 'collectrice';
   const { rows } = await q(
     `SELECT c.*, a.code_account, a.balance_cents, a.currency, a.journey_step,
             cp.login_mode, cp.statement_format, cp.is_active AS portal_active
        FROM client c
        LEFT JOIN account a ON a.client_id = c.id AND a.status='active'
        LEFT JOIN client_portal cp ON cp.client_id = c.id
-      WHERE c.imf_id=$1 ORDER BY c.created_at DESC LIMIT 200`, [req.user.imf_id]);
+      WHERE c.imf_id=$1` + (estAgent ? ' AND (c.collectrice_user_id=$2 OR c.created_by_user_id=$2)' : '') +
+      ` ORDER BY c.created_at DESC LIMIT 200`, estAgent ? [req.user.imf_id, req.user.id] : [req.user.imf_id]);
   res.json({ clients: rows });
 });
 
@@ -95,7 +99,9 @@ r.get('/clients', requireRole('admin_imf','direction','department','service','ag
  * L'IMF choisit le mode de connexion (mot de passe / SMS / PIN) et le format
  * de relevé (PDF / CSV / les deux). Sans ces choix, défauts : mot_de_passe + pdf.
  */
-r.post('/clients', requireRole('admin_imf','direction','department','service','agency','staff'), habilit('clients.manage','clients.enroll'), async (req, res) => {
+// L'agent de collecte cree lui aussi ses clients sur le terrain : sans son
+// role ici, la creation repondait 403 et le client « disparaissait » aussitot.
+r.post('/clients', requireRole('admin_imf','direction','department','service','agency','staff','collectrice'), habilit('clients.manage','clients.enroll'), async (req, res) => {
   const b = req.body || {};
   if (!b.full_name) return res.status(400).json({ error: 'Nom complet du client requis' });
   const loginMode = ['mot_de_passe', 'sms_otp', 'pin'].includes(b.login_mode) ? b.login_mode : 'mot_de_passe';
@@ -192,7 +198,7 @@ r.post('/clients', requireRole('admin_imf','direction','department','service','a
                $42,$43,$44,$45) RETURNING *`,
       [req.user.imf_id, code, nf.full_name, b.birth_date || null, nf.phone,
        nf.id_number, b.address || null, nf.name_norm, nf.phone_norm, nf.id_number_norm,
-       b.collectrice_user_id || null, req.user.id,
+       b.collectrice_user_id || (req.user.role === 'collectrice' ? req.user.id : null), req.user.id,
        membershipType, sharesCount, sharesPaidCents,
        tv.client_category, tv.gender, tv.profession, tv.profession_detail,
        tv.group_type, tv.enterprise_segment, tv.legal_form,

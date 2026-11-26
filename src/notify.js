@@ -121,12 +121,21 @@ function getTransporter() {
   if (!SMTP_HOST || !SMTP_USER) return null;
   try {
     const nodemailer = require('nodemailer');
+    const debug = String(process.env.SMTP_DEBUG || '') === 'true';
     transporter = nodemailer.createTransport({
       host: SMTP_HOST,
       port: Number(SMTP_PORT || 587),
       secure: String(process.env.SMTP_SECURE || '') === 'true',
-      auth: { user: SMTP_USER, pass: SMTP_PASS }
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+      // Un serveur d'envoi injoignable ne doit jamais faire attendre l'ecran
+      // plus de quelques secondes : l'administrateur doit voir l'echec.
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 25000,
+      logger: debug,
+      debug
     });
+    if (debug) console.log(`[email] transport ${SMTP_HOST}:${Number(SMTP_PORT || 587)} (secure=${String(process.env.SMTP_SECURE || '') === 'true'})`);
     return transporter;
   } catch (e) {
     console.warn('[email] nodemailer indisponible :', e.message);
@@ -151,6 +160,89 @@ export async function notifyWhatsApp(toPhone, message) {
   });
   return httpPost(`https://graph.facebook.com/v20.0/${phoneId}/messages`, body,
     { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' });
+}
+
+/**
+ * Politique d'expediteur — la regle qui garantit qu'un message arrive.
+ * ---------------------------------------------------------------------------
+ * Un serveur d'envoi ne peut pas expédier « au nom » d'une adresse qu'il ne
+ * possede pas : les filtres du destinataire rejettent alors le message, ou le
+ * classent en indesirable, sans que l'application le sache.
+ *
+ * Regle appliquee ici :
+ *   1. l'adresse TECHNIQUE (SMTP_FROM, a defaut SMTP_USER) est toujours celle
+ *      du domaine authentifie (signature DKIM/SPF) — c'est elle qui part ;
+ *   2. le NOM AFFICHE porte l'identite de l'IMF (« CODEC-Manga ») : le
+ *      destinataire voit donc bien son institution ;
+ *   3. les REPONSES sont dirigees vers l'adresse de l'IMF (Reply-To) ;
+ *   4. une adresse d'IMF n'est utilisee comme expediteur reel que si son
+ *      domaine figure parmi les domaines autorises (meme domaine que
+ *      l'adresse technique, ou liste SMTP_ALLOWED_FROM).
+ */
+function parseFrom(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const m = raw.match(/^\s*(?:"?([^"<]*)"?\s*)?<([^>\s]+)>\s*$/);
+  if (m) return { name: String(m[1] || '').trim(), address: m[2].trim() };
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) return { name: '', address: raw };
+  return null;
+}
+function domainOf(address) {
+  const a = String(address || '').trim().toLowerCase();
+  const i = a.lastIndexOf('@');
+  return i > 0 ? a.slice(i + 1) : '';
+}
+export function emailSenderPolicy(opts = {}) {
+  const technical = parseFrom(process.env.SMTP_FROM) || parseFrom(process.env.SMTP_USER)
+    || { name: 'teebo', address: 'no-reply@teebo.africa' };
+  const imf = parseFrom(opts.fromEmail);
+  const imfName = String(opts.fromName || '').trim() || (imf ? imf.name : '');
+  const allowed = new Set([domainOf(technical.address)]);
+  String(process.env.SMTP_ALLOWED_FROM || '').split(',').forEach((d) => {
+    const dom = String(d).trim().toLowerCase().replace(/^@/, '');
+    if (dom) allowed.add(dom);
+  });
+  if (imf && domainOf(imf.address) && allowed.has(domainOf(imf.address))) {
+    return { from: { name: imfName || imf.address, address: imf.address },
+      replyTo: imf.address, technical: technical.address, imf: imf.address, sameDomain: true };
+  }
+  return { from: { name: imfName || technical.name || 'teebo', address: technical.address },
+    replyTo: imf ? imf.address : undefined, technical: technical.address,
+    imf: imf ? imf.address : '', sameDomain: false };
+}
+
+/** Verifie reellement la passerelle (connexion + authentification SMTP). */
+export async function verifyEmailGateway() {
+  const t = getTransporter();
+  const host = process.env.SMTP_HOST || '';
+  const port = Number(process.env.SMTP_PORT || 587);
+  if (!t) {
+    return { ok: false, configured: false, host, port,
+      error: 'Passerelle e-mail non configuree : SMTP_HOST / SMTP_USER / SMTP_PASS manquants.' };
+  }
+  try {
+    await t.verify();
+    return { ok: true, configured: true, host, port, from: emailSenderPolicy().technical };
+  } catch (e) {
+    return { ok: false, configured: true, host, port, error: e.message, code: e.code || null,
+      hint: /535|5355|5\.7\.139|auth/i.test(String(e.message))
+        ? "Authentification refusee : pour Microsoft 365, cocher « SMTP authentifie » sur la boite, ou utiliser un relais." : null };
+  }
+}
+
+/** Trace l'etat de la passerelle au demarrage : une ligne suffit a diagnostiquer. */
+export async function logEmailGateway() {
+  if (!emailGatewayReady()) {
+    console.warn('[email] PASSERELLE ABSENTE — SMTP_HOST / SMTP_USER / SMTP_PASS manquants : aucun e-mail ne peut partir.');
+    return { ok: false, configured: false };
+  }
+  const v = await verifyEmailGateway().catch((e) => ({ ok: false, error: e.message }));
+  if (v.ok) {
+    console.log(`[email] passerelle OK — ${v.host}:${v.port} · expediteur technique ${v.from}`);
+  } else {
+    console.warn(`[email] PASSERELLE EN ECHEC — ${v.error}${v.hint ? ' · ' + v.hint : ''}`);
+  }
+  return v;
 }
 
 /**
@@ -182,24 +274,40 @@ export async function notifyEmail(toEmail, subject, text, opts = {}) {
     console.log(`[email:SIMULATED] -> ${dest} | ${subject}`);
     return { ok: true, mode: 'sent_simulated', id: 'simulated' };
   }
-  const fallbackFrom = process.env.SMTP_FROM || 'teebo <no-reply@teebo.africa>';
-  const senderEmail = String(opts.fromEmail || '').trim();
-  const senderName = String(opts.fromName || '').trim();
-  const from = senderEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(senderEmail)
-    ? { name: senderName || senderEmail, address: senderEmail }
-    : fallbackFrom;
-  const replyTo = senderEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(senderEmail) ? senderEmail : undefined;
+  const policy = emailSenderPolicy(opts);
+  const from = policy.from;
+  const replyTo = policy.replyTo;
   try {
     const info = await t.sendMail({
       from, to: dest, subject, text, replyTo,
       html: `<div style="font-family:system-ui,Segoe UI,Arial;font-size:14px;line-height:1.6;color:#0b0c26">${escapeHtml(text).replace(/\n/g, '<br>')}</div>`
     });
+    const accepted = Array.isArray(info && info.accepted) ? info.accepted.map(String) : [];
+    const rejected = Array.isArray(info && info.rejected) ? info.rejected.map(String) : [];
+    // Un message « accepte » mais dont TOUS les destinataires sont refuses n'a
+    // pas ete remis : on ne doit jamais annoncer un envoi reussi dans ce cas.
+    if (accepted.length === 0) {
+      console.warn(`[email] refuse pour ${dest} : ${rejected.join(', ') || 'aucun destinataire accepte'}`);
+      return { ok: false, mode: 'failed', from: `${from.name} <${from.address}>`,
+        replyTo: replyTo || null, accepted, rejected,
+        error: 'Le serveur d\u2019envoi a refuse le destinataire (' + (rejected.join(', ') || 'sans motif') + ').',
+        link: mailtoLink(dest, subject, text) };
+    }
+    const smtpResponse = String((info && info.response) || '').replace(/\s+/g, ' ').slice(0, 120);
+    console.log(`[email] accepte par ${process.env.SMTP_HOST}:${dest} — ${smtpResponse || 'sans detail'}`);
     return { ok: true, mode: 'sent', id: info && info.messageId,
-      accepted: info && info.accepted ? info.accepted.length : null,
-      from: typeof from === 'string' ? from : `${from.name} <${from.address}>` };
+      accepted, rejected, response: smtpResponse,
+      from: `${from.name} <${from.address}>`, replyTo: replyTo || null,
+      technical_from: policy.technical, imf_from: policy.imf, same_domain: policy.sameDomain };
   } catch (e) {
-    console.error('[email] echec envoi :', e.message);
-    return { ok: false, mode: 'failed', error: e.message,
+    const hint = /535|5\.7\.139|auth/i.test(String(e.message))
+      ? "Authentification refusee : pour Microsoft 365, cocher « SMTP authentifie » sur la boite, ou utiliser un relais."
+      : (/5\.7\.60|send as|permission/i.test(String(e.message))
+        ? "Adresse d'expedition non autorisee par le serveur : l'expediteur doit appartenir au domaine authentifie."
+        : null);
+    console.error(`[email] echec envoi a ${dest} : ${e.message}${hint ? ' (' + hint + ')' : ''}`);
+    return { ok: false, mode: 'failed', error: e.message, code: e.code || null, hint,
+      from: `${from.name} <${from.address}>`, replyTo: replyTo || null,
       link: mailtoLink(dest, subject, text) };
   }
 }

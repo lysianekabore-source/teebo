@@ -4,13 +4,33 @@ import { q, tx } from './db.js';
 import { defaultPermissionKeysForRole } from './permissions.js';
 
 export const MDP_MAX_DAYS = 60;      // expiration mot de passe
-// Inactivité -> déconnexion : 60 minutes par défaut, réglable sans toucher
-// au code via la variable d'environnement IDLE_MINUTES (Render > Environment).
+// Inactivité -> déconnexion. CORRECTIF 18/11/2026 : une journée de travail
+// entière (8 h) par défaut. Un utilisateur qui travaille n'est plus jamais
+// renvoyé à l'écran de connexion au bout de quelques minutes.
+// La variable IDLE_MINUTES ne peut plus descendre sous 60 minutes : une valeur
+// trop basse laissée dans Render (10, 15…) déconnectait les équipes en pleine
+// saisie. Elle est donc ignorée en dessous de 60.
+export const IDLE_MINUTES_DEFAUT = 480;
+export const IDLE_MINUTES_MIN = 60;
 export function idleMinutes() {
   const v = parseInt(process.env.IDLE_MINUTES, 10);
-  return Number.isFinite(v) && v >= 5 && v <= 720 ? v : 60;
+  if (!Number.isFinite(v)) return IDLE_MINUTES_DEFAUT;
+  if (v < IDLE_MINUTES_MIN) return IDLE_MINUTES_DEFAUT;
+  return Math.min(v, 1440);
 }
-const IDLE_MINUTES = 60;
+// Cookie de session : 30 jours, et NON plus 60 minutes figées. Avant, le
+// cookie expirait une heure après la connexion même si la personne travaillait
+// encore : c'était la deuxième cause des déconnexions surprises.
+export const COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export function cookieOptions() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: COOKIE_MAX_AGE_MS
+  };
+}
 export const SESSION_TOKEN_TTL = '60d';
 
 // Matrice des habilitations par ROLE (source unique : permissions.js).
@@ -18,6 +38,14 @@ const defautsRole = (role) => defaultPermissionKeysForRole(role);
 
 function b64url(buf) {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/** Jeton eventuel transmis en en-tete (secours pour les clients mobiles). */
+function bearerOf(req) {
+  const h = String((req.headers && (req.headers.authorization || req.headers['x-teebo-session'])) || '');
+  const m = /^Bearer\s+(.+)$/i.exec(h);
+  if (m) return m[1].trim();
+  return req.headers['x-teebo-session'] ? h.trim() : null;
 }
 
 export function hashToken(token) {
@@ -53,6 +81,15 @@ export async function createSession(user) {
  */
 export async function authenticate(req, res, next) {
   try {
+    // CORRECTIF 18/11/2026 (3) : « Non connecté » alors que la session est
+    // valide sur /auth/me. Certains routeurs (banque, clients, caisse) posent
+    // un garde de chemin qui rappelait authenticate : si la requete arrivait
+    // sans le cookie mais AVEC un utilisateur deja identifie par le filtre
+    // global attachUser, on repondait 401 « not_authenticated » et l'ecran se
+    // bloquait (liste des clients, fiche client, caissier...).
+    // Un utilisateur deja attache est authentifie : on ne rejoue pas la
+    // verification, on poursuit.
+    if (req.user) return next();
     const token = req.cookies?.teebo_session;
     if (!token) return res.status(401).json({ error: 'not_authenticated' });
     const tokenHash = hashToken(token);
@@ -75,7 +112,8 @@ export async function authenticate(req, res, next) {
     }
     // Inactivité : 60 min par défaut (IDLE_MINUTES). Le compteur repart à
     // chaque requête authentifiée (voir le marquage d'activité plus bas).
-    const idleMs = Date.now() - new Date(row.last_seen_at).getTime();
+    const lastSeen = row.last_seen_at ? new Date(row.last_seen_at).getTime() : Date.now();
+    const idleMs = Date.now() - lastSeen;
     if (idleMs > idleMinutes() * 60 * 1000) {
       await q('UPDATE session SET revoked = true WHERE id = $1', [row.session_id]);
       return res.status(401).json({ error: 'idle_timeout' });
@@ -87,9 +125,15 @@ export async function authenticate(req, res, next) {
     // sont écrits qu'une fois par minute maximum, pour ne pas surcharger la
     // base quand plusieurs onglets sont ouverts.
     const isKeepAlive = req.headers['x-teebo-keepalive'] === '1';
-    const sinceLastSeen = Date.now() - new Date(row.last_seen_at).getTime();
-    if (!isKeepAlive || sinceLastSeen > 60 * 1000) {
+    if (!isKeepAlive || idleMs > 60 * 1000) {
       await q('UPDATE session SET last_seen_at = now() WHERE id = $1', [row.session_id]);
+    }
+    // COOKIE GLISSANT : on repousse l'échéance du cookie à chaque activité
+    // (au plus une fois toutes les 10 minutes pour ne pas alourdir la réponse).
+    // Sans cela, le navigateur supprimait le cookie au bout de sa durée de vie
+    // alors que la session serveur était encore valide.
+    if (idleMs > 10 * 60 * 1000) {
+      try { res.cookie('teebo_session', token, cookieOptions()); } catch (e) {}
     }
 
     req.user = {
@@ -105,6 +149,79 @@ export async function authenticate(req, res, next) {
   } catch (e) {
     next(e);
   }
+}
+
+/**
+ * CORRECTIF 18/11/2026 — « chaque clic sur Clients éjecte l'utilisateur ».
+ * Cause racine : plusieurs routeurs métier (clients, caisse, crédit, collecte,
+ * terminaux, visibilité…) n'appelaient pas authenticate. Leurs gardes
+ * (requireRole, habilit) recevaient donc req.user vide et répondaient
+ * 401 « not_authenticated » : l'écran croyait la session morte et renvoyait
+ * à la page de connexion.
+ *
+ * attachUser est un filet de sécurité GLOBAL, monté avant tous les routeurs :
+ *  - si un cookie de session valide existe, il renseigne req.user ;
+ *  - sinon il laisse passer SANS répondre (les routes publiques continuent de
+ *    fonctionner, et les routes protégées refusent elles-mêmes).
+ * Il ne renvoie jamais d'erreur : aucune panne de base ne peut déconnecter.
+ */
+export async function attachUser(req, res, next) {
+  if (req.user) return next();
+  try {
+    const token = req.cookies?.teebo_session || bearerOf(req);
+    if (!token) return next();
+    const { rows } = await q(
+      `SELECT s.id AS session_id, s.last_seen_at, s.expires_at, s.revoked,
+              u.id, u.imf_id, u.role, u.email, u.full_name, u.code_user,
+              u.position_code, u.password_set_at, u.must_change_password, u.is_active
+         FROM session s JOIN app_user u ON u.id = s.user_id
+        WHERE s.token_hash = $1`, [hashToken(token)]
+    );
+    if (!rows.length) return next();
+    const row = rows[0];
+    if (row.revoked || !row.is_active) return next();
+    if (!row.expires_at || new Date(row.expires_at) < new Date()) return next();
+    const lastSeen = row.last_seen_at ? new Date(row.last_seen_at).getTime() : Date.now();
+    const idleMs = Date.now() - lastSeen;
+    if (idleMs > idleMinutes() * 60 * 1000) return next();
+    if (idleMs > 60 * 1000) {
+      await q('UPDATE session SET last_seen_at = now() WHERE id = $1', [row.session_id]);
+    }
+    if (idleMs > 10 * 60 * 1000) {
+      try { res.cookie('teebo_session', token, cookieOptions()); } catch (e) {}
+    }
+    req.user = {
+      id: row.id, imf_id: row.imf_id, role: row.role, email: row.email,
+      full_name: row.full_name, code_user: row.code_user,
+      position_code: row.position_code || null,
+      password_set_at: row.password_set_at,
+      must_change_password: row.must_change_password
+    };
+    req.sessionId = row.session_id;
+    req.passwordExpired = isPasswordExpired(row.password_set_at);
+    return next();
+  } catch (e) {
+    return next();   // jamais de déconnexion à cause d'une erreur technique
+  }
+}
+
+/**
+ * VAGUE 59 — « les administrateurs IMF sont déconnectés au clic de certains menus ».
+ * Cause racine : chaque garde (requireRole, habilit, requirePermission) refusait
+ * avec un 401 « not_authenticated » dès que req.user était vide, sans jamais
+ * retenter d'identifier la session. Or plusieurs routeurs sont montés sans
+ * authenticate : la moindre requête passant par eux ressemblait à une session
+ * morte, et le site renvoyait l'utilisateur à la connexion.
+ * Correctif GLOBAL : toute garde qui ne trouve pas d'utilisateur retente une
+ * identification à partir du cookie, puis seulement refuse.
+ */
+const _fauxRes = { cookie() {}, clearCookie() {}, status() { return this; }, json() { return this; } };
+export async function ensureUser(req) {
+  if (req.user) return req.user;
+  await new Promise((resolve) => {
+    try { attachUser(req, _fauxRes, () => resolve()); } catch (e) { resolve(); }
+  });
+  return req.user || null;
 }
 
 /** Bloque l'accès aux routes métier si le mot de passe doit être changé/expiré. */
@@ -254,7 +371,9 @@ export function canViewTeamData(role) {
 
 /** RBAC : liste de profils autorisés (tolérant aux rôles-postes via alias). */
 export function requireRole(...roles) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
+    // VAGUE 59 : on retente l'identification (cookie) AVANT de refuser.
+    if (!req.user) await ensureUser(req);
     // Garde : un routeur peut être traversé sans authentification préalable
     // (chemin non couvert). Sans cette ligne, on levait
     // « Cannot read properties of undefined (reading 'role') » -> 500 opaque.
@@ -342,6 +461,8 @@ export async function effectivePermissionKeys(user) {
 export function requirePermission(permissionKey) {
   return async (req, res, next) => {
     try {
+      if (!req.user) await ensureUser(req);
+      if (!req.user) return res.status(401).json({ error: 'not_authenticated' });
       if (await userHasPermission(req.user, permissionKey)) return next();
       return res.status(403).json({ error: 'permission_denied', permission: permissionKey });
     } catch (e) { next(e); }

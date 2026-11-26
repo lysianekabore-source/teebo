@@ -7,10 +7,12 @@ import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
 import httpMod from 'http';
+import zlib from 'zlib';
 import { fileURLToPath } from 'url';
 
 import { q, tx, pool } from './db.js';
-import { authenticate, requireFreshPassword, requireRole, createSession } from './auth.js';
+import { logEmailGateway } from './notify.js';
+import { authenticate, attachUser, requireFreshPassword, requireRole, createSession, hashToken } from './auth.js';
 import authRoutes, { court as authCourtesRoutes } from './routes/auth.js';
 import { tenantContext } from './tenant.js';
 import { checkModuleActivation } from './modules.js';
@@ -22,6 +24,7 @@ import adminConsoleRoutes from './routes/admin_console.js';
 import requestRoutes from './routes/requests.js';
 import orgRoutes from './routes/org.js';
 import settingsRoutes from './routes/settings.js';
+import workspaceRoutes from './routes/workspace.js';
 import teeboRoutes from './routes/teebo.js';
 import codesAccesRoutes from './routes/codes_acces.js'; // VAGUE 46 : codes d acces (console editeur)
 import superAdminRoutes from './routes/super_admin.js'; // VAGUE 47 : console Super-Admin SaaS
@@ -33,6 +36,7 @@ import enrollmentRoutes from './routes/enrollment.js';
 import productRoutes from './routes/products.js';
 import visibilityRoutes from './routes/visibility.js';
 import roundRoutes from './routes/round.js';
+import monTableauBordRoutes from './routes/mon_tableau_bord.js'; // VAGUE 57 : tableau de bord personnel (agent de collecte)
 import collecteRoutes from './routes/collecte.js';
 import collecte6Routes from './routes/collecte6.js';
 import collecteEsRoutes from './routes/collecte_es.js';
@@ -74,9 +78,17 @@ app.use(helmet({
       baseUri: ["'self'"]
     }
   },
-  crossOriginOpenerPolicy: { policy: 'same-origin' }
+  crossOriginOpenerPolicy: { policy: 'same-origin' },
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
-app.use(cors({ origin: process.env.CORS_ORIGIN || true, credentials: true }));
+// CORS : la variable d'environnement CORS_ORIGIN peut valoir « true » ou « * »
+// (valeur recopiee telle quelle dans Render). Envoyee brute, elle produisait un
+// en-tete « access-control-allow-origin: true » que les navigateurs rejettent,
+// ce qui faisait echouer toute lecture directe de l'API depuis le site.
+const corsOriginBrut = String(process.env.CORS_ORIGIN || '').trim();
+const corsOrigin = (!corsOriginBrut || corsOriginBrut === 'true' || corsOriginBrut === '*')
+  ? true : corsOriginBrut;
+app.use(cors({ origin: corsOrigin, credentials: true }));
 // 12 Mo : les scans de pièces et les signatures tracées au stylet transitent
 // en data URL (base64) et dépassent largement 1 Mo ; une limite trop basse
 // renvoyait un 413 masqué en « Une erreur est survenue » lors de la
@@ -102,7 +114,124 @@ app.use((req, _res, next) => {
   next();
 });
 app.use(express.json({ limit: '12mb' }));
+// REPONSES JSON COMPRESSEES (gzip) : sur un reseau mobile, une liste de clients
+// ou un tableau de bord pesaient plusieurs centaines de Ko en clair. L'API n'a
+// pas de dependance de compression : on utilise le module natif de Node.
+app.use((req, res, next) => {
+  if (!/^\/api\//.test(req.path)) return next();
+  const ae = String(req.headers['accept-encoding'] || '');
+  if (!/\bgzip\b/.test(ae)) return next();
+  const jsonOriginal = res.json.bind(res);
+  res.json = function (body) {
+    try {
+      if (res.headersSent || res.getHeader('Content-Encoding')) return jsonOriginal(body);
+      const buf = Buffer.from(JSON.stringify(body === undefined ? null : body), 'utf8');
+      if (buf.length < 1024) return jsonOriginal(body);
+      zlib.gzip(buf, (err, out) => {
+        if (err) return jsonOriginal(body);
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Encoding', 'gzip');
+        res.setHeader('Vary', 'Accept-Encoding');
+        res.setHeader('Content-Length', String(out.length));
+        res.end(out);
+      });
+      return res;
+    } catch (e) { return jsonOriginal(body); }
+  };
+  next();
+});
 app.use(cookieParser());
+
+// Version du binaire en ligne (une seule source pour /version, /healthz et
+// l'en-tete X-Teebo-Build).
+const API_BUILD = 'v78-logo-imf-date-comptable-2026-11-26';
+// Numéro de version affiché sur la page d'accueil de l'API : il permet de
+// vérifier en UN clic, depuis un simple navigateur, quelle version est en ligne.
+const BUILD_SHORT = API_BUILD.split('-')[0];
+const API_KINDS = ['direction', 'department', 'service', 'agency', 'point_service'];
+// L'en-tete X-Teebo-Build permet de verifier en une seconde, dans l'onglet
+// « Reseau » du navigateur, quelle version du serveur a repondu.
+app.use((_req, res, next) => {
+  try { res.set('X-Teebo-Build', API_BUILD); } catch (_) {}
+  next();
+});
+// CORRECTIF 18/11/2026 : identifie l'utilisateur pour TOUTE l'API, avant les
+// routeurs. Les routeurs qui oubliaient authenticate ne renvoient plus un
+// 401 trompeur qui ejectait l'utilisateur vers la page de connexion.
+// ---------------------------------------------------------------------------
+// REPERES DE DEPLOIEMENT — PUBLICS, VOLONTAIREMENT PLACES AVANT TOUT CONTROLE.
+// Une route declaree plus loin passait par le cloisonnement et la garde SaaS :
+// pour un visiteur non connecte elle pouvait repondre 403 au lieu de la version,
+// ce qui faisait croire a un serveur ancien. Ici, aucune dependance : la reponse
+// est toujours celle du binaire reellement en ligne.
+// ---------------------------------------------------------------------------
+app.get('/api/v1/version', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    ok: true, build: API_BUILD, attach_user: true,
+    kinds: API_KINDS,
+    // CAPACITÉS : le site adapte l'assistant de mise en place à ce que le
+    // serveur RÉELLEMENT en ligne sait faire (aucun refus incompréhensible).
+    caps: { org_setup: true, hierarchy_shortcuts: true, identity_update: true,
+      point_service: true },
+    routes: { mon_tableau_bord: true, clients: true, clients_new: true },
+    corrections: { clients_agent_collecte: true, cache_saas_60s: true,
+      cache_modules_30s: true, gzip_json: true, creation_client_agent: true,
+      points_de_service: true, parcours_organisation: true },
+    now: new Date().toISOString()
+  });
+});
+app.get('/version', (_req, res) => { res.set('Cache-Control', 'no-store'); res.redirect(307, '/api/v1/version'); });
+// CAPACITES D'ORGANISATION (public, sans donnee sensible) : le site lit ce que
+// le serveur EN LIGNE accepte reellement, et n'offre jamais un rattachement qui
+// sera refuse. Sert aussi de reperere de deploiement en une seule adresse.
+app.get('/api/v1/org/capabilities', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    ok: true, build: API_BUILD,
+    kinds: API_KINDS,
+    hierarchy_shortcuts: true,
+    point_service: true,
+    parents: {
+      direction: [],
+      department: ['direction'],
+      service: ['direction', 'department'],
+      agency: ['direction', 'department', 'service'],
+      point_service: ['agency']
+    }
+  });
+});
+app.get('/healthz', (_req, res) => res.json({ ok: true, build: BUILD_SHORT, api_build: API_BUILD, point_service: true, org_setup: true, attache: true, hierarchy_shortcuts: true, pca_role: true }));
+
+// Diagnostic de session, public et sans donnee sensible : il dit seulement si
+// le cookie arrive et si la session existe encore.
+app.get('/api/v1/diag-session', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const out = { build: API_BUILD, cookie_present: false, cookie_len: 0, session_found: false,
+    user: null, idle_minutes: null, server_time: new Date().toISOString() };
+  try {
+    const token = (req.cookies && req.cookies.teebo_session) || '';
+    out.cookie_present = !!token;
+    out.cookie_len = token ? String(token).length : 0;
+    if (token) {
+      const r = await q(
+        `SELECT s.last_seen_at, s.expires_at, s.revoked, u.role, u.code_user
+           FROM session s JOIN app_user u ON u.id = s.user_id
+          WHERE s.token_hash = $1`, [hashToken(token)]);
+      if (r.rows.length) {
+        const row = r.rows[0];
+        out.session_found = !row.revoked;
+        out.user = { role: row.role, code_user: row.code_user };
+        out.idle_minutes = row.last_seen_at
+          ? Math.round((Date.now() - new Date(row.last_seen_at).getTime()) / 60000) : null;
+      }
+    }
+  } catch (e) { out.error = String(e && e.message || e).slice(0, 120); }
+  res.json(out);
+});
+
+
+app.use('/api/v1', attachUser);
 
 // Limitation des tentatives (anti brute-force)
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });
@@ -141,6 +270,7 @@ app.use('/api/v1', codesAccesRoutes);               // VAGUE 46 : codes d acces 
 // '/super-admin/...' : on le monte sur /api/v1 (sinon double prefixe -> 404).
 app.use('/api/v1', superAdminRoutes);    // VAGUE 47 : console editeur (onglets clients, modules, factures)
 app.use('/api/v1', orgRoutes);                     // hiérarchie (authentifié)
+app.use('/api/v1', workspaceRoutes);
 app.use('/api/v1', settingsRoutes);                // paramètres IMF (branding + mentions légales)
 app.use('/api/v1', deviceRoutes);                  // terminaux + alertes sécurité
 app.use('/api/v1', operationRoutes);               // opérations terrain + crédit
@@ -170,6 +300,9 @@ app.use('/api/v1', (req, res, next) => {
 });
 app.use('/api/v1', visibilityRoutes);              // autorisations fines inter-entités
 app.use('/api/v1', roundRoutes);                   // tournée du jour de la collectrice
+// VAGUE 57 : tableau de bord personnel de l'agent de collecte (un seul appel :
+// caisse vs plafond, versements, tournée, objectifs, commissions, crédit, historique).
+app.use('/api/v1', monTableauBordRoutes);
 // VAGUE 5 : plafonds de collecte, versements caisse/Mobile Money, reçus simples,
 // journal SMS clients. Monté après clients.js (les chemins /collecte/* sont
 // distincts) mais avant le fallback HTML.
@@ -288,6 +421,27 @@ async function lancerMigration() {
         etat.reparation = 'differee';
         console.error('[schema] reparation non executee :', e && (e.message || e));
       }
+      // VAGUE 66 — Une agence peut avoir des POINTS DE SERVICE rattachés
+      // (guichet, caisse, marché). Le type est ajouté ici, idempotent, pour
+      // que la création fonctionne dès le premier clic après le déploiement.
+      try {
+        await q("ALTER TYPE unit_kind ADD VALUE IF NOT EXISTS 'point_service'");
+        // Bases historiques ou la colonne « kind » etait un texte avec une
+        // contrainte limitant les valeurs : la contrainte empechait d'ecrire
+        // « point_service ». On la retire (idempotent, sans perte de donnee).
+        try { await q('ALTER TABLE org_unit DROP CONSTRAINT IF EXISTS org_unit_kind_check'); }
+        catch (eC) { console.warn('[units] contrainte kind :', eC && (eC.message || eC)); }
+        etat.point_service = 'ok';
+        // VAGUE 71 — Le poste « Président du Conseil d'Administration » reçoit
+        // le rôle de surveillance « pca_admin ». Ce rôle existe dans tout le
+        // code mais manquait dans la base : la création du compte échouait avec
+        // « Le format d'une valeur saisie est invalide ». On complète le type.
+        try { await q("ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'pca_admin'"); }
+        catch (eR) { console.warn('[users] role pca_admin :', eR && (eR.message || eR)); }
+      } catch (e) {
+        etat.point_service = 'indisponible';
+        console.warn('[units] type point_service :', e && (e.message || e));
+      }
     }
     // VAGUES 44 + 45 : rattrapage des IMF passees en essai AVANT ce deploiement
     // (les IMF qui s inscrivent APRES ne sont PAS basculees : voir schema_v45.sql).
@@ -335,8 +489,8 @@ if (hasSite) {
     (process.env.PUBLIC_SITE_URL || 'Netlify') + ' (API seule sur ce serveur).');
 }
 
-// Sante
-app.get('/healthz', (_req, res) => res.json({ ok: true }));
+// Sante : /healthz et /api/v1/version sont declares plus haut (publics).
+
 
 // Pages (fallback HTML)
 const SITE = process.env.PUBLIC_SITE_URL || 'https://teebo-imf.netlify.app';
@@ -346,7 +500,28 @@ function page(file) {
     res.sendFile(path.join(pub, file), (e) => { if (e && !res.headersSent) res.redirect(302, SITE); });
   };
 }
-app.get(['/', '/index.html'], page('index.html'));
+// Page d'accueil de l'API : elle AFFICHE la version réellement en service.
+// Un simple clic sur l'adresse du serveur suffit donc à savoir si le
+// déploiement a bien remplacé l'ancienne version (avant, elle renvoyait
+// silencieusement vers le site, sans aucune information).
+app.get(['/', '/index.html'], (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.type('html').send('<!doctype html><html lang="fr"><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<title>teebo — API</title><style>body{font-family:system-ui,Arial,sans-serif;'
+    + 'background:#eef0f6;color:#0b0c26;display:flex;align-items:center;justify-content:center;'
+    + 'min-height:100vh;margin:0}.c{background:#fff;border-radius:14px;padding:30px 34px;'
+    + 'max-width:520px;box-shadow:0 14px 44px rgba(11,12,38,.12)}h1{font-size:18px;margin:0 0 10px}'
+    + 'p{font-size:13.5px;line-height:1.7;color:#3c3f57;margin:0 0 12px}'
+    + 'a{display:inline-block;background:#0b0c26;color:#fff;text-decoration:none;font-weight:700;'
+    + 'font-size:13px;padding:11px 18px;border-radius:9px}</style></head><body><div class="c">'
+    + '<h1>Serveur API teebo — version ' + BUILD_SHORT + '</h1>'
+    + '<p>Version en service : <b>' + BUILD_SHORT + '</b> — agences sous la Direction Générale, '
+    + 'points de service, création des comptes.</p>'
+    + '<p>Si cette page n\'affiche aucun numéro de version, c\'est que l\'ancien serveur '
+    + 'est encore en ligne : le déploiement n\'a pas pris.</p>'
+    + '<p><a href="' + SITE + '">Ouvrir l\'application teebo</a></p></div></body></html>');
+});
 app.get('/login', page('login.html'));
 app.get('/app', page('app.html'));
 app.get('/teebo', page('teebo.html'));
@@ -408,9 +583,11 @@ app.use((req, res, next) => {
     + 'p{font-size:13.5px;line-height:1.7;color:#3c3f57;margin:0 0 12px}'
     + 'a{display:inline-block;background:#0b0c26;color:#fff;text-decoration:none;font-weight:700;'
     + 'font-size:13px;padding:11px 18px;border-radius:9px}</style></head><body><div class="c">'
-    + '<h1>Serveur API teebo — en fonctionnement</h1>'
+    + '<h1>Serveur API teebo — version ' + BUILD_SHORT + '</h1>'
     + '<p>Cette adresse sert uniquement l’interface de programmation (API). '
     + 'L’application et les pages publiques sont sur le site teebo.</p>'
+    + '<p style="font-size:12.5px;color:#6b7080">Version en service : <b>' + BUILD_SHORT + '</b> — '
+    + 'agences sous la Direction Générale, points de service, création des comptes.</p>'
     + '<p><a href="' + SITE + '">Ouvrir l’application teebo</a></p></div></body></html>');
 });
 
@@ -430,6 +607,9 @@ const server = app.listen(port, host, () => {
   console.log(`teebo API en écoute sur ${host}:${port}`);
   // La migration démarre juste après l'ouverture du port, en arrière-plan.
   setTimeout(lancerMigration, 300);
+  // Etat de la passerelle e-mail : une seule ligne dans le journal dit si les
+  // codes d'acces peuvent reellement partir (et pourquoi sinon).
+  setTimeout(() => { logEmailGateway().catch(() => {}); }, 1500);
   // Sonde de vie : garde le service éveillé sur l'offre gratuite Render
   // (les instances gratuites s'endorment après 15 min d'inactivité).
   setInterval(() => {

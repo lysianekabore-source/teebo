@@ -547,7 +547,11 @@ r.get('/clients/:id/hierarchy', requireRole('admin_imf','direction','department'
 
 /* ------------------------------------------------------------------ */
 /*  7. Liste des clients (chaîne de collecte + GPS + enrôlement)       */
-r.get('/clients', requireRole('admin_imf','direction','department','service','agency','staff'), async (req, res) => {
+r.get('/clients', requireRole('admin_imf','direction','department','service','agency','staff','collectrice'), async (req, res) => {
+  // Un agent de collecte ne voit QUE ses clients (les siens + ceux qu'il a créés) :
+  // avant, la route lui répondait 403 et la liste restait vide après une création,
+  // ce qui donnait l'impression que le client n'avait pas été enregistré.
+  const estAgent = req.user.role === 'collectrice';
   const { rows } = await q(
     `SELECT c.id, c.code_client, c.full_name, c.phone, c.origin, c.created_at,
             a.code_account, a.balance_cents, a.currency, a.status,
@@ -565,7 +569,8 @@ r.get('/clients', requireRole('admin_imf','direction','department','service','ag
        LEFT JOIN app_user sup ON sup.id = c.superviseur_user_id
        LEFT JOIN client_enrollment e ON e.client_id = c.id
        LEFT JOIN client_portal cp ON cp.client_id = c.id
-      WHERE c.imf_id=$1 ORDER BY c.created_at DESC LIMIT 300`, [req.user.imf_id]);
+      WHERE c.imf_id=$1` + (estAgent ? ' AND (c.collectrice_user_id=$2 OR c.created_by_user_id=$2)' : '') +
+      ` ORDER BY c.created_at DESC LIMIT 300`, estAgent ? [req.user.imf_id, req.user.id] : [req.user.imf_id]);
   res.json({ clients: rows });
 });
 

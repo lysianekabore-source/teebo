@@ -2,7 +2,7 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { q, tx } from '../db.js';
-import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken, userHasPermission, effectivePermissionKeys, idleMinutes, effectiveRoleOf, hasFullAccess, estProfilSurveillance, filtrerHabilitations, superficieExcluePour } from '../auth.js';
+import { authenticate, createSession, isPasswordExpired, MDP_MAX_DAYS, hashToken, userHasPermission, effectivePermissionKeys, idleMinutes, effectiveRoleOf, hasFullAccess, estProfilSurveillance, filtrerHabilitations, superficieExcluePour, cookieOptions, IDLE_MINUTES_DEFAUT } from '../auth.js';
 import { notifyEmail, notifyWhatsApp, loginUrlFor } from '../notify.js';
 import { isCashierPosition } from '../org_structure.js';
 import { accesUtilisateur } from '../saas_engine.js';   // VAGUE 47 : modules actifs + lecture seule
@@ -13,13 +13,9 @@ import { getStatus, is2faRequired, createChallenge, consumeChallenge, verifyForU
 
 const router = express.Router();
 
-const COOKIE = {
-  httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax',
-  path: '/',
-  maxAge: 60 * 60 * 1000  // cookie glissant aligné sur l'inactivité (60 min)
-};
+// Cookie de session : 30 jours glissants (voir cookieOptions dans auth.js).
+// Il est repoussé à chaque activité, donc plus d'expiration en pleine journée.
+const COOKIE = cookieOptions();
 
 // Politique de mot de passe : >= 10 car., maj/min/chiffre.
 function weakPassword(p) {

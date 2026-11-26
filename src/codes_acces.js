@@ -157,6 +157,21 @@ export async function envoyerCodeAcces(imfId, user, ctx = {}) {
     : (waAuto && waAuto.error) ||
       (wantWa ? 'Envoi impossible.' : 'Aucun numero WhatsApp pour ce destinataire.');
 
+  // Motif en francais courant : l'administrateur d'une IMF n'a pas a lire un
+  // code SMTP. Le detail technique reste disponible separement (email_error).
+  const motifFr = (() => {
+    if (emailMode === 'sent') return null;
+    if (!wantMail) return 'Aucune adresse e-mail pour ce destinataire.';
+    if (emailMode === 'not_configured') return "Le service d'envoi n'est pas encore configure sur la plateforme.";
+    if (emailMode === 'invalid_recipient') return "L'adresse e-mail du destinataire est invalide.";
+    const raw = String((mailAuto && mailAuto.error) || '');
+    if (/535|auth|identif|credential/i.test(raw)) return "Le serveur d'envoi a refuse l'authentification de la boite expediteur.";
+    if (/5\.7\.60|send as|permission|not authorized/i.test(raw)) return "L'adresse d'expedition n'est pas autorisee par le serveur d'envoi.";
+    if (/ETIMEDOUT|ECONNECTION|ECONNREFUSED|ENOTFOUND|timeout/i.test(raw)) return "Le serveur d'envoi est injoignable (adresse ou port incorrect).";
+    if (/TLS|certificate/i.test(raw)) return "La connexion securisee avec le serveur d'envoi a echoue.";
+    return "Le serveur d'envoi a refuse le message.";
+  })();
+
   return {
     message,
     subject,
@@ -175,9 +190,18 @@ export async function envoyerCodeAcces(imfId, user, ctx = {}) {
     email_id: mailAuto && mailAuto.id ? mailAuto.id : null,
     email_from: mailAuto && mailAuto.from ? mailAuto.from : null,
     email_gateway: emailGatewayReady(),
+    // Verdict HONNETE : « envoye » seulement si le serveur d'envoi a accepte
+    // au moins un destinataire. Sinon, on dit ce qui bloque.
     email_status: emailMode === 'sent'
-      ? { ok: true, text: `E-mail envoye a ${user.email} (expediteur : ${senderEmail || 'adresse technique'}).` }
-      : { ok: false, text: emailReason || 'E-mail non envoye.' },
+      ? { ok: true, text: `E-mail remis au service d'envoi pour ${user.email} — expediteur affiche : ${(mailAuto && mailAuto.from) || senderEmail || 'adresse technique'}`
+        + ((mailAuto && mailAuto.replyTo && mailAuto.replyTo !== senderEmail) ? ` (reponses vers ${mailAuto.replyTo})` : '') + '.' }
+      : { ok: false, text: `E-mail NON envoye — ${motifFr || 'motif inconnu.'}` },
+    email_motif: motifFr,
+    email_error: (mailAuto && mailAuto.error) || null,
+    email_smtp_response: (mailAuto && mailAuto.response) || null,
+    email_from_real: (mailAuto && mailAuto.from) || null,
+    email_reply_to: (mailAuto && mailAuto.replyTo) || null,
+    email_technical_from: (mailAuto && mailAuto.technical_from) || null,
     sent_now: whatsappMode === 'sent' || emailMode === 'sent'
   };
 }
