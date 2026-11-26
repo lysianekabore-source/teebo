@@ -144,7 +144,7 @@ app.use(cookieParser());
 
 // Version du binaire en ligne (une seule source pour /version, /healthz et
 // l'en-tete X-Teebo-Build).
-const API_BUILD = 'v78-logo-imf-date-comptable-2026-11-26';
+const API_BUILD = 'v79-date-du-jour-2026-11-26';
 // Numéro de version affiché sur la page d'accueil de l'API : il permet de
 // vérifier en UN clic, depuis un simple navigateur, quelle version est en ligne.
 const BUILD_SHORT = API_BUILD.split('-')[0];
