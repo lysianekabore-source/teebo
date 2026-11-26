@@ -380,3 +380,13 @@ export async function deliverCmsNotification(job,ctx,subscriptions=[]){
  if(!outcomes.some(o=>o.ok))outcomes.push(await cmsSms(ctx.phone,text,job.id));
  return {ok:outcomes.some(o=>o.ok),configured:outcomes.some(o=>o.configured),channels:outcomes};
 }
+
+// v81: durable inbox is always available; external e-mail must confirm real acceptance.
+export async function notifySecretariat(job,ctx){
+ if(!ctx.email||!emailGatewayReady())return {ok:false,configured:false,inbox:true,error:'Messagerie non configurée ou adresse absente.'};
+ const urgent=job.type==='TUTELLE_72H';const subject=(urgent?'PRIORITAIRE — échéance tutelle':'Imputation courrier')+' — '+ctx.nom_imf;
+ const text='Un courrier '+ctx.numero_enregistrement+(urgent?' approche de son échéance de réponse.':' vous a été imputé.')+' Consultez le Secrétariat de Direction dans votre espace IMF.';
+ // Confidential body, attachment and DG instructions stay behind authenticated access.
+ const result=await notifyEmail(ctx.email,subject,text);
+ return {ok:result.ok===true&&result.mode!=='sent_simulated',configured:true,inbox:true,error:result.error||null};
+}

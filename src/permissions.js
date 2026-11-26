@@ -12,6 +12,7 @@
 
 // --- Domaines d'habilitation (ordre d'affichage) ---------------------------
 export const PERMISSIONS = Object.freeze([
+  ...['read','manage','dg','confidentiel','notes.publish','resolutions.verify'].map(k=>({key:'sec.'+k,label:'Secrétariat — '+k,access_kind:k==='read'?'lecture':'ecriture'})),
   {key:'cms.manage',label:'Communication — studio et publications',access_kind:'ecriture'},
   {key:'cms.leads.read',label:'Communication — rappels attribués',access_kind:'lecture'},
   { key: 'org.manage',          label: 'Organisation — créer / supprimer des unités' },

@@ -18,6 +18,7 @@ import { q } from './db.js';
 
 /** Catalogue des modules : clé -> { colonne, libellé, préfixes d'URL, menus }. */
 export const MODULES = Object.freeze({
+  SECRETARIAT_DIRECTION:{column:null,label:'Secrétariat de Direction & Gouvernance',description:'Courriers, instances, résolutions, notes et agenda.',prefixes:['/secretariat'],menus:['secretariat']},
   COMMUNICATION_CMS: {column:'communication_cms',label:'Communication & Médias',description:'Studio multimédia et actualités client.',prefixes:['/cms','/cms-leads'],menus:['communication-cms']},
   MODULE_COLLECTE_TONTINE: {
     column: 'module_collecte_tontine',
@@ -71,6 +72,7 @@ export async function getFeatures(imfId) {
  * Vrai si le module est actif pour l'IMF.
  */
 export async function isModuleActive(imfId, moduleKey) {
+  if(moduleKey==='SECRETARIAT_DIRECTION')return (await verifierModule(imfId,moduleKey)).utilisable;
   const def = MODULES[moduleKey];
   if (!def) return false;
   const f = await getFeatures(imfId);
@@ -131,6 +133,7 @@ export function checkModuleActivation(req, res, next) {
 // les ecrans lents. Une restriction reste appliquee en moins de 30 secondes.
 const _cacheModule = new Map();
 export async function verifierModule(imfId, moduleKey) {
+  if(moduleKey==='SECRETARIAT_DIRECTION'){try{const {secAccess}=await import('./secretariat_engine.js');await secAccess(imfId);return {utilisable:true,motif:null};}catch{return {utilisable:false,motif:'MODULE_INACTIF'};}}
   if(moduleKey==='COMMUNICATION_CMS'){const {cmsAccess}=await import('./cms_engine.js');try{await cmsAccess(imfId);return {utilisable:true,motif:null};}catch{return {utilisable:false,motif:'MODULE_INACTIF'};}}
   const def = MODULES[moduleKey];
   if (!def) return { utilisable: false, motif: 'MODULE_INCONNU' };
@@ -203,7 +206,7 @@ export async function buildInstitutionConfig(imfId, user = null) {
   const modules = {};
   const menus = [];
   for (const [key, def] of Object.entries(MODULES)) {
-    const active = key==='COMMUNICATION_CMS'?(await verifierModule(imfId,key)).utilisable:f[def.column] === true;
+    const active = ['COMMUNICATION_CMS','SECRETARIAT_DIRECTION'].includes(key)?(await verifierModule(imfId,key)).utilisable:f[def.column] === true;
     modules[key] = { key, label: def.label, description: def.description, active };
     if (active) menus.push({ module: key, items: def.menus });
   }
@@ -236,6 +239,7 @@ export async function updateFeatures(imfId, changes = {}, actorId = null) {
   for (const [key, value] of Object.entries(changes || {})) {
     const def = MODULES[key];
     if (!def) continue;
+    if(key==='SECRETARIAT_DIRECTION'){throw Object.assign(new Error('Activez ce module via le catalogue SaaS.'),{status:403,expose:true});}
     sets.push(`${def.column} = $${i++}`);
     vals.push(value === true);
   }

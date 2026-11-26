@@ -34,6 +34,7 @@ export const PLATFORM_ROLE = 'teebo_admin';
 
 /** Codes courts SaaS -> module historique (null pour un module sans ecran). */
 export const CODE_TO_MODULE = Object.freeze({
+  SECRETARIAT_DIRECTION:'SECRETARIAT_DIRECTION',
   COMMUNICATION_CMS: 'COMMUNICATION_CMS',
   COLLECTE: 'MODULE_COLLECTE_TONTINE',
   CREDIT: 'MODULE_DOSSIER_CREDIT',
@@ -49,6 +50,7 @@ export const MODULE_TO_CODE = Object.freeze(
 
 /** Portee d'une requete : les prefixes historiques (modules.js) + les nôtres. */
 export const CODE_PREFIXES = Object.freeze({
+  SECRETARIAT_DIRECTION:['/secretariat'],
   COMMUNICATION_CMS: ['/cms','/cms-leads'],
   COLLECTE: ['/collecte', '/collecte-es', '/round', '/tontine', '/tournees', '/collecteurs', '/caisse'],
   CREDIT: ['/credit', '/credits', '/dossiers-credit', '/scoring', '/recouvrement'],
@@ -217,6 +219,7 @@ export async function modulesDuTenant(imfId) {
     }
 
     try{const {cmsAccess}=await import('./cms_engine.js');await cmsAccess(imfId);codes.add('COMMUNICATION_CMS');legacy.add('COMMUNICATION_CMS');}catch{codes.delete('COMMUNICATION_CMS');legacy.delete('COMMUNICATION_CMS');}
+    try{const {secAccess}=await import('./secretariat_engine.js');await secAccess(imfId);codes.add('SECRETARIAT_DIRECTION');legacy.add('SECRETARIAT_DIRECTION');}catch{codes.delete('SECRETARIAT_DIRECTION');legacy.delete('SECRETARIAT_DIRECTION');}
     const inactifs = Object.keys(CODE_TO_MODULE).filter((c) => !codes.has(c));
     return { codes: Array.from(codes), legacy: Array.from(legacy), inactifs };
   });

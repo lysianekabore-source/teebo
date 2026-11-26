@@ -90,7 +90,7 @@ export async function restreindreCollecteSeule(imfId, actor = {}, raison = null)
          updated_by                  = COALESCE($2, institution_features.updated_by),
          updated_at                  = now()`, [imfId, actor.id || null]);
 
-    await c.query("UPDATE tenant_modules_actifs SET est_actif=false,motif='RESTRICTION_COLLECTE_ONLY',desactive_le=now() WHERE code_module='COMMUNICATION_CMS' AND tenant_id IN (SELECT id FROM tenants WHERE imf_id=$1)",[imfId]);
+    await c.query("UPDATE tenant_modules_actifs SET est_actif=false,motif='RESTRICTION_COLLECTE_ONLY',desactive_le=now() WHERE code_module IN('COMMUNICATION_CMS','SECRETARIAT_DIRECTION') AND tenant_id IN (SELECT id FROM tenants WHERE imf_id=$1)",[imfId]);
     return { imf, out };
   });
 
@@ -323,6 +323,7 @@ export async function reactiverModule(imfId, moduleKey, p = {}, actor = {}) {
           fin_essai: essaiDejaUtilise ? null : finEssai,
           acteur_role: actor.role || null })]);
 
+    if(moduleKey==='SECRETARIAT_DIRECTION'){await c.query(`INSERT INTO tenant_modules_actifs(tenant_id,code_module,est_actif,en_essai,expires_at,active_par) SELECT id,'SECRETARIAT_DIRECTION',TRUE,$2,$3,$4 FROM tenants WHERE imf_id=$1 ON CONFLICT(tenant_id,code_module) DO UPDATE SET est_actif=TRUE,en_essai=EXCLUDED.en_essai,expires_at=EXCLUDED.expires_at,active_par=EXCLUDED.active_par,motif=NULL`,[imfId,!essaiDejaUtilise,essaiDejaUtilise?null:finEssai,actor.id||null]);}
     if(moduleKey==='COMMUNICATION_CMS'){await c.query(`INSERT INTO tenant_modules_actifs(tenant_id,code_module,est_actif,en_essai,expires_at,active_par) SELECT id,'COMMUNICATION_CMS',TRUE,$2,$3,$4 FROM tenants WHERE imf_id=$1 ON CONFLICT(tenant_id,code_module) DO UPDATE SET est_actif=TRUE,en_essai=EXCLUDED.en_essai,expires_at=EXCLUDED.expires_at,active_par=EXCLUDED.active_par,motif=NULL`,[imfId,!essaiDejaUtilise,essaiDejaUtilise?null:finEssai,actor.id||null]);}
     const apres = (await c.query(
       `SELECT is_active, is_trial, trial_end_date, activated_at
