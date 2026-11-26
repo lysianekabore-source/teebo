@@ -64,6 +64,8 @@ router.use((req, res, next) => {
   return authenticate(req, res, (e) => (e ? next(e) : requireRole('teebo_admin')(req, res, next)));
 });
 
+router.get('/cms-capabilities',(_req,res)=>res.json({module:'COMMUNICATION_CMS',studio:'/communication',client_portal:'/client',client_feed:'/api/client/actualites',activation:'Catalogue SaaS et modules du tenant'}));
+
 // --- Matrice des profils & habilitations par défaut (référentiel partagé) ---
 // Même matrice que celle de l'espace IMF : l'administrateur teebo la consulte
 // comme standard appliqué à la création des utilisateurs de chaque IMF.

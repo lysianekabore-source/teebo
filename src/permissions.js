@@ -12,6 +12,8 @@
 
 // --- Domaines d'habilitation (ordre d'affichage) ---------------------------
 export const PERMISSIONS = Object.freeze([
+  {key:'cms.manage',label:'Communication — studio et publications',access_kind:'ecriture'},
+  {key:'cms.leads.read',label:'Communication — rappels attribués',access_kind:'lecture'},
   { key: 'org.manage',          label: 'Organisation — créer / supprimer des unités' },
   { key: 'users.manage',        label: 'Personnel — créer des comptes & envoyer les codes' },
   { key: 'settings.manage',     label: 'Paramètres IMF & mentions légales' },

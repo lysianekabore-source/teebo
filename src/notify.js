@@ -357,3 +357,26 @@ export async function notifySecurityAlert(info = {}) {
   }
   return { ok: true };
 }
+
+// v80: real delivery verdicts; the durable CMS inbox is separate from provider delivery.
+async function cmsSms(to,text,id){
+ const endpoint=process.env.CMS_SMS_GATEWAY_URL,token=process.env.CMS_SMS_GATEWAY_TOKEN;
+ if(!endpoint||!token)return {ok:false,configured:false,channel:'sms',error:'Passerelle SMS non configurée.'};
+ if(!to)return {ok:false,configured:true,channel:'sms',error:'Téléphone du client absent.'};
+ try{const u=new URL(endpoint);if(u.protocol!=='https:')throw Error('Passerelle HTTPS requise.');
+ return await new Promise(resolve=>{const payload=JSON.stringify({to,message:text,reference:id});const req=https.request(u,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload),'Idempotency-Key':id},timeout:15000},res=>{let body='';res.on('data',b=>{if(body.length<10000)body+=b;});res.on('end',()=>{let json={};try{json=JSON.parse(body);}catch{}resolve({ok:res.statusCode>=200&&res.statusCode<300&&json.ok===true,configured:true,channel:'sms',status:res.statusCode,error:json.ok===true?null:'Le prestataire n’a pas confirmé la remise.'});});});req.on('timeout',()=>req.destroy(Error('Délai SMS dépassé')));req.on('error',e=>resolve({ok:false,configured:true,channel:'sms',error:e.message}));req.end(payload);});
+ }catch(e){return {ok:false,configured:true,channel:'sms',error:e.message};}}
+export async function deliverCmsNotification(job,ctx,subscriptions=[]){
+ if(job.type==='LEAD_AGENT'){
+  if(!ctx.agent_email||!emailGatewayReady())return {ok:false,configured:false,channel:'email',inbox:true,error:'Rappel disponible dans la boîte des agents ; e-mail non configuré ou destinataire absent.'};
+  const r=await notifyEmail(ctx.agent_email,'Demande de rappel — '+ctx.nom_imf,ctx.client_name+' souhaite être rappelé à propos de « '+ctx.titre+' ». Téléphone : '+(ctx.phone||'non renseigné')+'. Consultez les Demandes de rappel clients dans Teebo.');
+  return {ok:r.ok===true&&r.mode!=='sent_simulated',configured:true,channel:'email',inbox:true,error:r.error||null};
+ }
+ const text=ctx.nom_imf+' — '+ctx.titre;const outcomes=[];
+ if(process.env.CMS_VAPID_PUBLIC_KEY&&process.env.CMS_VAPID_PRIVATE_KEY&&subscriptions.length){
+  const push=require('web-push');push.setVapidDetails(process.env.CMS_VAPID_SUBJECT||'mailto:hello@teebo.africa',process.env.CMS_VAPID_PUBLIC_KEY,process.env.CMS_VAPID_PRIVATE_KEY);
+  for(const s of subscriptions){try{await push.sendNotification(s,JSON.stringify({title:ctx.nom_imf,body:ctx.titre,url:'/client'}),{TTL:3600,timeout:15000});outcomes.push({ok:true,configured:true,channel:'push'});}catch(e){outcomes.push({ok:false,configured:true,channel:'push',error:String(e.statusCode||e.message)});}}
+ }else outcomes.push({ok:false,configured:false,channel:'push',error:'Push non configuré ou client non abonné.'});
+ if(!outcomes.some(o=>o.ok))outcomes.push(await cmsSms(ctx.phone,text,job.id));
+ return {ok:outcomes.some(o=>o.ok),configured:outcomes.some(o=>o.configured),channels:outcomes};
+}

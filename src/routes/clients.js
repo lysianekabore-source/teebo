@@ -221,7 +221,7 @@ r.post('/clients', requireRole('admin_imf','direction','department','service','a
   const memberNote = out.client.membership_type === 'membre'
     ? ' Client MEMBRE — ' + out.client.shares_count + ' part(s) sociale(s) souscrite(s).'
     : (out.client.membership_type === 'usager' ? ' Client USAGER (aucune part sociale).' : '');
-  res.status(201).json({ ...out, credentials: { code_client: out.client.code_client,
+  res.status(201).json({ ...out, portal_url: '/client', credentials: { code_client: out.client.code_client,
     code_account: out.account.code_account, temporary_password: pwd },
     note: 'Client créé (' + out.client.code_client + ').' + memberNote });
 });

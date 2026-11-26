@@ -34,6 +34,7 @@ export const PLATFORM_ROLE = 'teebo_admin';
 
 /** Codes courts SaaS -> module historique (null pour un module sans ecran). */
 export const CODE_TO_MODULE = Object.freeze({
+  COMMUNICATION_CMS: 'COMMUNICATION_CMS',
   COLLECTE: 'MODULE_COLLECTE_TONTINE',
   CREDIT: 'MODULE_DOSSIER_CREDIT',
   COMPTABILITE: 'MODULE_COMPTABILITE_AVANCEE',
@@ -48,6 +49,7 @@ export const MODULE_TO_CODE = Object.freeze(
 
 /** Portee d'une requete : les prefixes historiques (modules.js) + les nôtres. */
 export const CODE_PREFIXES = Object.freeze({
+  COMMUNICATION_CMS: ['/cms','/cms-leads'],
   COLLECTE: ['/collecte', '/collecte-es', '/round', '/tontine', '/tournees', '/collecteurs', '/caisse'],
   CREDIT: ['/credit', '/credits', '/dossiers-credit', '/scoring', '/recouvrement'],
   COMPTABILITE: ['/comptabilite', '/ledger', '/accounting', '/journaux', '/grand-livre'],
@@ -214,6 +216,7 @@ export async function modulesDuTenant(imfId) {
       } catch (e) { /* rien */ }
     }
 
+    try{const {cmsAccess}=await import('./cms_engine.js');await cmsAccess(imfId);codes.add('COMMUNICATION_CMS');legacy.add('COMMUNICATION_CMS');}catch{codes.delete('COMMUNICATION_CMS');legacy.delete('COMMUNICATION_CMS');}
     const inactifs = Object.keys(CODE_TO_MODULE).filter((c) => !codes.has(c));
     return { codes: Array.from(codes), legacy: Array.from(legacy), inactifs };
   });

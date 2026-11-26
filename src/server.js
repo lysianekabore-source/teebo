@@ -1,3 +1,5 @@
+import {studio as cmsStudio,client as cmsClient,agent as cmsAgent} from './routes/cms.js';
+import {startCmsWorker} from './cms_engine.js';
 import 'dotenv/config';
 import express from 'express';
 import fs from 'fs';
@@ -144,7 +146,8 @@ app.use(cookieParser());
 
 // Version du binaire en ligne (une seule source pour /version, /healthz et
 // l'en-tete X-Teebo-Build).
-const API_BUILD = 'v79-date-du-jour-2026-11-26';
+startCmsWorker();
+const API_BUILD = 'v80-communication-cms-2026-11-26';
 // Numéro de version affiché sur la page d'accueil de l'API : il permet de
 // vérifier en UN clic, depuis un simple navigateur, quelle version est en ligne.
 const BUILD_SHORT = API_BUILD.split('-')[0];
@@ -231,6 +234,7 @@ app.get('/api/v1/diag-session', async (req, res) => {
 });
 
 
+app.use('/api/client',cmsClient);
 app.use('/api/v1', attachUser);
 
 // Limitation des tentatives (anti brute-force)
@@ -270,6 +274,8 @@ app.use('/api/v1', codesAccesRoutes);               // VAGUE 46 : codes d acces 
 // '/super-admin/...' : on le monte sur /api/v1 (sinon double prefixe -> 404).
 app.use('/api/v1', superAdminRoutes);    // VAGUE 47 : console editeur (onglets clients, modules, factures)
 app.use('/api/v1', orgRoutes);                     // hiérarchie (authentifié)
+app.use('/api/v1',cmsStudio);
+app.use('/api/v1',cmsAgent);
 app.use('/api/v1', workspaceRoutes);
 app.use('/api/v1', settingsRoutes);                // paramètres IMF (branding + mentions légales)
 app.use('/api/v1', deviceRoutes);                  // terminaux + alertes sécurité

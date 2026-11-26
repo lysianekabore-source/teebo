@@ -86,9 +86,11 @@ export async function restreindreCollecteSeule(imfId, actor = {}, raison = null)
          module_dossier_credit       = FALSE,
          module_compliance_kyc       = FALSE,
          module_comptabilite_avancee = FALSE,
+         communication_cms           = FALSE,
          updated_by                  = COALESCE($2, institution_features.updated_by),
          updated_at                  = now()`, [imfId, actor.id || null]);
 
+    await c.query("UPDATE tenant_modules_actifs SET est_actif=false,motif='RESTRICTION_COLLECTE_ONLY',desactive_le=now() WHERE code_module='COMMUNICATION_CMS' AND tenant_id IN (SELECT id FROM tenants WHERE imf_id=$1)",[imfId]);
     return { imf, out };
   });
 
@@ -131,7 +133,8 @@ export async function leverRestriction(imfId, actor = {}, raison = null) {
       MODULE_COLLECTE_TONTINE: 'module_collecte_tontine',
       MODULE_DOSSIER_CREDIT: 'module_dossier_credit',
       MODULE_COMPLIANCE_KYC: 'module_compliance_kyc',
-      MODULE_COMPTABILITE_AVANCEE: 'module_comptabilite_avancee'
+      MODULE_COMPTABILITE_AVANCEE: 'module_comptabilite_avancee',
+      COMMUNICATION_CMS: 'communication_cms'
     };
     // On ecrit la ligne de menus (creation si elle n'existe pas encore :
     // une IMF restreinte avant la vague 32 n'en avait aucune, et un UPDATE
@@ -154,6 +157,7 @@ export async function leverRestriction(imfId, actor = {}, raison = null) {
         actifs.includes('MODULE_COMPLIANCE_KYC'),
         actifs.includes('MODULE_COMPTABILITE_AVANCEE'),
         actor.id || null]);
+    await c.query("UPDATE institution_features SET communication_cms=EXISTS(SELECT 1 FROM tenant_modules_actifs m JOIN tenants t ON t.id=m.tenant_id WHERE t.imf_id=$1 AND m.code_module='COMMUNICATION_CMS' AND m.est_actif AND (m.expires_at IS NULL OR m.expires_at>=CURRENT_DATE)) WHERE institution_id=$1",[imfId]);
     return r;
   });
   return { ...out, configuration_ui: await buildInstitutionConfig(imfId) };
@@ -295,7 +299,8 @@ export async function reactiverModule(imfId, moduleKey, p = {}, actor = {}) {
       MODULE_COLLECTE_TONTINE: 'module_collecte_tontine',
       MODULE_DOSSIER_CREDIT: 'module_dossier_credit',
       MODULE_COMPLIANCE_KYC: 'module_compliance_kyc',
-      MODULE_COMPTABILITE_AVANCEE: 'module_comptabilite_avancee'
+      MODULE_COMPTABILITE_AVANCEE: 'module_comptabilite_avancee',
+      COMMUNICATION_CMS: 'communication_cms'
     }[moduleKey];
     if (col) {
       await c.query(
@@ -318,6 +323,7 @@ export async function reactiverModule(imfId, moduleKey, p = {}, actor = {}) {
           fin_essai: essaiDejaUtilise ? null : finEssai,
           acteur_role: actor.role || null })]);
 
+    if(moduleKey==='COMMUNICATION_CMS'){await c.query(`INSERT INTO tenant_modules_actifs(tenant_id,code_module,est_actif,en_essai,expires_at,active_par) SELECT id,'COMMUNICATION_CMS',TRUE,$2,$3,$4 FROM tenants WHERE imf_id=$1 ON CONFLICT(tenant_id,code_module) DO UPDATE SET est_actif=TRUE,en_essai=EXCLUDED.en_essai,expires_at=EXCLUDED.expires_at,active_par=EXCLUDED.active_par,motif=NULL`,[imfId,!essaiDejaUtilise,essaiDejaUtilise?null:finEssai,actor.id||null]);}
     const apres = (await c.query(
       `SELECT is_active, is_trial, trial_end_date, activated_at
          FROM institution_module_subscriptions

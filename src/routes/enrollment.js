@@ -626,7 +626,7 @@ r.post('/clients/:id/portal', requireRole('admin_imf','direction','department','
       `INSERT INTO client_portal(imf_id,client_id,login_mode,password_hash,statement_format,created_by)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING login_mode, statement_format, is_active`,
       [req.user.imf_id, cl.id, loginMode, hash, fmt, req.user.id])).rows[0];
-    res.status(201).json({ portal: p, client: { id: cl.id, code_client: cl.code_client, full_name: cl.full_name },
+    res.status(201).json({ portal_url:'/client', portal: p, client: { id: cl.id, code_client: cl.code_client, full_name: cl.full_name },
       credentials: { temporary_password: pwd } });
   } catch (e) { next(e); }
 });
