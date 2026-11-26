@@ -91,8 +91,9 @@ function memoise(cle, chargeur) {
 
 /** Vide le cache (appele apres toute bascule decidee par l'editeur). */
 export function invaliderCache(imfId = null) {
-  if (!imfId) return cache.clear();
-  for (const k of cache.keys()) if (k.startsWith(String(imfId))) cache.delete(k);
+  if (!imfId) {cache.clear();_cacheSaas.clear();return;}
+  for (const k of cache.keys()) if(k.endsWith(':'+String(imfId)))cache.delete(k);
+  _cacheSaas.delete(imfId);
 }
 
 /**
@@ -176,7 +177,7 @@ export async function modulesDuTenant(imfId) {
       const { rows } = await q(
         `SELECT code_module::text AS code
            FROM tenant_modules_actifs
-          WHERE tenant_id = $1 AND est_actif = TRUE
+          WHERE tenant_id = (SELECT id FROM tenants WHERE imf_id=$1) AND est_actif = TRUE
             AND (expires_at IS NULL OR expires_at::date >= CURRENT_DATE)`, [imfId]);
       rows.forEach((r) => codes.add(r.code));
     } catch (e) {

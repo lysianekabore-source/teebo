@@ -132,6 +132,7 @@ export function checkModuleActivation(req, res, next) {
 // en plus de la garde SaaS, ce qui multipliait les aller-retours SQL et rendait
 // les ecrans lents. Une restriction reste appliquee en moins de 30 secondes.
 const _cacheModule = new Map();
+export function invalidateModuleCache(imfId=null){for(const k of _cacheModule.keys())if(!imfId||k.startsWith(String(imfId)+"|"))_cacheModule.delete(k);}
 export async function verifierModule(imfId, moduleKey) {
   if(moduleKey==='SECRETARIAT_DIRECTION'){try{const {secAccess}=await import('./secretariat_engine.js');await secAccess(imfId);return {utilisable:true,motif:null};}catch{return {utilisable:false,motif:'MODULE_INACTIF'};}}
   if(moduleKey==='COMMUNICATION_CMS'){const {cmsAccess}=await import('./cms_engine.js');try{await cmsAccess(imfId);return {utilisable:true,motif:null};}catch{return {utilisable:false,motif:'MODULE_INACTIF'};}}

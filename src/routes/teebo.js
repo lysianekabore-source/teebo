@@ -294,7 +294,7 @@ router.get('/imfs/:id', async (req, res, next) => {
     // et l'etat de chaque compte.
     const admins = (await q(
       `SELECT id, email, full_name, phone, is_active, created_at, role,
-              code_user, twofa_enabled
+              code_user, COALESCE((SELECT f.enabled FROM user_2fa f WHERE f.user_id=app_user.id),FALSE) AS twofa_enabled
          FROM app_user WHERE imf_id = $1
         ORDER BY (role = 'admin_imf') DESC, is_active DESC, created_at`, [req.params.id])).rows;
     res.json({ imf, users: admins, imf_admins: admins });
@@ -306,7 +306,7 @@ router.get('/imf-admins', async (req, res, next) => {
   try {
     const { rows } = await q(
       `SELECT u.id, u.imf_id, i.name AS imf_name, i.code_imf, u.email, u.full_name,
-              u.phone, u.is_active, u.created_at, u.code_user
+              u.phone, u.is_active, u.created_at, u.code_user,u.must_change_password,i.status AS imf_status
          FROM app_user u LEFT JOIN imf i ON i.id = u.imf_id
         WHERE u.role = 'admin_imf'
           AND ($1::uuid IS NULL OR u.imf_id = $1)

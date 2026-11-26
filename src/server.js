@@ -30,6 +30,8 @@ import orgRoutes from './routes/org.js';
 import settingsRoutes from './routes/settings.js';
 import workspaceRoutes from './routes/workspace.js';
 import teeboRoutes from './routes/teebo.js';
+import consoleV82 from './routes/console_v82.js';
+import tenantV82 from './routes/tenant_v82.js';
 import codesAccesRoutes from './routes/codes_acces.js'; // VAGUE 46 : codes d acces (console editeur)
 import superAdminRoutes from './routes/super_admin.js'; // VAGUE 47 : console Super-Admin SaaS
 import { gardeSaas } from './saas_engine.js';            // VAGUE 47 : statut contrat + modules
@@ -150,7 +152,7 @@ app.use(cookieParser());
 // l'en-tete X-Teebo-Build).
 startCmsWorker();
 startSecWorker();
-const API_BUILD = 'v81-secretariat-gouvernance-2026-11-26';
+const API_BUILD = 'v82-console-saas-2026-11-26';
 // Numéro de version affiché sur la page d'accueil de l'API : il permet de
 // vérifier en UN clic, depuis un simple navigateur, quelle version est en ligne.
 const BUILD_SHORT = API_BUILD.split('-')[0];
@@ -254,6 +256,9 @@ app.use('/api/v1', tenantContext, checkModuleActivation);
 // VAGUE 47 : garde SaaS (statut du contrat, module souscrit, lecture seule apres
 // impaye). Placee APRES le cloisonnement, AVANT les routeurs metier. Elle ne
 // bloque jamais l'editeur et ne renvoie rien de nominatif.
+app.use('/api/v1/teebo/v82',consoleV82);
+app.use('/api/v1',tenantV82);
+app.use('/api',tenantV82);
 app.use('/api/v1', gardeSaas);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1', collecteurRoutes);              // caisse, clôture, commissions, zoning, hors-ligne
